@@ -255,6 +255,9 @@ class TurnReport(DomainModel):
     facts: list[Fact] = Field(default_factory=list)
     ledger_lines: list[LedgerLine] = Field(default_factory=list)
     events_fired: list[str] = Field(default_factory=list)
+    # 本季触发事件的展示信息：{id, title, text, illustration, importance, internal}，按 importance 降序。
+    # importance：3 终局 > 2 兵事 > 1 带抉择 > 0 其他；internal 事件（记账）只留在日志。
+    events: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     battles: list[dict[str, Any]] = Field(default_factory=list)
     choices_opened: list[dict[str, Any]] = Field(default_factory=list)

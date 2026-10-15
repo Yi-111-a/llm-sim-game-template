@@ -198,6 +198,20 @@ def resolve_turn(
         updated.outcome = outcome
         report.outcome = outcome
         report.facts.append(Fact(kind="outcome", text=f"终局：{outcome.title}", entity=outcome.id))
+        ending = next(
+            (row for row in scenario_definition.get("endings", []) or [] if isinstance(row, dict) and str(row.get("id")) == outcome.id),
+            {},
+        )
+        report.events.append({
+            "id": outcome.id,
+            "title": outcome.title,
+            "text": outcome.text,
+            "illustration": ending.get("illustration") or None,
+            "importance": 3,
+            "internal": False,
+            "outcome": True,
+        })
+    report.events = sort_events(report.events)
 
     # 13. 历法
     calendar_config = scenario_definition.get("calendar", {})
@@ -262,17 +276,36 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         return state
     updated = state
     event_title = str(event.get("title", event_id))
+    explicit_internal = event_is_internal(event)
+    effect_facts: list[Fact] = []
     for op in event.get("effects", []) or []:
         try:
             updated, facts = apply(op, updated, turn=target, inplace=True, source=event_title)
-            report.facts.extend(facts)
+            effect_facts.extend(facts)
         except ValueError as exc:
-            report.warnings.append(f"事件效果未执行：{event_id}: {exc}")
+            report.warnings.append(f"事件效果未执行：{event_title}: {exc}")
+    raw_choices = event.get("choices") or []
+    # 记账事件：显式 internal / kind: system，或既无正文、无抉择、也没有任何玩家可见的效果。
+    internal = explicit_internal or (
+        not str(event.get("text") or "").strip() and not raw_choices and all(fact.internal for fact in effect_facts)
+    )
+    if internal:
+        for fact in effect_facts:
+            if fact.kind in BOOKKEEPING_FACT_KINDS:
+                fact.internal = True
+    report.facts.extend(effect_facts)
     updated.flags[fired_key] = True
     updated.flag_turns[fired_key] = target
     report.events_fired.append(event_id)
-    report.facts.append(Fact(kind="event", text=event.get("title", event_id), entity=event_id))
-    raw_choices = event.get("choices") or []
+    report.facts.append(Fact(kind="event", text=event_title, entity=event_id, internal=internal))
+    report.events.append({
+        "id": event_id,
+        "title": event_title,
+        "text": str(event.get("text") or ""),
+        "illustration": event.get("illustration") or None,
+        "importance": event_importance(event, effect_facts),
+        "internal": internal,
+    })
     if raw_choices:
         options = [
             ChoiceOption(
@@ -297,6 +330,40 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         updated.pending_choices.append(pending)
         report.choices_opened.append(pending.model_dump(mode="json"))
     return updated
+
+
+BOOKKEEPING_FACT_KINDS = frozenset({"ledger", "flag", "counter", "memory", "standing_order"})
+WAR_OPS = frozenset({"move_army", "adjust_army", "set_army_faction", "set_army_commander", "set_region_controller"})
+WAR_FACT_KINDS = frozenset({"battle", "army", "army_faction", "region_controller", "retreat"})
+IMPORTANCE_LEVELS = {"outcome": 3, "war": 2, "battle": 2, "choice": 1, "normal": 0, "other": 0}
+
+
+def event_is_internal(event: dict[str, Any]) -> bool:
+    """剧本显式标记的记账事件：internal: true，或 kind: system。"""
+    return event.get("internal") is True or str(event.get("kind", "")) == "system"
+
+
+def event_importance(event: dict[str, Any], facts: list[Fact] | None = None) -> int:
+    """事件的展示优先级：3 终局 > 2 兵事（战斗/调兵/易帜）> 1 带抉择 > 0 其他。剧本可用 importance 覆盖（数字或上述键名）。"""
+    explicit = event.get("importance")
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
+        return int(explicit)
+    if isinstance(explicit, str) and explicit in IMPORTANCE_LEVELS:
+        return IMPORTANCE_LEVELS[explicit]
+    tags = {str(item) for item in event.get("tags", []) or []} | {str(event.get("category", ""))}
+    if tags & {"outcome", "ending"}:
+        return 3
+    ops = {str(op.get("op")) for op in event.get("effects", []) or [] if isinstance(op, dict)}
+    if tags & {"war", "battle"} or ops & WAR_OPS or any(fact.kind in WAR_FACT_KINDS for fact in facts or []):
+        return 2
+    if event.get("choices"):
+        return 1
+    return 0
+
+
+def sort_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 importance 降序排列（同级保持触发顺序）。"""
+    return sorted(events, key=lambda row: -int(row.get("importance", 0) or 0))
 
 
 def choice_option_id(row: dict[str, Any], index: int) -> str:

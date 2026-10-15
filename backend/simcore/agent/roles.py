@@ -8,9 +8,10 @@ import uuid
 from typing import Any
 
 from simcore.agent.loop import guarded_chat
+from simcore.agent.offline import chronicle_numbers, is_offline, offline_chronicle, offline_minister_reply
 from simcore.agent.tools import AgentTools
 from simcore.domain.difficulty import delay_factor
-from simcore.domain.digest import render_digest
+from simcore.domain.digest import digest_numbers, render_digest
 from simcore.domain.memorials import MemorialError, adopted_ops
 from simcore.domain.models import TurnReport, WorldState
 from simcore.domain.visibility import resource_display
@@ -229,36 +230,41 @@ def _parse_ops_json(content: str) -> list[dict[str, Any]]:
 
 
 async def narrator(
-    report: TurnReport, provider: LLMProvider, scenario: dict[str, Any] | None = None
+    report: TurnReport,
+    provider: LLMProvider,
+    scenario: dict[str, Any] | None = None,
+    *,
+    state: WorldState | None = None,
+    seed: int = 0,
+    context: dict[str, Any] | None = None,
 ) -> str:
-    facts = [fact.text for fact in report.facts]
-    if not facts:
-        return "本回合暂无可记录的确定变化。"
-    prompt = render_prompt("narrator", {"facts": facts}, (scenario or {}).get("root"))
-    result = await provider.chat([
-        {"role": "system", "content": "只根据已应用事实写简短纪要，不添加事实、数字或推断。"},
-        {"role": "user", "content": prompt},
-    ])
-    if any(not _number_allowed(number, report) for number in _NUMBER.findall(result.content)):
+    """本季纪事。离线 provider（mock）且给了 state 时用模板史笔（offline_chronicle），否则调用模型；
+    两种来源都过数字核对：出现报告之外的数字即退回事实拼接。"""
+    facts = [fact.text for fact in report.facts if not fact.internal]
+    if is_offline(provider) and state is not None:
+        content = offline_chronicle(report, state, scenario, seed, context)
+    else:
+        if not facts:
+            return "本回合暂无可记录的确定变化。"
+        prompt = render_prompt("narrator", {"facts": facts}, (scenario or {}).get("root"))
+        result = await provider.chat([
+            {"role": "system", "content": "只根据已应用事实写简短纪要，不添加事实、数字或推断。"},
+            {"role": "user", "content": prompt},
+        ])
+        content = result.content
+    if any(not _number_allowed(number, report) for number in _NUMBER.findall(content)):
         return "；".join(facts)
-    return result.content if result.content else "；".join(facts)
+    return content if content else ("；".join(facts) or "本回合暂无可记录的确定变化。")
 
 
-_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
+_NUMBER = re.compile(r"(?<![A-Za-z0-9_.])-?\d+(?:\.\d+)?")
 
 
 def _number_allowed(text: str, report: TurnReport) -> bool:
-    """按数值比较纪要中的数字：100 与 100.0 等价，事实文本中的数字和前后差值也视为已知。"""
-    allowed: set[float] = set()
-    for fact in report.facts:
-        allowed.update(float(value) for value in _NUMBER.findall(fact.text))
-        values = [value for value in (fact.before, fact.after) if isinstance(value, (int, float)) and not isinstance(value, bool)]
-        allowed.update(float(value) for value in values)
-        if len(values) == 2:
-            delta = float(values[1]) - float(values[0])
-            allowed.update({delta, abs(delta)})
+    """按数值比较纪要中的数字：100 与 100.0 等价；事实文本中的数字、数值事实的前后值与差值、
+    账目行金额及其按资源的合计（含一位小数的取整）都视为已知。"""
     number = float(text)
-    return any(abs(number - value) < 1e-6 for value in allowed)
+    return any(abs(number - value) < 1e-6 for value in chronicle_numbers(report))
 
 
 def chat_availability(character_id: str, state: WorldState, afterlife_chat: bool = False) -> dict[str, str] | None:
@@ -318,8 +324,27 @@ async def minister_chat(
     refusal = chat_availability(character_id, state, afterlife_chat)
     if refusal is not None:
         return refusal
+    if is_offline(provider):
+        return {"status": "ok", "content": offline_minister_text(character_id, state, user_text, scenario, seed, report)}
     result = await provider.chat(minister_chat_messages(character_id, state, user_text, scenario, seed, report))
     return {"status": "ok", "content": result.content}
+
+
+def offline_minister_text(
+    character_id: str,
+    state: WorldState,
+    user_text: str,
+    scenario: dict[str, Any] | None = None,
+    seed: int = 0,
+    report: TurnReport | dict[str, Any] | None = None,
+) -> str:
+    """离线召对答话（mock provider）：模板 + 该人物可知的摘要；数字只取自摘要与问话。"""
+    digest = render_digest(state, seed, character_id, report, scenario)
+    text = offline_minister_reply(character_id, state, user_text, scenario, seed, digest)
+    allowed = digest_numbers(digest) | {float(item) for item in _NUMBER.findall(user_text)}
+    if any(float(item) not in allowed for item in _NUMBER.findall(text)):
+        text = offline_minister_reply(character_id, state, "", scenario, seed, "")
+    return text
 
 
 async def chronicler(

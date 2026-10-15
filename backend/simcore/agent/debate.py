@@ -8,6 +8,7 @@ import random
 import re
 from typing import Any
 
+from simcore.agent.offline import character_card, is_offline, offline_debate_line
 from simcore.domain.digest import digest_numbers, render_digest
 from simcore.domain.events import relation_value
 from simcore.domain.memorials import MemorialError, is_visible, memorial_item
@@ -287,9 +288,17 @@ def debate_summary(stances: list[dict[str, Any]]) -> str:
     return "；".join(parts) + "。廷议结论只作谏言，须经诏书方能施行。"
 
 
-def persona_card(state: WorldState, character_id: str) -> dict[str, Any]:
+def persona_card(state: WorldState, character_id: str, scenario: dict[str, Any] | None = None) -> dict[str, Any]:
+    """人设卡；给了 scenario 时附剧本 card 中的开场白与示例台词。"""
     character = state.characters[character_id]
+    card = character_card(scenario, character_id) if scenario else {}
+    extra: dict[str, Any] = {}
+    if card.get("greeting"):
+        extra["greeting"] = str(card["greeting"])
+    if card.get("examples"):
+        extra["examples"] = [str(item) for item in card["examples"]]
     return {
+        **extra,
         "character": character.id,
         "name": character.name,
         "title": character.title,
@@ -313,9 +322,18 @@ async def debate_speeches(
 ) -> list[dict[str, Any]]:
     speeches: list[dict[str, Any]] = []
     previous: list[str] = []
+    offline = is_offline(provider)
     for row in stances:
         character = state.characters[row["character"]]
         digest = render_digest(state, seed, character.id, report, scenario)
+        allowed = digest_numbers(digest) | {float(item) for item in _NUMBER.findall(topic)}
+        if offline:
+            text = offline_debate_line(character.id, row, topic, state, scenario, seed, digest, speeches)
+            if any(float(item) not in allowed for item in _NUMBER.findall(text)):
+                text = template_speech(character.name, row["stance"], digest)
+            speeches.append({"character": character.id, "name": character.name, "stance": row["stance"], "reason": row["reason"], "text": text})
+            previous.append(f"{character.name}（{row['stance_label']}）：{text}")
+            continue
         prompt = render_prompt(
             "court_debate",
             {
@@ -336,7 +354,6 @@ async def debate_speeches(
             {"role": "user", "content": f"议题：{topic}"},
         ])
         text = result.content.strip()
-        allowed = digest_numbers(digest) | {float(item) for item in _NUMBER.findall(topic)}
         if not text or any(float(item) not in allowed for item in _NUMBER.findall(text)):
             text = template_speech(character.name, row["stance"], digest)
         speeches.append({"character": character.id, "name": character.name, "stance": row["stance"], "reason": row["reason"], "text": text})

@@ -19,7 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from simcore.agent.debate import ENTITY_KIND_LABELS
 from simcore.domain.apply import OpRejected
-from simcore.domain.visibility import fact_line, format_number
+from simcore.domain.visibility import battle_text, fact_line, format_number
 from simcore.service import ENGINE_VERSION, ROLEPLAY_RULES, GameError, GameService
 
 INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP server runs a deterministic history-simulation strategy game）。
@@ -155,7 +155,10 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         return (
             f"# 人设卡：{persona['name']}（{persona['character']}）\n"
             f"官职：{'、'.join(persona['offices']) or '无'}；派系：{persona['bloc'] or '无'}；头衔：{persona['title'] or '无'}\n"
-            f"人物：{persona['persona']}\n言谈：{persona['speech_style']}\n所知：{'、'.join(persona['knowledge']) or '—'}\n\n"
+            f"人物：{persona['persona']}\n言谈：{persona['speech_style']}\n所知：{'、'.join(persona['knowledge']) or '—'}\n"
+            + (f"开场白：{persona['greeting']}\n" if persona.get("greeting") else "")
+            + (f"示例台词：{' / '.join(persona['examples'])}\n" if persona.get("examples") else "")
+            + "\n"
             f"# 此人可知的事实摘要（StateDigest；【记忆】为此人记得的事）\n{card['digest']}\n\n"
             f"# 口吻要求\n{card['voice']}\n\n{ROLEPLAY_RULES}"
         )
@@ -297,9 +300,10 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
         lines.append("## 战报")
         for battle in report["battles"]:
             losses = _losses(battle.get("losses"), result["state"].get("armies", {}))
-            lines.append(f"- {battle['region_name']}：{battle['attacker']} 攻 {battle['defender']}，结果 {battle['result']}，损失 {losses}")
-    if report.get("events_fired"):
-        lines.append("## 触发事件：" + "、".join(report["events_fired"]))
+            lines.append(f"- {battle.get('region_name', '')}：{battle_text(battle)}损失 {losses}")
+    shown = [row for row in report.get("events", []) if not row.get("outcome")]
+    if shown:
+        lines.append("## 触发事件：" + "、".join(f"「{row.get('title') or row.get('id')}」" for row in shown))
     if report.get("choices_opened"):
         lines.append("## 新的待决事件")
         for choice in report["choices_opened"]:

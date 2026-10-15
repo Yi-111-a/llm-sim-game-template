@@ -156,7 +156,7 @@ def test_player_character_is_not_offered_for_audience(mech_env) -> None:
     session_id, _ = service.create_session("mech_test", 1)
     briefing = service.briefing(session_id)
     people = briefing.split("## 可召对人物")[1].split("\n")[1]
-    assert "皇帝（ruler" not in people and "李相（chancellor" in people
+    assert "皇帝（`ruler`" not in people and "李相（`chancellor`" in people
     with pytest.raises(GameError) as refused:
         service.audience_card(session_id, "ruler")
     assert refused.value.code == "PLAYER_CHARACTER"
@@ -258,8 +258,8 @@ def test_audience_list_shows_title_when_no_office(mech_env) -> None:
     service = GameService()
     session_id, _ = service.create_session("mech_test", 1)
     briefing = service.briefing(session_id)
-    assert "郭将军（general，郡王）" in briefing
-    assert "李相（chancellor，宰相）" in briefing
+    assert "郭将军（`general`，郡王）" in briefing
+    assert "李相（`chancellor`，宰相）" in briefing
 
 
 # ---- 7. 性能：头状态缓存、快速复制、场景缓存 -------------------------------------------------

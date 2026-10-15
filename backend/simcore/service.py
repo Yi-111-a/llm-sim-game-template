@@ -15,7 +15,8 @@ from typing import Any
 
 from simcore.agent.debate import debate_speeches, debate_summary, decide_stances, match_memorial, persona_card, topic_entities
 from simcore.agent.loop import AgentAborted
-from simcore.agent.roles import chat_availability, interpret_edict, minister_chat_messages, narrator
+from simcore.agent.offline import is_offline
+from simcore.agent.roles import chat_availability, interpret_edict, minister_chat_messages, narrator, offline_minister_text
 from simcore.agent.tools import AgentTools
 from simcore.config import load_settings
 from simcore.domain.apply import OpRejected, edict_memories
@@ -26,8 +27,9 @@ from simcore.domain.memorials import MemorialError, is_visible, memorial_flag, s
 from simcore.domain.models import TurnReport, WorldState
 from simcore.domain.ops import OP_NAMES, op_json_schema
 from simcore.domain.rules import held_offices, player_character_id
-from simcore.domain.turn import GameOver
+from simcore.domain.turn import GameOver, choice_option_id
 from simcore.domain.visibility import (
+    battle_text,
     fact_line,
     public_crisis,
     public_report,
@@ -520,6 +522,7 @@ class GameService:
         session = self.session(session_id)
         if session.state.outcome is not None:
             raise GameError("GAME_OVER", f"本局已终局（{session.state.outcome.title}），不能再推进回合")
+        context = self.season_context(session)
         try:
             state, report, _ = session.append_turn()
         except GameOver as exc:
@@ -529,7 +532,14 @@ class GameService:
         facts = [str(fact.get("text", "")) for fact in public.get("facts", [])]
         if narrate:
             try:
-                memorial = await narrator(redacted_report(report, state), self.provider(session.scenario, "narrator"), session.scenario)
+                memorial = await narrator(
+                    redacted_report(report, state),
+                    self.provider(session.scenario, "narrator"),
+                    session.scenario,
+                    state=state,
+                    seed=session.seed,
+                    context=context,
+                )
             except Exception:  # noqa: BLE001 - 叙事失败不影响已结算的回合
                 memorial = "；".join(facts) or "本回合暂无可记录的确定变化。"
         else:
@@ -543,6 +553,38 @@ class GameService:
             "outcome": state.outcome.model_dump(mode="json") if state.outcome else None,
             "calendar_label": state.calendar.label,
         }
+
+    def season_context(self, session: SessionStore) -> dict[str, Any]:
+        """本季（上次结算以来）已施行的诏令来源与抉择，供纪事归并「诏令施行」一类。"""
+        events = {str(row.get("id")): row for row in session.scenario.get("events", []) or [] if isinstance(row, dict)}
+        labels: list[str] = []
+        plain = False
+        choices: list[dict[str, str]] = []
+        for payload in session.ops_since_turn():
+            op = payload.get("op") or {}
+            if op.get("op") == "choose_event_option":
+                choice_id = str(op.get("choice_id", ""))
+                event_id = choice_id.removeprefix("choice-").rsplit("-", 1)[0]
+                event = events.get(event_id, {})
+                options = event.get("choices") or []
+                option = next(
+                    (row for index, row in enumerate(options) if isinstance(row, dict) and choice_option_id(row, index) == op.get("option_id")),
+                    {},
+                )
+                if event:
+                    choices.append({
+                        "title": str(event.get("title", "")),
+                        "option": str(option.get("text") or option.get("label") or ""),
+                    })
+                continue
+            source = str(payload.get("source") or "")
+            if not source or op.get("op") in {"set_flag", "remember", "adjust_counter", "set_counter"}:
+                continue
+            if source.startswith("诏令"):
+                plain = True
+            elif source not in labels:
+                labels.append(source)
+        return {"edicts": labels, "plain_edicts": plain, "choices": [row for row in choices if row["title"] and row["option"]]}
 
     # ---- 人物：召对、廷议、谏言 -------------------------------------------------------
 
@@ -571,7 +613,7 @@ class GameService:
         if refusal is not None:
             raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}{'已故' if character.status == 'dead' else '系狱'}，无法召对")
         return {
-            "persona": persona_card(state, character_id),
+            "persona": persona_card(state, character_id, session.scenario),
             "digest": render_digest(state, session.seed, character_id, session.last_report(), session.scenario),
             "memories": list(character.memories[-12:]),
             "voice": (
@@ -585,12 +627,22 @@ class GameService:
         """非流式召对（MCP server 模式用）。"""
         session = self.session(session_id)
         self.audience_card(session_id, character_id)
-        messages = minister_chat_messages(character_id, session.state, text, session.scenario, session.seed, session.last_report())
-        result = await self.provider(session.scenario, "minister_chat").chat(messages)
+        provider = self.provider(session.scenario, "minister_chat")
+        content = self.offline_chat_text(session, character_id, text, provider)
+        if content is None:
+            messages = minister_chat_messages(character_id, session.state, text, session.scenario, session.seed, session.last_report())
+            content = (await provider.chat(messages)).content
         session.append_message("player", text, {"character": character_id})
-        session.append_message("character", result.content, {"character": character_id, "status": "ok"})
+        session.append_message("character", content, {"character": character_id, "status": "ok"})
         self.touch(session_id)
-        return {"status": "ok", "character": character_id, "content": result.content}
+        return {"status": "ok", "character": character_id, "content": content}
+
+    @staticmethod
+    def offline_chat_text(session: SessionStore, character_id: str, text: str, provider: Any) -> str | None:
+        """离线 provider（mock）时的模板召对答话；在线 provider 返回 None。"""
+        if not is_offline(provider):
+            return None
+        return offline_minister_text(character_id, session.state, text, session.scenario, session.seed, session.last_report())
 
     def chat_prepare(self, session_id: str, character_id: str) -> tuple[SessionStore, dict[str, str] | None]:
         session = self.session(session_id)
@@ -639,7 +691,7 @@ class GameService:
         state = session.state
         topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id)
         for row in stances:
-            row["persona"] = persona_card(state, row["character"])
+            row["persona"] = persona_card(state, row["character"], session.scenario)
         return {
             "topic": topic,
             **analysis,
@@ -747,10 +799,13 @@ class GameService:
             lines.append("\n## 上季事实")
             lines.extend(f"- {fact}" for fact in facts[:40]) if facts else lines.append("- （无）")
             if report.get("battles"):
-                lines.append("战报：" + "；".join(f"{row['region_name']}：{row['result']}" for row in report["battles"]))
+                lines.append("战报：" + "；".join(f"{row.get('region_name', '')}：{battle_text(row, state)}" for row in report["battles"]))
+            featured = [row for row in report.get("events", []) if not row.get("outcome")]
+            if featured:
+                lines.append("上季时事：" + "、".join(f"「{row['title']}」" for row in featured))
         player = self.player_character(session, state)
         people = [
-            f"{row.name}（{row.id}{'，' + role if (role := _role_label(state, row)) else ''}）"
+            f"{row.name}（`{row.id}`{'，' + role if (role := _role_label(state, row)) else ''}）"
             for row in state.characters.values()
             if row.status == "alive" and row.id != player
         ]

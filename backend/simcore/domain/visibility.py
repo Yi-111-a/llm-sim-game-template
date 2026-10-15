@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import random
 from typing import Any
@@ -79,7 +80,7 @@ def resource_display(state: WorldState, resource_id: str, seed: int) -> str:
     row = state.resources[resource_id]
     if row.hidden:
         low, high = estimate_interval(state, resource_id, seed)
-        return f"{row.name} 约{format_number(low)}–{format_number(high)}{row.unit}（风闻）"
+        return f"{row.name} {format_range(low, high)}{row.unit}（风闻）"
     return f"{row.name} {format_number(row.amount)}{row.unit}"
 
 
@@ -125,13 +126,13 @@ def public_crisis(
             "label": term.get("label", term.get("id")),
             "value": term_value,
             "estimated": uses_hidden,
-            "display": format_value(term_value) + ("（风闻）" if uses_hidden and term_value is not None else ""),
+            "display": format_value(term_value, signed=True),
         })
     return {
         "title": crisis.get("title", resource.name if resource else ""),
         "resource": resource_id,
         "value_or_estimate": value,
-        "display": format_value(value) + ("（风闻）" if isinstance(value, list) else ""),
+        "display": format_value(value),
         "band": band_for(center, crisis.get("bands", []) or []),
         "bands": crisis.get("bands", []) or [],
         "terms": public_terms,
@@ -182,6 +183,16 @@ def public_report(
         line["display"] = f"{line.get('name', '')} {'数值不明' if amount is None else format_number(amount, signed=True)}"
         lines.append(line)
     data["ledger_lines"] = lines
+    events, internal_events = public_events(data)
+    data["events"] = events
+    data["featured_event"] = events[0] if events else None
+    data["events_fired"] = [row["id"] for row in events if not row.get("outcome")]
+    if os.environ.get("SIM_DEBUG") == "1":
+        data["internal_events"] = internal_events
+    data["battles"] = [
+        {**battle, "text": battle_text(battle, state)} if isinstance(battle, dict) else battle
+        for battle in data.get("battles", []) or []
+    ]
     if data.get("crisis"):
         data["crisis"] = public_crisis(crisis, state, seed, data["crisis"].get("terms")) if crisis else {}
     return data
@@ -203,13 +214,90 @@ def format_number(value: float | int, signed: bool = False) -> str:
     return f"+{text}" if signed and rounded > 0 else text
 
 
-def format_value(value: Any) -> str:
-    """数字或风闻区间 [lo, hi] 的显示文字；其他值原样转字符串。"""
-    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(item, (int, float)) for item in value):
-        return f"约{format_number(value[0])}–{format_number(value[1])}"
+def format_range(low: float, high: float, signed: bool = False) -> str:
+    """区间的紧凑显示。
+
+    不带符号（资源、危机值）：「约 55–60」；区间宽 ≥ 2 时两端向外取整（真值仍在区间内），否则至多一位小数；
+    含负数时用「～」分隔，避免与负号相混。带符号（危机分项）：「+0.3～+0.9」。两端显示相同时只给一个值。
+    """
+    low, high = (float(low), float(high)) if float(low) <= float(high) else (float(high), float(low))
+    if not signed and high - low >= 2:
+        low, high = float(math.floor(low + 1e-9)), float(math.ceil(high - 1e-9))
+    left, right = format_number(low, signed=signed), format_number(high, signed=signed)
+    if signed:
+        return left if left == right else f"{left}～{right}"
+    if left == right:
+        return f"约 {left}"
+    separator = "～" if low < 0 else "–"
+    return f"约 {left}{separator}{right}"
+
+
+def format_value(value: Any, signed: bool = False) -> str:
+    """数字或风闻区间 [lo, hi] 的显示文字（见 format_range）；signed=True 时正数带 +；其他值原样转字符串。"""
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(
+        isinstance(item, (int, float)) and not isinstance(item, bool) for item in value
+    ):
+        return format_range(value[0], value[1], signed=signed)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return format_number(value)
+        return format_number(value, signed=signed)
     return "—" if value is None else str(value)
+
+
+def battle_text(battle: dict[str, Any], state: WorldState | None = None) -> str:
+    """战报一行（只用显示名）：优先用引擎写好的 text；旧存档按势力 id 查名。"""
+    if battle.get("text"):
+        return str(battle["text"])
+
+    def name(key: str) -> str:
+        if battle.get(f"{key}_name"):
+            return str(battle[f"{key}_name"])
+        faction = state.factions.get(str(battle.get(key))) if state is not None and battle.get(key) else None
+        return faction.name if faction else ""
+
+    attacker, defender = name("attacker") or "敌", name("defender") or "守军"
+    result = battle.get("result")
+    if result == "stalemate":
+        return f"{attacker}攻{defender}，相持一季。"
+    winner = attacker if result == "attacker_won" else defender
+    return f"{attacker}攻{defender}，{winner}胜。"
+
+
+def public_events(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """报告中触发事件的展示列表（{id, title, text, illustration, importance}，按 importance 降序）与内部事件列表。
+
+    旧存档的报告没有 events 字段：按 events_fired 与事件事实（kind=event）补出 id 与标题。
+    """
+    rows = data.get("events")
+    if not isinstance(rows, list):
+        titles = {
+            str(fact.get("entity")): str(fact.get("text", ""))
+            for fact in data.get("facts", []) or []
+            if isinstance(fact, dict) and fact.get("kind") == "event"
+        }
+        internal_ids = {
+            str(fact.get("entity"))
+            for fact in data.get("facts", []) or []
+            if isinstance(fact, dict) and fact.get("kind") == "event" and fact.get("internal")
+        }
+        rows = [
+            {
+                "id": event_id,
+                "title": titles.get(str(event_id), str(event_id)),
+                "text": "",
+                "illustration": None,
+                "importance": 0,
+                "internal": str(event_id) in internal_ids,
+            }
+            for event_id in data.get("events_fired", []) or []
+        ]
+    shown: list[dict[str, Any]] = []
+    hidden: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        (hidden if row.get("internal") else shown).append({key: value for key, value in row.items() if key != "internal"})
+    shown.sort(key=lambda row: -int(row.get("importance", 0) or 0))
+    return shown, hidden
 
 
 _number = format_number

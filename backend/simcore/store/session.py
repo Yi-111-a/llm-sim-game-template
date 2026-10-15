@@ -195,6 +195,17 @@ class SessionStore:
                 return report if isinstance(report, dict) else None
         return None
 
+    def ops_since_turn(self) -> list[dict[str, Any]]:
+        """当前路径上最近一次回合结算之后写入的操作条目的 payload（{op, source?, state_hash}）。"""
+        rows: list[dict[str, Any]] = []
+        for entry in reversed(self._path_to(self.head_id)):
+            if entry["type"] == "turn":
+                break
+            if entry["type"] == "op":
+                rows.append(entry["payload"])
+        rows.reverse()
+        return rows
+
     def messages(self, role: str | None = None) -> list[dict[str, Any]]:
         return [
             {"id": entry["id"], **entry["payload"]}

@@ -354,9 +354,17 @@ def create_app() -> FastAPI:
             messages = minister_chat_messages(character_id, state, user_text, session.scenario, session.seed, session.last_report())
             pieces: list[str] = []
             try:
-                async for piece in provider.stream_text(messages):
-                    pieces.append(piece)
-                    yield sse("message", {"text": piece})
+                offline = service.offline_chat_text(session, character_id, user_text, provider)
+                if offline is not None:
+                    # 离线（mock）：模板答话按小段流出，与在线流式的前端处理一致。
+                    for offset in range(0, len(offline), 6):
+                        piece = offline[offset:offset + 6]
+                        pieces.append(piece)
+                        yield sse("message", {"text": piece})
+                else:
+                    async for piece in provider.stream_text(messages):
+                        pieces.append(piece)
+                        yield sse("message", {"text": piece})
             except Exception as exc:  # noqa: BLE001 - 流中错误以 SSE error 事件告知前端
                 yield sse("error", {"code": "PROVIDER_ERROR", "message": f"模型调用失败：{type(exc).__name__}"})
             content = "".join(pieces)

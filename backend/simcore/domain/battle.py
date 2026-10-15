@@ -105,9 +105,15 @@ def _fight(
     }
     attacker_name = _faction_name(state, attacker)
     defender_name = _faction_name(state, defender)
+    battle["attacker_name"] = attacker_name
+    battle["defender_name"] = defender_name
+    battle["attacker_army_names"] = [army.name for army in attackers]
+    battle["defender_army_names"] = [army.name for army in defenders]
     facts: list[Fact] = []
     if defense >= FORTRESS_DEFENSE and attack_power < FORTRESS_RATIO * defend_power:
         battle["result"] = "stalemate"
+        battle.update({"winner": None, "winner_name": "", "attacker_loss": 0.0, "defender_loss": 0.0})
+        battle["text"] = f"{attacker_name}攻{defender_name}，{defender_name}据险而守，相持一季。"
         facts.append(Fact(kind="battle", text=f"{attacker_name}攻{region.name}，{defender_name}据险而守，相持一季", entity=region_id))
         return battle, facts
     attacker_won = attack_power > defend_power
@@ -136,6 +142,10 @@ def _fight(
             army.region = retreat
             facts.append(Fact(kind="retreat", text=f"{army.name}退往{state.regions[retreat].name}", entity=army.id, before=region_id, after=retreat))
     winner_name = attacker_name if attacker_won else defender_name
+    battle["winner"] = attacker if attacker_won else defender
+    battle["winner_name"] = winner_name
+    battle["attacker_loss"] = round(sum(battle["losses"].get(army.id, 0.0) for army in attackers), 2)
+    battle["defender_loss"] = round(sum(battle["losses"].get(army.id, 0.0) for army in defenders), 2)
     facts.insert(0, Fact(kind="battle", text=f"{region.name}之战：{attacker_name}攻，{defender_name}守，{winner_name}胜", entity=region_id))
     if attacker_won and region.controller != attacker and not any(
         army.faction == region.controller for army in _present(state, region_id)
@@ -144,6 +154,7 @@ def _fight(
         region.controller = attacker
         battle["captured"] = True
         facts.append(Fact(kind="region_controller", text=f"{attacker_name}攻占{region.name}", entity=region_id, before=before, after=attacker))
+    battle["text"] = f"{attacker_name}攻{defender_name}，{winner_name}胜" + (f"，遂克{region.name}。" if battle["captured"] else "。")
     return battle, facts
 
 
@@ -232,4 +243,4 @@ def _faction_name(state: WorldState, faction_id: str | None) -> str:
     if faction_id is None:
         return "无主"
     faction = state.factions.get(faction_id)
-    return faction.name if faction else faction_id
+    return faction.name if faction else "不明势力"

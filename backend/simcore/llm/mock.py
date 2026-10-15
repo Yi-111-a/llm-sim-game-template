@@ -9,7 +9,12 @@ from simcore.llm.base import ChatResult, ToolCall, ToolCallingUnsupported, Usage
 
 
 class MockProvider:
-    """Deterministic local provider for the bundled scenario and offline tests."""
+    """Deterministic local provider for the bundled scenario and offline tests.
+
+    offline=True：纪事、召对、廷议在服务层改用 simcore.agent.offline 的模板生成（见 is_offline）。
+    """
+
+    offline = True
 
     def __init__(self, scenario: dict[str, Any] | None = None, tool_calling: bool = True) -> None:
         self.scenario = scenario or {}
