@@ -7,7 +7,7 @@ from simcore.domain.apply import apply
 from simcore.domain.calendar import format_calendar
 from simcore.domain.events import matches
 from simcore.domain.formulas import evaluate
-from simcore.domain.models import Fact, LedgerLine, TurnReport, WorldState
+from simcore.domain.models import Fact, LedgerLine, Resource, TurnReport, WorldState
 from simcore.domain.ops import parse_op
 
 
@@ -47,14 +47,8 @@ def resolve_turn(
             report.warnings.append(f"账目资源不存在：{resource_id}")
             updated.ledger.remove(entry)
             continue
-        before = resource.amount
-        resource.amount += entry.amount
-        if resource.minimum is not None:
-            resource.amount = max(resource.minimum, resource.amount)
-        if resource.maximum is not None:
-            resource.amount = min(resource.maximum, resource.amount)
         report.ledger_lines.append(
-            LedgerLine(name=entry.name, amount=resource.amount - before, kind=entry.kind, resource=resource_id, reason=entry.reason)
+            LedgerLine(name=entry.name, amount=_credit(resource, entry.amount), kind=entry.kind, resource=resource_id, reason=entry.reason)
         )
         if entry.kind == "one_off":
             updated.ledger.remove(entry)
@@ -71,8 +65,7 @@ def resolve_turn(
             resource = updated.resources.get(resource_id)
             if resource:
                 values = {**region.stats, "turn": float(updated.turn + 1)}
-                amount = evaluate(income.get("formula", "0"), values)
-                resource.amount += amount
+                amount = _credit(resource, evaluate(income.get("formula", "0"), values))
                 report.ledger_lines.append(
                     LedgerLine(name=f"{region.name}税入", amount=amount, kind="income", resource=resource_id, reason="地区税赋公式")
                 )
@@ -119,14 +112,17 @@ def resolve_turn(
     drift = formulas.get("drift", {})
     for resource_id, expression in drift.items():
         if resource_id in updated.resources:
+            resource = updated.resources[resource_id]
             amount = evaluate(expression, {key: row.amount for key, row in updated.resources.items()})
-            updated.resources[resource_id].amount += amount
+            report.ledger_lines.append(
+                LedgerLine(name=f"{resource.name}变动", amount=_credit(resource, amount), kind="drift", resource=resource_id, reason="场景漂移公式")
+            )
 
     for event in scenario.get("events", []):
         event_id = event["id"]
         if updated.flags.get(f"event:{event_id}:fired"):
             continue
-        if not _scheduled(event, updated.turn + 1) or not matches(event.get("conditions"), updated):
+        if not _scheduled(event, updated.turn + 1) or not matches(event.get("conditions"), updated, updated.turn + 1):
             continue
         gravity = float(event.get("gravity", 1))
         if rng.random() > gravity:
@@ -153,6 +149,17 @@ def resolve_turn(
     report.turn = updated.turn
     report.state_hash = state_hash(updated)
     return updated, report
+
+
+def _credit(resource: Resource, amount: float) -> float:
+    """按资源上下限入账，返回实际变动量。"""
+    before = resource.amount
+    resource.amount += amount
+    if resource.minimum is not None:
+        resource.amount = max(resource.minimum, resource.amount)
+    if resource.maximum is not None:
+        resource.amount = min(resource.maximum, resource.amount)
+    return resource.amount - before
 
 
 def _scheduled(event: dict[str, Any], turn: int) -> bool:

@@ -174,15 +174,26 @@ async def narrator(
         {"role": "system", "content": "只根据已应用事实写简短纪要，不添加事实、数字或推断。"},
         {"role": "user", "content": prompt},
     ])
-    allowed_numbers = {
-        str(value)
-        for fact in report.facts
-        for value in (fact.before, fact.after)
-        if isinstance(value, (int, float))
-    }
-    if any(number not in allowed_numbers for number in re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", result.content)):
+    if any(not _number_allowed(number, report) for number in _NUMBER.findall(result.content)):
         return "；".join(facts)
     return result.content if result.content else "；".join(facts)
+
+
+_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
+
+
+def _number_allowed(text: str, report: TurnReport) -> bool:
+    """按数值比较纪要中的数字：100 与 100.0 等价，事实文本中的数字和前后差值也视为已知。"""
+    allowed: set[float] = set()
+    for fact in report.facts:
+        allowed.update(float(value) for value in _NUMBER.findall(fact.text))
+        values = [value for value in (fact.before, fact.after) if isinstance(value, (int, float)) and not isinstance(value, bool)]
+        allowed.update(float(value) for value in values)
+        if len(values) == 2:
+            delta = float(values[1]) - float(values[0])
+            allowed.update({delta, abs(delta)})
+    number = float(text)
+    return any(abs(number - value) < 1e-6 for value in allowed)
 
 
 async def minister_chat(

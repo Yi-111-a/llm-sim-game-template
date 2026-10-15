@@ -5,19 +5,22 @@ from typing import Any
 from simcore.domain.models import WorldState
 
 
-def matches(conditions: Any, state: WorldState) -> bool:
+def matches(conditions: Any, state: WorldState, turn: int | None = None) -> bool:
+    """turn 为正在结算的目标回合，与 when.turn 同义；缺省时使用 state.turn。"""
+    if turn is None:
+        turn = state.turn
     if conditions in (None, {}, []):
         return True
     if isinstance(conditions, list):
-        return all(matches(item, state) for item in conditions)
+        return all(matches(item, state, turn) for item in conditions)
     if not isinstance(conditions, dict):
         return False
     if "all" in conditions:
-        return all(matches(item, state) for item in conditions["all"])
+        return all(matches(item, state, turn) for item in conditions["all"])
     if "any" in conditions:
-        return any(matches(item, state) for item in conditions["any"])
+        return any(matches(item, state, turn) for item in conditions["any"])
     if "not" in conditions:
-        return not matches(conditions["not"], state)
+        return not matches(conditions["not"], state, turn)
     kind = conditions.get("kind")
     if kind == "resource":
         amount = state.resources.get(conditions["id"])
@@ -27,7 +30,7 @@ def matches(conditions: Any, state: WorldState) -> bool:
     if kind == "flag":
         return state.flags.get(conditions["key"]) == conditions.get("value", True)
     if kind == "turn":
-        return state.turn == int(conditions["value"])
+        return turn == int(conditions["value"])
     if kind == "region_stat":
         region = state.regions.get(conditions["region"])
         if not region:

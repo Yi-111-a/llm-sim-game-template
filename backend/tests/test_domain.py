@@ -203,3 +203,69 @@ def test_session_replay_hash_and_fork_divergence(tmp_path) -> None:
     fork.append_op({"op": "adjust_resource", "resource": "treasury", "delta": 20})
     assert fork.state.resources["treasury"].amount == first_state.resources["treasury"].amount + 20
     assert fork.state.turn == 0
+
+
+def test_appointment_rejects_character_already_holding_another_office() -> None:
+    state = make_state()
+    state.offices["censor"] = Office(id="censor", name="御史")
+    state, _ = apply({"op": "appoint", "character": "minister", "office": "governor"}, state)
+    result = validate({"op": "appoint", "character": "minister", "office": "censor"}, state)
+    assert isinstance(result, Rejected)
+    assert result.code == "OFFICE_HELD"
+    state, _ = apply({"op": "dismiss", "character": "minister", "office": "governor"}, state)
+    state, _ = apply({"op": "appoint", "character": "minister", "office": "censor"}, state)
+    assert state.offices["governor"].holder is None
+    assert state.offices["censor"].holder == "minister"
+    assert state.characters["minister"].office == "censor"
+
+
+def test_new_project_must_fit_alongside_committed_project_costs() -> None:
+    state = make_state()
+    project = {
+        "op": "start_project",
+        "name": "修缮城垣",
+        "region": "capital",
+        "cost_per_turn": {"treasury": 60},
+        "turns": 2,
+    }
+    state, _ = apply(project, state)
+    result = validate({**project, "name": "疏浚河道"}, state)
+    assert isinstance(result, Rejected)
+    assert result.code == "INSUFFICIENT_RESOURCE"
+
+
+def test_turn_condition_and_when_turn_refer_to_the_same_turn() -> None:
+    state = make_state()
+    events = [
+        {"id": "by_when", "when": {"turn": 2}, "gravity": 1, "effects": [{"op": "set_flag", "key": "by_when", "value": True}]},
+        {
+            "id": "by_condition",
+            "conditions": {"kind": "turn", "value": 2},
+            "gravity": 1,
+            "effects": [{"op": "set_flag", "key": "by_condition", "value": True}],
+        },
+    ]
+    state, first = resolve_turn(state, random.Random(1), {"events": events})
+    assert first.events_fired == []
+    state, second = resolve_turn(state, random.Random(1), {"events": events})
+    assert second.turn == 2
+    assert sorted(second.events_fired) == ["by_condition", "by_when"]
+
+
+def test_drift_and_tax_income_respect_bounds_and_appear_in_ledger() -> None:
+    state = make_state()
+    state.resources["morale"] = Resource(id="morale", name="民心", amount=0.1, minimum=0, maximum=100)
+    state.resources["treasury"].maximum = 102
+    scenario = {
+        "formulas": {
+            "income": {"tax": {"resource": "treasury", "formula": "prosperity"}},
+            "drift": {"morale": "-1"},
+        }
+    }
+    state, report = resolve_turn(state, random.Random(1), scenario)
+    assert state.resources["morale"].amount == 0
+    assert state.resources["treasury"].amount == 102
+    drift_lines = [line for line in report.ledger_lines if line.kind == "drift"]
+    assert [(line.resource, line.amount) for line in drift_lines] == [("morale", -0.1)]
+    income = sum(line.amount for line in report.ledger_lines if line.kind == "income")
+    assert income == 2

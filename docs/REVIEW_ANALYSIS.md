@@ -44,7 +44,7 @@
 
 | 差评问题 | 新架构的解决方式 | 落地位置 |
 |---|---|---|
-| 付费/代币、不能 BYOK、依赖服务器（注：最新版 1.6 已加 BYOK，但推演仍由服务端编排、下发提示词，离线不可玩） | 本地运行；支持任意 OpenAI 兼容端点（含 Ollama）；内置离线 mock；每次调用的用量和估算费用都可见 | `backend/simcore/llm/`、`/api/usage`、SettingsPanel |
+| 付费/代币、不能 BYOK、依赖服务器 | 本地运行；支持任意 OpenAI 兼容端点（含 Ollama）；内置离线 mock；每次调用的用量和估算费用都可见 | `backend/simcore/llm/`、`/api/usage`、SettingsPanel |
 | 数值/账目错乱 | 数值只由确定性引擎结算；账本显式区分 one_off 和 recurring(turns)，每回合逐行列出 | `domain/ops.py`、`domain/turn.py`、LedgerPanel |
 | 状态不同步 | 单一 WorldState 实体注册表，所有面板、对话和提示词读同一份数据；死者不能任职、不能对话 | `domain/models.py`、`domain/rules.py` |
 | 指令不执行/曲解 | 诏书执行回执：每个条款都标明 applied、rejected(原因)、delayed、needs_clarification；支持常设政令 | `agent/roles.py` edict_interpreter、ReceiptPanel |

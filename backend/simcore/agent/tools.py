@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simcore.domain.apply import apply
 from simcore.domain.models import WorldState
 from simcore.domain.ops import parse_op
 from simcore.domain.rules import Rejected, validate
@@ -44,6 +45,8 @@ class AgentTools:
                 if isinstance(result, Rejected):
                     receipt.append({"op": op.model_dump(mode="json"), "status": "rejected", "reason": result.message, "code": result.code})
                 else:
+                    # 后续提案基于已接受的提案检查，预览与确认时的顺序执行一致。
+                    self.state, _ = apply(op, self.state)
                     self.proposals.append(op.model_dump(mode="json"))
                     receipt.append({"op": op.model_dump(mode="json"), "status": "applied", "reason": ""})
             except (ValueError, TypeError) as exc:

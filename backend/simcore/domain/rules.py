@@ -38,6 +38,8 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
                 return Rejected("CHARACTER_UNAVAILABLE", "人物当前不能任职")
             if office.holder not in (None, op.character):
                 return Rejected("OFFICE_OCCUPIED", "该官职已有任职者")
+            if character.office not in (None, op.office):
+                return Rejected("OFFICE_HELD", "人物已担任其他官职，需先免去原职")
             if any(
                 character.traits.get(key, 0) < value
                 for key, value in office.requires.items()
@@ -71,7 +73,8 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
             current = state.resources.get(resource)
             if current is None:
                 return Rejected("UNKNOWN_ENTITY", f"工程资源不存在：{resource}")
-            if current.amount < cost:
+            committed = sum(project.cost_per_turn.get(resource, 0) for project in state.projects)
+            if current.amount - committed < cost:
                 return Rejected("INSUFFICIENT_RESOURCE", f"{current.name}不足，无法支付首期工程款")
     if op.op == "adjust_region" and (
         op.region not in state.regions or op.stat not in state.regions[op.region].stats
