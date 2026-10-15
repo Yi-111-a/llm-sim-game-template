@@ -10,6 +10,7 @@ dist/
 .ruff_cache/
 __pycache__/
 *.py[cod]
+*.egg-info/
 *.jsonl
 .llm-sim/
 settings.json
