@@ -135,23 +135,26 @@ def validate_scenario(data_or_path: dict[str, Any] | str | Path) -> list[str]:
                 except ValueError:
                     errors.append(f"资产 {entry.id} 路径不能离开场景目录")
 
-    for character_id in sorted(ids["character"]):
-        asset_id = f"character.{character_id}.portrait"
-        if asset_id not in entries:
-            errors.append(f"人物 {character_id} 缺少必需资产 {asset_id}")
-    for asset_id in (
-        "ui.topbar.background",
-        "ui.edict.parchment",
-        "ui.court.backdrop",
-        "ui.map.base",
-        "ui.memorial.banner",
-    ):
+    requirements = _asset_requirements(data.get("scenario", {}))
+    character_pattern = requirements["character"]
+    if character_pattern:
+        for character_id in sorted(ids["character"]):
+            asset_id = character_pattern.format(id=character_id)
+            if asset_id not in entries:
+                errors.append(f"人物 {character_id} 缺少必需资产 {asset_id}")
+    for asset_id in requirements["ui"]:
         if asset_id not in entries:
             errors.append(f"场景缺少必需 UI 资产 {asset_id}")
-    for region_id in sorted(ids["region"]):
-        asset_id = f"region.{region_id}.card"
-        if asset_id not in entries:
-            errors.append(f"地区 {region_id} 缺少必需资产 {asset_id}")
+    region_pattern = requirements["region"]
+    if region_pattern:
+        for region_id in sorted(ids["region"]):
+            asset_id = region_pattern.format(id=region_id)
+            if asset_id not in entries:
+                errors.append(f"地区 {region_id} 缺少必需资产 {asset_id}")
+    for ending in data.get("scenario", {}).get("endings", []) or []:
+        illustration = ending.get("illustration") if isinstance(ending, dict) else None
+        if illustration and illustration not in entries:
+            errors.append(f"结局 {ending.get('id')} 缺少插图资产 {illustration}")
     for event in events:
         if not isinstance(event, dict):
             errors.append("events.yaml 含非对象事件")
@@ -485,3 +488,31 @@ def _initial_offices(row: dict[str, Any]) -> list[str]:
 
 def scenario_json_schema() -> dict[str, Any]:
     return ScenarioDocument.model_json_schema()
+
+
+DEFAULT_ASSET_REQUIREMENTS: dict[str, Any] = {
+    "character": "character.{id}.portrait",
+    "region": "region.{id}.card",
+    "ui": [
+        "ui.topbar.background",
+        "ui.edict.parchment",
+        "ui.court.backdrop",
+        "ui.map.base",
+        "ui.memorial.banner",
+    ],
+}
+
+
+def _asset_requirements(scenario: Any) -> dict[str, Any]:
+    """Required asset ids; scenario.yaml `asset_requirements` overrides each key (null disables a pattern)."""
+    configured = scenario.get("asset_requirements", {}) if isinstance(scenario, dict) else {}
+    if not isinstance(configured, dict):
+        configured = {}
+    result = dict(DEFAULT_ASSET_REQUIREMENTS)
+    for key in ("character", "region"):
+        if key in configured:
+            value = configured[key]
+            result[key] = value if isinstance(value, str) and "{id}" in value else None
+    if "ui" in configured:
+        result["ui"] = [item for item in configured["ui"] or [] if isinstance(item, str)]
+    return result
