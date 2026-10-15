@@ -47,6 +47,7 @@ settings:
   afterlife_chat: false
   max_concurrent_offices: 2
   player_faction: court
+  player_character: ruler
   hidden_traits: [ambition]
 crisis:
   resource: risk

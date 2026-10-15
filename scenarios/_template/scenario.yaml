@@ -44,3 +44,4 @@ formulas:
 settings:
   afterlife_chat: false
   history_gravity_default: 0.5
+  player_office: sovereign   # 玩家本人 = 此官职的在任者（也可写 player_character: <人物 id>）；不出现在召对名单

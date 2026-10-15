@@ -7,6 +7,8 @@ from typing import Any
 from simcore.domain.events import matches
 from simcore.domain.models import WorldState
 from simcore.domain.ops import parse_op
+from simcore.domain.rules import STATUS_NAMES, entity_name, stat_name, trait_name
+from simcore.domain.visibility import format_number
 
 
 class MemorialError(ValueError):
@@ -91,14 +93,24 @@ def adopted_ops(scenario: dict[str, Any], state: WorldState, memorial_id: str, o
     return [parse_op(op).model_dump(mode="json") for op in option.get("ops", []) or []]
 
 
+INTERNAL_OPS = frozenset({"set_flag", "adjust_counter", "set_counter"})
+INTERNAL_SUMMARY = "记入档案（影响后续事件）"
+
+
 def summarize_ops(ops: list[dict[str, Any]], state: WorldState) -> list[str]:
-    """把 ops 写成简短中文摘要，供奏疏卡片与 MCP 简报使用。"""
+    """把 ops 写成简短中文摘要，供奏疏卡片与 MCP 简报使用。
+
+    旗标 / 计数等内部操作不暴露键名，合并为一句「记入档案（影响后续事件）」。
+    """
     lines: list[str] = []
     for raw in ops:
         try:
-            lines.append(summarize_op(raw, state))
+            line = summarize_op(raw, state)
         except (KeyError, TypeError, ValueError):
-            lines.append(str(raw.get("op", "?")) if isinstance(raw, dict) else "?")
+            line = str(raw.get("op", "?")) if isinstance(raw, dict) else "?"
+        if line == INTERNAL_SUMMARY and line in lines:
+            continue
+        lines.append(line)
     return lines
 
 
@@ -119,19 +131,19 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
 
     def signed(value: Any) -> str:
         number = float(value)
-        text = str(int(number)) if number == int(number) else f"{number:g}"
-        return f"+{text}" if number >= 0 else f"−{text.lstrip('-')}"
+        text = format_number(abs(number))
+        return f"+{text}" if number >= 0 else f"−{text}"
 
+    if op in INTERNAL_OPS:
+        return INTERNAL_SUMMARY
     if op == "adjust_resource":
         return f"{name('resource', raw['resource'])} {signed(raw['delta'])}"
-    if op == "set_flag":
-        return f"旗标 {raw['key']}"
     if op == "appoint":
         return f"任 {name('character', raw['character'])} 为 {name('office', raw['office'])}"
     if op == "dismiss":
         return f"免 {name('character', raw['character'])} {name('office', raw['office'])}"
     if op == "adjust_region":
-        return f"{name('region', raw['region'])}{raw['stat']} {signed(raw['delta'])}"
+        return f"{name('region', raw['region'])}{stat_name(state, raw['stat'])} {signed(raw['delta'])}"
     if op == "start_project":
         return f"兴工「{raw['name']}」{raw['turns']} 季"
     if op == "add_ledger":
@@ -147,11 +159,11 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
     if op == "set_army_commander":
         return f"{name('army', raw['army'])} 由 {name('character', raw.get('character'))} 统领"
     if op == "adjust_trait":
-        return f"{name('character', raw['character'])} {raw['trait']} {signed(raw['delta'])}"
+        return f"{name('character', raw['character'])} {trait_name(state, raw['trait'])} {signed(raw['delta'])}"
     if op == "adjust_relation":
-        return f"{raw['a']}↔{raw['b']} 关系 {signed(raw['delta'])}"
+        return f"{entity_name(state, raw['a'])}↔{entity_name(state, raw['b'])} 关系 {signed(raw['delta'])}"
     if op == "remember":
         return f"{name('character', raw['character'])} 记下：{raw['fact']}"
     if op == "set_character_status":
-        return f"{name('character', raw['character'])} → {raw['status']}"
+        return f"{name('character', raw['character'])} {STATUS_NAMES.get(raw['status'], raw['status'])}"
     return str(op)

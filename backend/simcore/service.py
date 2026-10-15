@@ -16,20 +16,28 @@ from typing import Any
 from simcore.agent.debate import debate_speeches, debate_summary, decide_stances, persona_card
 from simcore.agent.loop import AgentAborted
 from simcore.agent.roles import chat_availability, interpret_edict, minister_chat_messages, narrator
+from simcore.agent.tools import AgentTools
 from simcore.config import load_settings
 from simcore.domain.apply import OpRejected
 from simcore.domain.digest import render_digest
 from simcore.domain.events import matches
-from simcore.domain.memorials import summarize_ops, visible_memorials
+from simcore.domain.memorials import is_visible, memorial_flag, summarize_ops, visible_memorials
 from simcore.domain.models import TurnReport, WorldState
 from simcore.domain.ops import OP_NAMES, op_json_schema
-from simcore.domain.rules import held_offices
+from simcore.domain.rules import held_offices, player_character_id
 from simcore.domain.turn import GameOver
-from simcore.domain.visibility import fact_line, public_crisis, public_report, public_view, redacted_report, resource_display
+from simcore.domain.visibility import (
+    fact_line,
+    public_crisis,
+    public_report,
+    public_view,
+    redacted_report,
+    resource_display,
+)
 from simcore.llm.base import LLMProvider
 from simcore.llm.factory import create_provider
 from simcore.scenario.loader import build_initial_state, load_scenario, validate_scenario
-from simcore.store.session import SessionStore
+from simcore.store.session import SessionStore, state_hash
 
 ENGINE_VERSION = "0.2.0"
 
@@ -50,6 +58,7 @@ ERROR_STATUS = {
     "EDICT_STALE": 409,
     "ABORTED": 409,
     "CHARACTER_UNAVAILABLE": 409,
+    "PLAYER_CHARACTER": 422,
     "DEBUG_DISABLED": 403,
     "PROVIDER_ERROR": 502,
     "TIMEOUT": 504,
@@ -63,6 +72,12 @@ ROLEPLAY_RULES = """## 扮演与数字规则（必须遵守）
 4. 只叙述已执行的事实（end_turn 返回的事实与纪事）；未发生的事不得写成已发生。
 5. 扮演人物时，以 audience 返回的人设卡与该人物可知的事实摘要为限；死者、系狱者不能应答。
 6. 廷议的立场由引擎给定（court_debate），你只能据此写台词，不得改变立场；廷议结论只能作为谏言（save_advice），不能直接变成操作。"""
+
+
+def _role_label(state: WorldState, character: Any) -> str:
+    """人物的身份标签：有官职列官职名，否则用头衔（如 高力士 骠骑大将军、知内侍省事）。"""
+    offices = [state.offices[office].name for office in held_offices(character) if office in state.offices]
+    return "、".join(offices) if offices else str(character.title or "")
 
 
 class GameError(Exception):
@@ -106,7 +121,6 @@ class GameService:
         self.sessions: dict[str, SessionStore] = {}
         self.session_mtimes: dict[str, float] = {}
         self.scenarios: dict[str, dict[str, Any]] = {}
-        self.drafts: dict[tuple[str, str], dict[str, Any]] = {}
         self.abort_events: dict[str, asyncio.Event] = {}
 
     # ---- 场景与存档 -------------------------------------------------------------
@@ -238,8 +252,7 @@ class GameService:
         session = self.session(session_id)
         self.sessions.pop(session_id, None)
         self.session_mtimes.pop(session_id, None)
-        for key in [key for key in self.drafts if key[0] == session_id]:
-            self.drafts.pop(key, None)
+        session.delete_drafts()
         session.path.unlink(missing_ok=True)
         return {"deleted": True, "id": session_id}
 
@@ -352,7 +365,10 @@ class GameService:
             op = clause.get("op")
             clause["summary"] = summarize_ops([op], state)[0] if isinstance(op, dict) and op else ""
         receipt["base_turn"] = state.turn
-        self.drafts[(session_id, receipt["id"])] = receipt
+        receipt["base_head"] = session.head_id
+        receipt["base_hash"] = state_hash(state)
+        # 草案写进存档旁的 <session>.drafts.json：进程重启（每次调用都重启的 MCP）与桌面应用都能确认。
+        session.save_draft(receipt, current_turn=state.turn)
         return receipt
 
     def abort(self, session_id: str) -> dict[str, bool]:
@@ -365,33 +381,83 @@ class GameService:
         return {"aborted": True}
 
     def confirm_edict(self, session_id: str, edict_id: str) -> dict[str, Any]:
+        """确认草案。草案从存档旁的 drafts 文件读取；回合已推进则 EDICT_STALE；
+        自拟诏以来状态有变（抉择、另一道诏书、回退等）则逐条重新校验，变化的条款带 changed / previous_status。"""
         session = self.session(session_id)
-        receipt = self.drafts.get((session_id, edict_id))
+        receipt = session.load_draft(edict_id)
         if receipt is None:
             raise GameError("EDICT_NOT_FOUND", "诏令草案不存在或已过期")
         if receipt.get("confirmed"):
             raise GameError("EDICT_CONFIRMED", "诏令已经确认")
-        state = session.state
+        state = session.head_state()
         if state.outcome is not None:
             raise GameError("GAME_OVER", f"本局已终局（{state.outcome.title}），不能再下诏")
         if receipt.get("base_turn") != state.turn:
             raise GameError("EDICT_STALE", "回合已推进，此草案已失效，请重新拟诏")
-        for clause in receipt["clauses"]:
-            if clause["status"] == "applied" and clause.get("op"):
-                try:
-                    session.append_op(clause["op"])
-                except ValueError as exc:
-                    clause["status"] = "rejected"
-                    clause["reason"] = getattr(exc, "message", str(exc))
-                    clause["code"] = getattr(exc, "code", "INVALID_TARGET")
-            elif clause["status"] == "delayed" and clause.get("op"):
-                session.append_pending([clause["op"]], session.state.turn + 1)
-        for adopted in receipt.get("adopted", []):
-            session.append_op({"op": "set_flag", "key": f"memorial:{adopted['memorial_id']}", "value": adopted["option_id"]})
+        # 日志头未动则状态必然未变；头变了（召对消息等不改状态的条目也会移动它）再比较状态哈希。
+        state_changed = receipt.get("base_head") != session.head_id and receipt.get("base_hash") != state_hash(state)
+        receipt["state_changed"] = state_changed
+        receipt["changed_clauses"] = self._revalidate_draft(session, state, receipt) if state_changed else []
+        clauses: list[dict[str, Any]] = receipt["clauses"]
+        runnable = [clause for clause in clauses if clause["status"] == "applied" and clause.get("op")]
+        for clause, result in zip(runnable, session.append_ops([clause["op"] for clause in runnable]), strict=True):
+            if not result["ok"]:
+                clause["status"] = "rejected"
+                clause["reason"] = result["message"]
+                clause["code"] = result["code"]
+        delayed: dict[Any, list[dict[str, Any]]] = {}
+        for index, clause in enumerate(clauses):
+            if clause["status"] == "delayed" and clause.get("op"):
+                delayed.setdefault(clause.get("group", f"clause-{index}"), []).append(clause["op"])
+        for ops in delayed.values():
+            # 同组（同一奏疏选项 / 同一段诏令）的延期条款排成一个延期包，下季一并执行。
+            session.append_pending(ops, state.turn + 1)
+        flags = [
+            {"op": "set_flag", "key": memorial_flag(str(row["memorial_id"])), "value": row["option_id"]}
+            for row in receipt.get("adopted", [])
+        ]
+        if flags:
+            session.append_ops(flags)
         self.touch(session_id)
         receipt["confirmed"] = True
-        receipt["state"] = public_view(session.state, session.seed)
+        session.save_draft(receipt)
+        receipt["execution_rate"] = (
+            sum(clause["status"] == "applied" for clause in clauses) / len(clauses) if clauses else 1
+        )
+        receipt["state"] = public_view(session.head_state(), session.seed)
         return receipt
+
+    def _revalidate_draft(self, session: SessionStore, state: WorldState, receipt: dict[str, Any]) -> list[int]:
+        """按当前状态重演草案：已处理/过期的奏疏整组作废，applied / delayed 条款逐条重新校验（延期骰结果保留）。
+
+        返回状态有变的条款序号（从 1 起）。原先被拒的条款保持被拒，不会因状态变化而悄悄生效。
+        """
+        memorials = {str(row.get("id")): row for row in session.scenario.get("memorials") or [] if isinstance(row, dict)}
+        unavailable = {
+            str(row["memorial_id"])
+            for row in receipt.get("adopted", [])
+            if str(row["memorial_id"]) not in memorials or not is_visible(memorials[str(row["memorial_id"])], state)
+        }
+        receipt["adopted"] = [row for row in receipt.get("adopted", []) if str(row["memorial_id"]) not in unavailable]
+        tools = AgentTools(state)
+        changed: list[int] = []
+        for index, clause in enumerate(receipt["clauses"], start=1):
+            previous = clause["status"]
+            if clause.get("memorial_id") in unavailable and previous != "rejected":
+                clause.update({
+                    "status": "rejected",
+                    "reason": "此奏疏已被处理或已过期（拟诏之后状态有变）",
+                    "code": "MEMORIAL_UNAVAILABLE",
+                })
+            elif previous in {"applied", "delayed"} and clause.get("op"):
+                result = tools.propose_ops([clause["op"]])[0]
+                if result["status"] == "rejected":
+                    clause.update({"status": "rejected", "reason": result.get("reason", ""), "code": result.get("code")})
+            if clause["status"] != previous:
+                clause["changed"] = True
+                clause["previous_status"] = previous
+                changed.append(index)
+        return changed
 
     # ---- 抉择与回合 ---------------------------------------------------------------
 
@@ -448,10 +514,20 @@ class GameService:
             raise GameError("UNKNOWN_CHARACTER", f"人物不存在：{character_id}")
         return character
 
+    def player_character(self, session: SessionStore, state: WorldState | None = None) -> str | None:
+        """玩家扮演的人物（场景 settings.player_character，或 settings.player_office 的在任者）。"""
+        return player_character_id(state or session.head_state(), self.definition(session).get("settings") or {})
+
+    def _reject_player(self, session: SessionStore, state: WorldState, character_id: str) -> None:
+        if character_id and character_id == self.player_character(session, state):
+            name = state.characters[character_id].name if character_id in state.characters else character_id
+            raise GameError("PLAYER_CHARACTER", f"{name}是玩家本人，不能召对或与议")
+
     def audience_card(self, session_id: str, character_id: str) -> dict[str, Any]:
         session = self.session(session_id)
-        state = session.state
+        state = session.head_state()
         character = self._character(state, character_id)
+        self._reject_player(session, state, character_id)
         afterlife = bool(self.definition(session).get("settings", {}).get("afterlife_chat", False))
         refusal = chat_availability(character_id, state, afterlife)
         if refusal is not None:
@@ -480,16 +556,19 @@ class GameService:
 
     def chat_prepare(self, session_id: str, character_id: str) -> tuple[SessionStore, dict[str, str] | None]:
         session = self.session(session_id)
-        state = session.state
+        state = session.head_state()
+        if character_id in state.characters:
+            self._reject_player(session, state, character_id)
         afterlife = bool(self.definition(session).get("settings", {}).get("afterlife_chat", False))
         return session, chat_availability(character_id, state, afterlife)
 
-    def _debate_participants(self, state: WorldState, participants: list[str]) -> list[str]:
+    def _debate_participants(self, session: SessionStore, state: WorldState, participants: list[str]) -> list[str]:
         unique = list(dict.fromkeys(participants))
         if not 1 <= len(unique) <= 6:
             raise GameError("INVALID_REQUEST", "廷议参与者须为 1 到 6 人")
         for character_id in unique:
             character = self._character(state, character_id)
+            self._reject_player(session, state, character_id)
             if character.status != "alive":
                 raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}不在朝，不能与议")
         return unique
@@ -498,7 +577,7 @@ class GameService:
         """client 模式：只给立场与人设，由调用方模型写台词。"""
         session = self.session(session_id)
         state = session.state
-        unique = self._debate_participants(state, participants)
+        unique = self._debate_participants(session, state, participants)
         stances = decide_stances(state, session.scenario, topic, unique)
         for row in stances:
             row["persona"] = persona_card(state, row["character"])
@@ -515,7 +594,7 @@ class GameService:
         state = session.state
         if not topic.strip():
             raise GameError("INVALID_REQUEST", "廷议议题不能为空")
-        unique = self._debate_participants(state, participants)
+        unique = self._debate_participants(session, state, participants)
         stances = decide_stances(state, session.scenario, topic, unique)
         try:
             speeches = await debate_speeches(
@@ -572,13 +651,9 @@ class GameService:
         lines.extend(f"- {resource_display(state, key, session.seed)}" for key in state.resources)
         crisis = view["crisis"]
         if crisis:
-            value = crisis["value_or_estimate"]
-            value_text = f"约{value[0]}–{value[1]}（风闻）" if isinstance(value, list) else str(value)
-            lines.append(f"\n## 危机计：{crisis['title']} {value_text}（{crisis['band']}）")
+            lines.append(f"\n## 危机计：{crisis['title']} {crisis['display']}（{crisis['band']}）")
             for term in crisis["terms"]:
-                term_value = term["value"]
-                text = f"约{term_value[0]}–{term_value[1]}（风闻）" if isinstance(term_value, list) else str(term_value)
-                lines.append(f"- 分项 {term['label']}：{text}")
+                lines.append(f"- 分项 {term['label']}：{term['display']}")
         if view["memorials"]:
             lines.append("\n## 本季奏疏（可在 draft_edict 的 adopted 中采纳：{memorial_id, option_id}）")
             for item in view["memorials"]:
@@ -603,15 +678,16 @@ class GameService:
                 )
         report = view["last_report"]
         if report:
-            facts = [fact_line(fact) for fact in report.get("facts", []) if fact.get("kind") not in {"flag", "counter"}]
+            facts = [fact_line(fact) for fact in report.get("facts", [])]
             lines.append("\n## 上季事实")
             lines.extend(f"- {fact}" for fact in facts[:40]) if facts else lines.append("- （无）")
             if report.get("battles"):
                 lines.append("战报：" + "；".join(f"{row['region_name']}：{row['result']}" for row in report["battles"]))
+        player = self.player_character(session, state)
         people = [
-            f"{row.name}（{row.id}{'，' + '、'.join(state.offices[o].name for o in held_offices(row) if o in state.offices) if held_offices(row) else ''}）"
+            f"{row.name}（{row.id}{'，' + role if (role := _role_label(state, row)) else ''}）"
             for row in state.characters.values()
-            if row.status == "alive"
+            if row.status == "alive" and row.id != player
         ]
         lines.append("\n## 可召对人物\n" + "；".join(people))
         lines.append("\n" + ROLEPLAY_RULES)

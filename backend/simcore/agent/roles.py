@@ -65,7 +65,8 @@ async def interpret_edict(
     """生成诏书草案回执（不改变状态）。
 
     处理顺序：采纳的奏疏选项（source=memorial）→ 客户端模型直接给出的 ops（source=client）
-    → 各类别诏令文本经 LLM 解释（source=text）。所有条款按顺序累积预演，并按同一种子 RNG 判定延期。
+    → 各类别诏令文本经 LLM 解释（source=text）。所有条款按顺序累积预演，并按同一种子 RNG 判定延期：
+    每个奏疏选项、每条客户端 op、每段诏令文本各掷一次（同组条款带相同 group，整组一起执行或一起延期）。
     provider 为 None（MCP client 模式）时，文本只记为 narrative_only。
     """
     tools = AgentTools(state)
@@ -76,13 +77,20 @@ async def interpret_edict(
     deadline = asyncio.get_running_loop().time() + 120
     accepted_memorials: list[dict[str, str]] = []
 
+    group_counter = 0
+
     def add_clauses(receipt: list[dict[str, Any]], base: dict[str, Any]) -> None:
+        """一组条款（一个奏疏选项 / 一条客户端 op / 一段诏令文本）只掷一次延期骰，组内 ops 同进同退。"""
+        nonlocal group_counter
+        group_counter += 1
+        delayed = any(item["status"] == "applied" for item in receipt) and rng.random() < _delay_probability(execution, state)
         for item in receipt:
             status = item["status"]
-            if status == "applied" and rng.random() < _delay_probability(execution, state):
+            if status == "applied" and delayed:
                 status = "delayed"
             clauses.append({
                 **base,
+                "group": group_counter,
                 "status": status,
                 "op": item.get("op"),
                 "reason": item.get("reason", ""),
@@ -115,8 +123,8 @@ async def interpret_edict(
             clauses.append({**base, "status": "narrative_only", "op": None, "reason": "此选项不改变状态", "code": None})
             continue
         add_clauses(tools.propose_ops(operations), base)
-    if client_ops:
-        add_clauses(tools.propose_ops(list(client_ops)), {"category": "client", "text": "", "source": "client"})
+    for client_op in client_ops or []:
+        add_clauses(tools.propose_ops([client_op]), {"category": "client", "text": "", "source": "client"})
 
     for index, (category, text) in enumerate(sections.items()):
         if index >= 12:

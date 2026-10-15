@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import random
 from typing import Any
 
 from simcore.domain.crisis import band_for, evaluate_terms, expression_names, formula_values, interval_evaluate
-from simcore.domain.models import TurnReport, WorldState
+from simcore.domain.models import TurnReport, WorldState, is_internal_fact
 
 DEFAULT_HIDDEN_WIDTH = 10.0
 
@@ -46,7 +47,7 @@ def hidden_traits(state: WorldState) -> set[str]:
 def public_resource(state: WorldState, resource_id: str, seed: int) -> dict[str, Any]:
     row = state.resources[resource_id]
     if not row.hidden:
-        return row.model_dump(mode="json")
+        return {**row.model_dump(mode="json"), "display": resource_display(state, resource_id, seed)}
     return {
         "id": row.id,
         "name": row.name,
@@ -55,6 +56,7 @@ def public_resource(state: WorldState, resource_id: str, seed: int) -> dict[str,
         "unit": row.unit,
         "minimum": row.minimum,
         "maximum": row.maximum,
+        "display": resource_display(state, resource_id, seed),
     }
 
 
@@ -77,8 +79,8 @@ def resource_display(state: WorldState, resource_id: str, seed: int) -> str:
     row = state.resources[resource_id]
     if row.hidden:
         low, high = estimate_interval(state, resource_id, seed)
-        return f"{row.name} 约{_number(low)}–{_number(high)}{row.unit}（风闻）"
-    return f"{row.name} {_number(row.amount)}{row.unit}"
+        return f"{row.name} 约{format_number(low)}–{format_number(high)}{row.unit}（风闻）"
+    return f"{row.name} {format_number(row.amount)}{row.unit}"
 
 
 def public_crisis(
@@ -118,11 +120,18 @@ def public_crisis(
             term_value = list(term_value) if term_value is not None else None
         else:
             term_value = exact_terms.get(term.get("id"), {}).get("value")
-        public_terms.append({"id": term.get("id"), "label": term.get("label", term.get("id")), "value": term_value, "estimated": uses_hidden})
+        public_terms.append({
+            "id": term.get("id"),
+            "label": term.get("label", term.get("id")),
+            "value": term_value,
+            "estimated": uses_hidden,
+            "display": format_value(term_value) + ("（风闻）" if uses_hidden and term_value is not None else ""),
+        })
     return {
         "title": crisis.get("title", resource.name if resource else ""),
         "resource": resource_id,
         "value_or_estimate": value,
+        "display": format_value(value) + ("（风闻）" if isinstance(value, list) else ""),
         "band": band_for(center, crisis.get("bands", []) or []),
         "bands": crisis.get("bands", []) or [],
         "terms": public_terms,
@@ -135,28 +144,41 @@ def public_report(
     seed: int,
     crisis: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """把 TurnReport 中涉及隐藏资源/隐藏心态的数值抹去，危机分项换成公开版。"""
+    """把 TurnReport 中涉及隐藏资源/隐藏心态的数值抹去，危机分项换成公开版。
+
+    内部事实（旗标、计数、人物记忆等，见 is_internal_fact）不进入 facts；仅在 SIM_DEBUG=1 时另列于 internal_facts。
+    每条事实与账目行附 display（玩家可读的一行文字，数字至多一位小数）；JSON 数值字段保持原始浮点。
+    """
     if report is None:
         return None
     data = report.model_dump(mode="json") if isinstance(report, TurnReport) else dict(report)
     hidden = hidden_resources(state)
     secret_traits = hidden_traits(state)
     facts = []
+    internal = []
     for fact in data.get("facts", []):
         fact = dict(fact)
+        if is_internal_fact(fact):
+            internal.append(fact)
+            continue
         if fact.get("kind") == "resource" and fact.get("entity") in hidden:
             name = state.resources[fact["entity"]].name
             fact.update({"text": f"{name}有所变动（数值不明）", "before": None, "after": None})
-        if fact.get("kind") == "trait" and any(str(fact.get("text", "")).endswith(f"：{trait}") for trait in secret_traits):
-            fact.update({"text": "某人心态有所变化", "before": None, "after": None})
+        if fact.get("kind") == "trait" and _secret_trait(fact, secret_traits):
+            fact.update({"text": "某人心态有所变化", "before": None, "after": None, "key": None})
+        fact["display"] = fact_line(fact)
         facts.append(fact)
     data["facts"] = facts
+    if os.environ.get("SIM_DEBUG") == "1":
+        data["internal_facts"] = internal
     lines = []
     for line in data.get("ledger_lines", []):
         line = dict(line)
         if line.get("resource") in hidden:
             line["amount"] = None
             line["reason"] = "数值不明"
+        amount = line.get("amount")
+        line["display"] = f"{line.get('name', '')} {'数值不明' if amount is None else format_number(amount, signed=True)}"
         lines.append(line)
     data["ledger_lines"] = lines
     if data.get("crisis"):
@@ -164,18 +186,47 @@ def public_report(
     return data
 
 
-def _number(value: float) -> str:
+def _secret_trait(fact: dict[str, Any], secret_traits: set[str]) -> bool:
+    key = fact.get("key")
+    if key is not None:
+        return str(key) in secret_traits
+    return any(str(fact.get("text", "")).endswith(f"：{trait}") for trait in secret_traits)  # 旧存档的事实文本
+
+
+def format_number(value: float | int, signed: bool = False) -> str:
+    """玩家可见的数字：至多一位小数，去掉末尾的 0（235.5、60、-3）；signed=True 时正数带 +。"""
     rounded = round(float(value), 1)
-    return str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}"
+    if rounded == 0:
+        rounded = 0.0  # 避免 -0
+    text = str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}"
+    return f"+{text}" if signed and rounded > 0 else text
+
+
+def format_value(value: Any) -> str:
+    """数字或风闻区间 [lo, hi] 的显示文字；其他值原样转字符串。"""
+    if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(item, (int, float)) for item in value):
+        return f"约{format_number(value[0])}–{format_number(value[1])}"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return format_number(value)
+    return "—" if value is None else str(value)
+
+
+_number = format_number
 
 
 def redacted_report(report: TurnReport, state: WorldState) -> TurnReport:
-    """给叙事 LLM 用的 TurnReport：隐藏资源的事实不带数值，隐藏资源的账目行被移除。"""
+    """给叙事 LLM 用的 TurnReport：去掉内部事实；隐藏资源的事实不带数值，隐藏资源的账目行被移除。"""
     hidden = hidden_resources(state)
+    secret_traits = hidden_traits(state)
     redacted = report.model_copy(deep=True)
+    redacted.facts = [fact for fact in redacted.facts if not is_internal_fact(fact)]
     for fact in redacted.facts:
         if fact.kind == "resource" and fact.entity in hidden:
             fact.text = f"{state.resources[fact.entity].name}有所变动"
+            fact.before = None
+            fact.after = None
+        if fact.kind == "trait" and _secret_trait(fact.model_dump(), secret_traits):
+            fact.text = "某人心态有所变化"
             fact.before = None
             fact.after = None
     redacted.ledger_lines = [line for line in redacted.ledger_lines if line.resource not in hidden]
@@ -189,5 +240,5 @@ def fact_line(fact: dict[str, Any]) -> str:
     before, after = fact.get("before"), fact.get("after")
     numeric = all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (before, after))
     if numeric and fact.get("kind") in {"resource", "region", "army", "relation", "trait", "counter"}:
-        return f"{text}（{_number(before)}→{_number(after)}）"
+        return f"{text}（{format_number(before)}→{format_number(after)}）"
     return text

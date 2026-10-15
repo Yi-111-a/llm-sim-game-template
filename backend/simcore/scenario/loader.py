@@ -19,6 +19,7 @@ from simcore.domain.models import (
     Region,
     Resource,
     WorldState,
+    clone_data,
 )
 from simcore.domain.ops import parse_op
 from simcore.images.manifest import asset_path
@@ -38,19 +39,45 @@ MAX_SCENARIO_FILES = 1_000
 MAX_IMAGE_DIMENSION = 4_096
 
 
+_YAML_LOADER: Any = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+_SCENARIO_CACHE: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+
+
+def yaml_load(text: str) -> Any:
+    """safe_load 的快速版：有 libyaml 时用 C 实现（语义同 SafeLoader）。"""
+    return yaml.load(text, Loader=_YAML_LOADER)  # noqa: S506 - 只用 SafeLoader / CSafeLoader
+
+
+def _files_signature(root: Path) -> tuple[Any, ...]:
+    signature: list[tuple[str, int | None, int | None]] = []
+    for filename in ("scenario.yaml", *SCENARIO_FILES):
+        try:
+            stat = (root / filename).stat()
+            signature.append((filename, stat.st_mtime_ns, stat.st_size))
+        except OSError:
+            signature.append((filename, None, None))
+    return tuple(signature)
+
+
 def load_scenario(path: str | Path) -> dict[str, Any]:
+    """读取场景目录。解析结果按文件 mtime/size 缓存；每次返回独立的深拷贝，调用方可随意修改。"""
     root = Path(path).resolve()
     scenario_path = root / "scenario.yaml"
     if not scenario_path.is_file():
         raise FileNotFoundError(f"Missing scenario.yaml in {root}")
+    signature = _files_signature(root)
+    cached = _SCENARIO_CACHE.get(str(root))
+    if cached is not None and cached[0] == signature:
+        return clone_data(cached[1])
     result: dict[str, Any] = {"root": str(root)}
     for filename in ("scenario.yaml", *SCENARIO_FILES):
         file_path = root / filename
         if file_path.exists():
-            result[filename.removesuffix(".yaml")] = yaml.safe_load(file_path.read_text(encoding="utf-8")) or {}
+            result[filename.removesuffix(".yaml")] = yaml_load(file_path.read_text(encoding="utf-8")) or {}
         elif filename != "scenario.yaml":
             result[filename.removesuffix(".yaml")] = []
-    return result
+    _SCENARIO_CACHE[str(root)] = (signature, result)
+    return clone_data(result)
 
 
 def validate_scenario(data_or_path: dict[str, Any] | str | Path) -> list[str]:
@@ -349,7 +376,7 @@ def _load_for_validation(root: Path) -> tuple[dict[str, Any], list[str]]:
             data[key] = {"entries": []} if filename == "assets.yaml" else []
             continue
         try:
-            data[key] = yaml.safe_load(path.read_text(encoding="utf-8"))
+            data[key] = yaml_load(path.read_text(encoding="utf-8"))
             if data[key] is None:
                 data[key] = {"entries": []} if filename == "assets.yaml" else []
         except (OSError, yaml.YAMLError) as exc:
@@ -415,6 +442,13 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
     factions = {row["id"]: Faction(**row) for row in data.get("factions", []) or []}
     rules: dict[str, Any] = dict(scenario.settings)
     rules.setdefault("max_concurrent_offices", 1)
+    stat_names = {
+        str(row.get("id")): str(row.get("name", row.get("id")))
+        for row in data["scenario"].get("stats", []) or []
+        if isinstance(row, dict) and row.get("id") is not None
+    }
+    if stat_names:
+        rules.setdefault("stat_names", stat_names)
     if factions:
         rules.setdefault("player_faction", next(iter(factions)))
     main_faction = rules.get("player_faction")

@@ -74,7 +74,7 @@ def test_memorial_visibility_window_conditions_and_adoption(mech_scenario) -> No
     assert [item["id"] for item in visible_memorials(mech_scenario, state)] == ["m_tax"]
     item = visible_memorials(mech_scenario, state)[0]
     assert item["advisors"][0]["name"] == "李相"
-    assert item["options"][0]["ops_summary"] == ["国库 −50", "旗标 tax_cut"]
+    assert item["options"][0]["ops_summary"] == ["国库 −50", "记入档案（影响后续事件）"]
     ops = adopted_ops(mech_scenario, state, "m_tax", "approve")
     assert ops[0]["op"] == "adjust_resource"
     with pytest.raises(MemorialError) as missing:

@@ -52,3 +52,4 @@ formulas:
 settings:
   afterlife_chat: false
   history_gravity_default: 0.55
+  player_character: chongzhen   # 玩家本人：不出现在召对名单

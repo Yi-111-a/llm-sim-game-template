@@ -9,10 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 from simcore.domain.models import TurnReport, WorldState
-from simcore.domain.rules import held_offices
-from simcore.domain.visibility import fact_line, public_report, resource_display
+from simcore.domain.rules import STATUS_NAMES, held_offices
+from simcore.domain.visibility import fact_line, format_number, public_report, resource_display
 
-STATUS_NAMES = {"alive": "在世", "dead": "已故", "imprisoned": "系狱", "exiled": "流放", "retired": "致仕"}
+__all__ = ["STATUS_NAMES", "digest_numbers", "render_digest"]
 
 
 def render_digest(
@@ -77,7 +77,7 @@ def render_digest(
         lines.append("【待决】" + "；".join(f"{row.title}（选项：{'/'.join(option.text for option in row.options)}）" for row in state.pending_choices))
     if report is not None:
         public = public_report(report, state, seed, definition.get("crisis")) or {}
-        facts = [fact_line(fact) for fact in public.get("facts", []) if fact.get("kind") not in {"flag", "counter"}]
+        facts = [fact_line(fact) for fact in public.get("facts", [])]
         if facts:
             lines.append("【本季事实】" + "；".join(facts[:30]))
     if state.outcome is not None:
@@ -106,6 +106,4 @@ def _office_name(state: WorldState, office_id: str) -> str:
     return office.name if office else office_id
 
 
-def _number(value: float) -> str:
-    rounded = round(float(value), 1)
-    return str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}"
+_number = format_number

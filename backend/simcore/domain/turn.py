@@ -19,6 +19,7 @@ from simcore.domain.models import (
     Resource,
     TurnReport,
     WorldState,
+    clone,
 )
 from simcore.domain.ops import parse_op
 
@@ -42,7 +43,7 @@ def resolve_turn(
     scenario = scenario or {}
     scenario_definition = scenario.get("scenario", scenario)
     target = state.turn + 1
-    updated = state.model_copy(deep=True)
+    updated = clone(state)
     report = TurnReport(turn=target)
 
     # 1. 到期的待决事件执行默认项
@@ -57,7 +58,7 @@ def resolve_turn(
     for clause in pending:
         for op in clause.ops:
             try:
-                updated, facts = apply(op, updated, turn=target)
+                updated, facts = apply(op, updated, turn=target, inplace=True)
                 report.facts.extend(facts)
             except ValueError as exc:
                 report.warnings.append(f"延期条款未执行：{exc}")
@@ -69,7 +70,7 @@ def resolve_turn(
             continue
         for op in order.ops:
             try:
-                updated, facts = apply(op, updated, turn=target)
+                updated, facts = apply(op, updated, turn=target, inplace=True)
                 report.facts.extend(facts)
             except ValueError as exc:
                 report.warnings.append(f"常设命令未执行：{exc}")
@@ -98,7 +99,7 @@ def resolve_turn(
 
     # 6. 工程
     completed: list[Any] = []
-    for project in updated.projects:
+    for project in list(updated.projects):
         if any(
             updated.resources.get(resource) is None
             or updated.resources[resource].amount < cost
@@ -118,7 +119,7 @@ def resolve_turn(
         if project.progress >= project.turns:
             for raw_op in project.on_complete:
                 try:
-                    updated, facts = apply(parse_op(raw_op), updated, turn=target)
+                    updated, facts = apply(parse_op(raw_op), updated, turn=target, inplace=True)
                     report.facts.extend(facts)
                 except ValueError as exc:
                     report.warnings.append(f"竣工效果未执行：{project.name}: {exc}")
@@ -138,7 +139,8 @@ def resolve_turn(
                 entity.region = transit["to_region"]
                 entity.in_transit = None
                 arrived.add(entity.id)
-                report.facts.append(Fact(kind="arrival", text="抵达目的地", entity=entity.id, before=before, after=entity.region))
+                destination = updated.regions[entity.region].name if entity.region in updated.regions else entity.region
+                report.facts.append(Fact(kind="arrival", text=f"{entity.name}抵达{destination}", entity=entity.id, before=before, after=entity.region))
 
     # 8. 战斗（种子 RNG 的派生流，不扰动事件掷骰序列）与 AI 行军
     wars = scenario_definition.get("wars") or []
@@ -226,7 +228,7 @@ def _resolve_default_choice(state: WorldState, choice: PendingChoice, target: in
         return state
     report.facts.append(Fact(kind="choice_default", text=f"「{choice.title}」逾期未决，依例处置：{option.text}", entity=choice.event_id, after=option.id))
     try:
-        state, facts = apply({"op": "choose_event_option", "choice_id": choice.id, "option_id": option.id}, state, turn=target)
+        state, facts = apply({"op": "choose_event_option", "choice_id": choice.id, "option_id": option.id}, state, turn=target, inplace=True)
         report.facts.extend(facts)
     except ValueError as exc:
         state.pending_choices = [row for row in state.pending_choices if row.id != choice.id]
@@ -254,7 +256,7 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
     updated = state
     for op in event.get("effects", []) or []:
         try:
-            updated, facts = apply(op, updated, turn=target)
+            updated, facts = apply(op, updated, turn=target, inplace=True)
             report.facts.extend(facts)
         except ValueError as exc:
             report.warnings.append(f"事件效果未执行：{event_id}: {exc}")

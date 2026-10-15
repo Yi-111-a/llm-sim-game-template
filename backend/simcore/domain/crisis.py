@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from functools import lru_cache
 from itertools import product
 from typing import Any
 
@@ -58,11 +59,16 @@ def crisis_report(crisis: dict[str, Any] | None, state: WorldState, terms: list[
 def expression_names(expression: str | int | float) -> set[str]:
     if not isinstance(expression, str):
         return set()
+    return set(_expression_names(expression))
+
+
+@lru_cache(maxsize=4096)
+def _expression_names(expression: str) -> frozenset[str]:
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:
-        return set()
-    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} - {"min", "max", "clamp"}
+        return frozenset()
+    return frozenset({node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} - {"min", "max", "clamp"})
 
 
 def interval_evaluate(expression: str, values: dict[str, float], intervals: dict[str, tuple[float, float]]) -> tuple[float, float] | None:

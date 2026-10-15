@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from simcore.domain.apply import apply, queue_delayed
-from simcore.domain.models import TurnReport, WorldState
+from simcore.domain.models import TurnReport, WorldState, clone, clone_data
 from simcore.domain.ops import parse_op
 from simcore.domain.turn import resolve_turn
 
@@ -38,7 +40,7 @@ class SessionStore:
             if initial_state is None:
                 raise ValueError("initial_state is required for a new session")
             self.seed = seed if seed is not None else 0
-            self.initial_state = initial_state.model_copy(deep=True)
+            self.initial_state = clone(initial_state)
             self.header = {
                 "type": "session",
                 "version": 1,
@@ -51,7 +53,10 @@ class SessionStore:
             }
             self.entries: list[dict[str, Any]] = []
             self._write()
+        # 状态快照缓存：节点 id → 该节点之后的状态。快照只读（对外一律返回副本），状态不变的节点共享同一快照。
         self._state_cache: dict[str, WorldState] = {}
+        self._index: dict[str, dict[str, Any]] = {item["id"]: item for item in self.entries}
+        self._drafts_cache: tuple[tuple[int, int], dict[str, Any]] | None = None
 
     @property
     def head_id(self) -> str | None:
@@ -59,27 +64,52 @@ class SessionStore:
 
     @property
     def state(self) -> WorldState:
-        return self.state_at(self.head_id)
+        """当前状态的独立副本（调用方可以修改）。"""
+        return clone(self._snapshot(self.head_id))
+
+    def head_state(self) -> WorldState:
+        """当前状态的只读快照：不复制，调用方不得修改。"""
+        return self._snapshot(self.head_id)
 
     def append_op(self, op: dict[str, Any]) -> tuple[WorldState, list[Any], str]:
-        current = self.state
-        updated, facts = apply(op, current)
+        updated, facts = apply(op, self.head_state())
         entry = self._append("op", {"op": parse_op(op).model_dump(mode="json"), "state_hash": state_hash(updated)})
-        self._state_cache[entry["id"]] = updated.model_copy(deep=True)
+        self._state_cache[entry["id"]] = clone(updated)
         return updated, facts, entry["id"]
 
+    def append_ops(self, ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """顺序执行一批操作（诏书确认用）：只复制一次状态；被拒的 op 不写入日志。
+
+        返回与 ops 等长的结果：{ok: True, facts, id} 或 {ok: False, code, message}。
+        """
+        state = clone(self.head_state())
+        results: list[dict[str, Any]] = []
+        last_id: str | None = None
+        for op in ops:
+            try:
+                state, facts = apply(op, state, inplace=True)
+            except ValueError as exc:
+                results.append({"ok": False, "code": getattr(exc, "code", "INVALID_TARGET"), "message": getattr(exc, "message", str(exc))})
+                continue
+            entry = self._append("op", {"op": parse_op(op).model_dump(mode="json"), "state_hash": state_hash(state)})
+            last_id = entry["id"]
+            results.append({"ok": True, "facts": facts, "id": entry["id"]})
+        if last_id is not None:
+            self._state_cache[last_id] = state  # 私有副本，此后不再修改
+        return results
+
     def append_turn(self) -> tuple[WorldState, TurnReport, str]:
-        current = self.state
+        current = self.head_state()
         rng = random.Random(self.seed + current.turn)
         updated, report = resolve_turn(current, rng, self.scenario)
         entry = self._append(
             "turn",
             {
                 "report": report.model_dump(mode="json"),
-                "state_hash": state_hash(updated),
+                "state_hash": report.state_hash or state_hash(updated),
             },
         )
-        self._state_cache[entry["id"]] = updated.model_copy(deep=True)
+        self._state_cache[entry["id"]] = clone(updated)
         return updated, report, entry["id"]
 
     def append_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> str:
@@ -90,7 +120,7 @@ class SessionStore:
         """谏言库条目：只记入日志，不改变 WorldState，也不进入状态哈希。"""
         entry = self._append(
             "advice",
-            {"character": character, "text": text, "source": source, "turn": self.state.turn},
+            {"character": character, "text": text, "source": source, "turn": self.head_state().turn},
         )
         return {"id": entry["id"], **entry["payload"]}
 
@@ -156,7 +186,7 @@ class SessionStore:
     def append_pending(
         self, ops: list[dict[str, Any]], due_turn: int, source: str = "edict"
     ) -> tuple[WorldState, str]:
-        state = queue_delayed(self.state, ops, due_turn, source)
+        state = queue_delayed(self.head_state(), ops, due_turn, source)
         entry = self._append(
             "pending",
             {
@@ -166,6 +196,7 @@ class SessionStore:
                 "state_hash": state_hash(state),
             },
         )
+        self._state_cache[entry["id"]] = clone(state)
         return state, entry["id"]
 
     def rewind(self, entry_id: str | None) -> str:
@@ -180,6 +211,8 @@ class SessionStore:
         selected = self._path_to(entry_id)
         forked = SessionStore(path, self.scenario, self.initial_state, self.seed)
         forked.entries = [dict(item) for item in selected]
+        forked._index = {item["id"]: item for item in forked.entries}
+        forked._state_cache = {item["id"]: self._state_cache[item["id"]] for item in selected if item["id"] in self._state_cache}
         forked.header["parentSession"] = str(self.path)
         forked._write()
         return forked
@@ -188,7 +221,7 @@ class SessionStore:
         return self._path_to(self.head_id)
 
     def replay(self, entry_id: str | None = None) -> tuple[WorldState, str]:
-        state = self.initial_state.model_copy(deep=True)
+        state = clone(self.initial_state)
         for entry in self._path_to(self.head_id if entry_id is None else entry_id):
             if entry["type"] == "op":
                 state, _ = apply(entry["payload"]["op"], state)
@@ -209,21 +242,32 @@ class SessionStore:
         return state, state_hash(state)
 
     def state_at(self, entry_id: str | None) -> WorldState:
+        """某节点之后的状态（独立副本）。"""
+        return clone(self._snapshot(entry_id))
+
+    def _snapshot(self, entry_id: str | None) -> WorldState:
+        """某节点之后的状态快照（只读、不复制）；只重放最近一个已缓存节点之后的部分。"""
+        if entry_id is None:
+            return self.initial_state
+        cached = self._state_cache.get(entry_id)
+        if cached is not None:
+            return cached
         path = self._path_to(entry_id)
-        state = self.initial_state.model_copy(deep=True)
+        state = self.initial_state
         start = 0
         for index in range(len(path) - 1, -1, -1):
-            cached = self._state_cache.get(path[index]["id"])
-            if cached is not None:
-                state = cached.model_copy(deep=True)
+            hit = self._state_cache.get(path[index]["id"])
+            if hit is not None:
+                state = hit
                 start = index + 1
                 break
         for entry in path[start:]:
             state = self._step(entry, state)
-            self._state_cache[entry["id"]] = state.model_copy(deep=True)
+            self._state_cache[entry["id"]] = state
         return state
 
     def _step(self, entry: dict[str, Any], state: WorldState) -> WorldState:
+        """由前一快照得到下一快照；不修改传入的快照（apply / queue_delayed / resolve_turn 都返回新对象）。"""
         if entry["type"] == "op":
             state, _ = apply(entry["payload"]["op"], state)
         elif entry["type"] == "pending":
@@ -237,9 +281,61 @@ class SessionStore:
             state, _ = resolve_turn(state, random.Random(self.seed + state.turn), self.scenario)
         return state
 
+    # ---- 诏书草案（旁路文件，不进日志、不影响状态哈希） ---------------------------------------
+
+    @property
+    def drafts_path(self) -> Path:
+        return self.path.with_name(f"{self.path.stem}.drafts.json")
+
+    def drafts(self) -> dict[str, dict[str, Any]]:
+        """全部已保存草案 {edict_id: receipt}（独立副本）。
+
+        草案写在 <session>.drafts.json，多进程（桌面应用 / 每次调用都重启的 MCP）共享；
+        按文件 mtime/size 缓存，另一进程改写后自动重读。
+        """
+        try:
+            stat = self.drafts_path.stat()
+        except OSError:
+            self._drafts_cache = None
+            return {}
+        signature = (stat.st_mtime_ns, stat.st_size)
+        cached = self._drafts_cache
+        if cached is None or cached[0] != signature:
+            try:
+                data = json.loads(self.drafts_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {}
+            cached = (signature, data if isinstance(data, dict) else {})
+            self._drafts_cache = cached
+        return clone_data(cached[1])  # type: ignore[no-any-return]
+
+    def load_draft(self, edict_id: str) -> dict[str, Any] | None:
+        row = self.drafts().get(edict_id)
+        return row if isinstance(row, dict) else None
+
+    def save_draft(self, receipt: dict[str, Any], current_turn: int | None = None, keep: int = 32) -> None:
+        """保存（或更新）草案；同时清掉早于 current_turn 的过期草案，最多保留 keep 份。"""
+        drafts = self.drafts()
+        drafts[str(receipt["id"])] = clone_data(receipt)
+        if current_turn is not None:
+            drafts = {key: row for key, row in drafts.items() if int(row.get("base_turn", current_turn)) >= current_turn}
+        if len(drafts) > keep:
+            drafts = dict(list(drafts.items())[-keep:])
+        _atomic_write(self.drafts_path, json.dumps(drafts, ensure_ascii=False))
+        try:
+            stat = self.drafts_path.stat()
+            self._drafts_cache = ((stat.st_mtime_ns, stat.st_size), drafts)
+        except OSError:
+            self._drafts_cache = None
+
+    def delete_drafts(self) -> None:
+        self._drafts_cache = None
+        self.drafts_path.unlink(missing_ok=True)
+
     def reload(self) -> None:
         """从磁盘重读（另一进程写入同一存档后调用）。日志只追加、节点不可变，缓存按节点 id 保持有效。"""
         self.header, self.entries = self._read()
+        self._index = {item["id"]: item for item in self.entries}
 
     def _append(
         self, entry_type: str, payload: dict[str, Any], parent_id: str | None = None
@@ -252,13 +348,16 @@ class SessionStore:
             "payload": payload,
         }
         self.entries.append(entry)
-        self._write()
+        self._index[entry["id"]] = entry
+        # 日志只追加：写入一行即可，不必重写整个文件（重写是 O(n)，整局累计 O(n²)）。
+        with self.path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
         return entry
 
     def _path_to(self, entry_id: str | None) -> list[dict[str, Any]]:
         if entry_id is None:
             return []
-        indexed = {item["id"]: item for item in self.entries}
+        indexed = self._index
         chain: list[dict[str, Any]] = []
         current = entry_id
         while current is not None:
@@ -281,6 +380,7 @@ class SessionStore:
         self.path.write_text(
             "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in lines),
             encoding="utf-8",
+            newline="\n",
         )
 
 
@@ -329,6 +429,21 @@ def _entry_label(entry: dict[str, Any]) -> str:
     if kind == "message":
         return f"{payload.get('role', '')}：{str(payload.get('content', ''))[:20]}"
     return kind
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """先写临时文件再替换，另一进程读到的总是完整文件。Windows 上目标被短暂占用时重试几次。"""
+    temp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    temp.write_text(text, encoding="utf-8")
+    for attempt in range(10):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            if attempt == 9:
+                temp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.02)
 
 
 def _now() -> str:

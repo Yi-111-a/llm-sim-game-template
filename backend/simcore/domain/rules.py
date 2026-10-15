@@ -25,6 +25,56 @@ def held_offices(character: Character) -> list[str]:
     return held
 
 
+DEFAULT_TRAIT_NAMES = {
+    "ability": "才干",
+    "loyalty": "忠诚",
+    "ambition": "野心",
+    "fear": "畏惧",
+    "favor": "恩宠",
+    "courage": "胆略",
+    "integrity": "操守",
+}
+STATUS_NAMES = {"alive": "在世", "dead": "已故", "imprisoned": "系狱", "exiled": "流放", "retired": "致仕"}
+
+
+def entity_name(state: WorldState, entity_id: Any) -> str:
+    """任意实体 id 的显示名：人物 / 势力 / 地区 / 军队 / 官职 / 资源；找不到时原样返回。"""
+    key = str(entity_id)
+    for table in (state.characters, state.factions, state.regions, state.armies, state.offices, state.resources):
+        row = table.get(key)
+        if row is not None:
+            return str(row.name)
+    return key
+
+
+def stat_name(state: WorldState, stat: str) -> str:
+    names = state.rules.get("stat_names") or {}
+    return str(names.get(stat, stat)) if isinstance(names, dict) else stat
+
+
+def trait_name(state: WorldState, trait: str) -> str:
+    names = state.rules.get("trait_names") or {}
+    if isinstance(names, dict) and trait in names:
+        return str(names[trait])
+    if trait.startswith("relation:"):
+        return f"对{entity_name(state, trait.split(':', 1)[1])}的观感"
+    return DEFAULT_TRAIT_NAMES.get(trait, trait)
+
+
+def player_character_id(state: WorldState, settings: dict[str, Any] | None = None) -> str | None:
+    """玩家本人：settings.player_character；未设时取 settings.player_office 的在任者。"""
+    sources = [state.rules, settings or {}]
+    for source in sources:
+        character_id = source.get("player_character")
+        if character_id and str(character_id) in state.characters:
+            return str(character_id)
+    for source in sources:
+        office_id = source.get("player_office")
+        if office_id and str(office_id) in state.offices:
+            return state.offices[str(office_id)].holder
+    return None
+
+
 def max_concurrent_offices(state: WorldState) -> int:
     try:
         return max(1, int(state.rules.get("max_concurrent_offices", 1)))

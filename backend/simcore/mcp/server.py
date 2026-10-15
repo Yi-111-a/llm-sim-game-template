@@ -18,7 +18,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from simcore.domain.apply import OpRejected
-from simcore.domain.visibility import fact_line
+from simcore.domain.visibility import fact_line, format_number
 from simcore.service import ENGINE_VERSION, ROLEPLAY_RULES, GameError, GameService
 
 INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP server runs a deterministic history-simulation strategy game）。
@@ -193,6 +193,9 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
     async def confirm_edict(session_id: str, edict_id: str) -> str:
         receipt = service.confirm_edict(session_id, edict_id)
         lines = [f"诏书 {edict_id} 已确认。"]
+        if receipt.get("changed_clauses"):
+            numbers = "、".join(str(index) for index in receipt["changed_clauses"])
+            lines.append(f"注意：拟诏之后局势有变，已按当前状态重新校验；第 {numbers} 条的结果与草案不同（见下）。")
         lines.extend(_clause_lines(receipt["clauses"]))
         if receipt.get("adopted"):
             lines.append("已处理奏疏：" + "、".join(f"{row['memorial_id']}→{row['option_id']}" for row in receipt["adopted"]))
@@ -201,7 +204,7 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
     @register
     async def choose(session_id: str, choice_id: str, option_id: str) -> str:
         result = service.choose(session_id, choice_id, option_id)
-        facts = "；".join(fact_line(fact) for fact in result["facts"] if fact.get("kind") not in {"flag"})
+        facts = "；".join(fact_line(fact) for fact in result["facts"])
         return f"已处置 {choice_id} → {option_id}。{facts}"
 
     @register
@@ -245,14 +248,15 @@ def _clause_lines(clauses: list[dict[str, Any]]) -> list[str]:
         what = clause.get("summary") or clause.get("text") or ""
         reason = f"；原因：{clause.get('reason')}" if clause.get("reason") else ""
         code = f" [{clause['code']}]" if clause.get("code") and status == "rejected" else ""
-        lines.append(f"{index}. [{tag}]{code} ({source}) {what}{reason}")
+        changed = f"（草案时为 {clause.get('previous_status')}）" if clause.get("changed") else ""
+        lines.append(f"{index}. [{tag}]{code} ({source}) {what}{reason}{changed}")
     return lines
 
 
 def _turn_text(result: dict[str, Any]) -> str:
     report = result["report"]
     lines = [f"# 已结算至 {result['calendar_label']}（第{report.get('turn')}回合）"]
-    facts = [fact_line(fact) for fact in report.get("facts", []) if fact.get("kind") not in {"flag", "counter"}]
+    facts = [fact_line(fact) for fact in report.get("facts", [])]
     lines.append("## 事实")
     lines.extend(f"- {fact}" for fact in facts) if facts else lines.append("- （无）")
     totals: dict[str, float | None] = {}
@@ -268,11 +272,12 @@ def _turn_text(result: dict[str, Any]) -> str:
         state_resources = result["state"]["resources"]
         for resource, amount in totals.items():
             name = state_resources.get(resource, {}).get("name", resource)
-            lines.append(f"- {name}：{'数值不明' if amount is None else f'{amount:+.2f}'}")
+            lines.append(f"- {name}：{'数值不明' if amount is None else format_number(amount, signed=True)}")
     if report.get("battles"):
         lines.append("## 战报")
         for battle in report["battles"]:
-            lines.append(f"- {battle['region_name']}：{battle['attacker']} 攻 {battle['defender']}，结果 {battle['result']}，损失 {battle['losses']}")
+            losses = _losses(battle.get("losses"), result["state"].get("armies", {}))
+            lines.append(f"- {battle['region_name']}：{battle['attacker']} 攻 {battle['defender']}，结果 {battle['result']}，损失 {losses}")
     if report.get("events_fired"):
         lines.append("## 触发事件：" + "、".join(report["events_fired"]))
     if report.get("choices_opened"):
@@ -285,13 +290,9 @@ def _turn_text(result: dict[str, Any]) -> str:
             )
     crisis = report.get("crisis") or {}
     if crisis:
-        value = crisis.get("value_or_estimate")
-        value_text = f"约{value[0]}–{value[1]}（风闻）" if isinstance(value, list) else str(value)
-        lines.append(f"## 危机计 {crisis.get('title')}：{value_text}（{crisis.get('band')}）")
+        lines.append(f"## 危机计 {crisis.get('title')}：{crisis.get('display')}（{crisis.get('band')}）")
         for term in crisis.get("terms", []):
-            term_value = term.get("value")
-            text = f"约{term_value[0]}–{term_value[1]}" if isinstance(term_value, list) else str(term_value)
-            lines.append(f"- {term.get('label')}：{text}")
+            lines.append(f"- {term.get('label')}：{term.get('display')}")
     if report.get("warnings"):
         lines.append("## 提示：" + "；".join(report["warnings"]))
     lines.append(f"## 纪事\n{result['memorial']}")
@@ -299,6 +300,19 @@ def _turn_text(result: dict[str, Any]) -> str:
     if outcome:
         lines.append(f"## 终局：{outcome['title']}（{'失败' if outcome['kind'] == 'fail' else '结局'}）\n{outcome.get('text', '')}")
     return "\n".join(lines)
+
+
+def _losses(losses: Any, armies: dict[str, Any]) -> str:
+    """战报损失：{军队 id: 数} 换成军队名，数字至多一位小数。"""
+    if isinstance(losses, dict):
+        parts = []
+        for army_id, value in losses.items():
+            name = armies.get(army_id, {}).get("name", army_id) if isinstance(armies.get(army_id), dict) else army_id
+            parts.append(f"{name} {format_number(value) if isinstance(value, (int, float)) else value}")
+        return "，".join(parts) or "无"
+    if isinstance(losses, (int, float)) and not isinstance(losses, bool):
+        return format_number(losses)
+    return str(losses)
 
 
 def main() -> None:
