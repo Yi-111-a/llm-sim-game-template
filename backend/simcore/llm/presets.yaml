@@ -1,0 +1,48 @@
+providers:
+  openai:
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    api_key_url: https://platform.openai.com/api-keys
+    extra_headers: {}
+    params_override:
+      temperature: 0.3
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    api_key_url: https://platform.deepseek.com/api_keys
+    extra_headers: {}
+    params_override:
+      temperature: 0.3
+  qwen:
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    model: qwen-plus
+    api_key_env: DASHSCOPE_API_KEY
+    api_key_url: https://dashscope.console.aliyun.com/
+    extra_headers: {}
+    params_override:
+      temperature: 0.3
+  glm:
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    model: glm-4-flash
+    api_key_env: ZHIPUAI_API_KEY
+    api_key_url: https://open.bigmodel.cn/usercenter/apikeys
+    extra_headers: {}
+    params_override:
+      temperature: 0.3
+  ollama:
+    base_url: http://localhost:11434/v1
+    model: qwen2.5
+    api_key_env: OLLAMA_API_KEY
+    api_key_url: ""
+    extra_headers: {}
+    params_override:
+      temperature: 0.3
+  custom:
+    base_url: https://api.openai.com/v1
+    model: custom-model
+    api_key_env: ""
+    api_key_url: ""
+    extra_headers: {}
+    params_override: {}
