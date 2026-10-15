@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -30,8 +33,10 @@ from simcore.service import (
     ENGINE_VERSION,
     GameError,
     GameService,
+    engine_root,
     scenarios_root,
     session_root,
+    sim_home,
 )
 
 __all__ = ["create_app", "app", "scenarios_root", "session_root"]
@@ -189,6 +194,108 @@ class Runtime:
         return self.service.session(session_id)
 
 
+# ---------------------------------------------------------------- 外部模型接入（MCP）
+_SHELL_SAFE = re.compile(r"^[A-Za-z0-9_\-.:/\\=@+,]+$")
+
+
+def _sh(value: str) -> str:
+    """命令行参数加引号（PowerShell / cmd / bash 通用的双引号写法）。"""
+    return value if _SHELL_SAFE.match(value) else '"' + value.replace('"', '\\"') + '"'
+
+
+def _toml_str(value: str) -> str:
+    """TOML 字符串：优先用字面量 '...'，Windows 路径不必转义反斜杠。"""
+    if "'" not in value and "\n" not in value:
+        return f"'{value}'"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def mcp_launch_spec() -> dict[str, Any]:
+    """本进程对应的 MCP 启动方式。桌面壳可用环境变量 SIM_MCP_LAUNCH（JSON）给出精确值。"""
+    raw = os.environ.get("SIM_MCP_LAUNCH")
+    name = os.environ.get("SIM_MCP_NAME") or "llm-sim"
+    if raw:
+        try:
+            spec = json.loads(raw)
+        except json.JSONDecodeError:
+            spec = None
+        if isinstance(spec, dict) and spec.get("command"):
+            return {
+                "name": str(spec.get("name") or name),
+                "mode": str(spec.get("mode") or "installed"),
+                "command": str(spec["command"]),
+                "args": [str(arg) for arg in spec.get("args", ["mcp"])],
+                "env": {str(k): str(v) for k, v in (spec.get("env") or {}).items()},
+                "cwd": str(spec["cwd"]) if spec.get("cwd") else None,
+            }
+    frozen = bool(getattr(sys, "frozen", False))
+    env = {"LLM_SIM_HOME": str(sim_home().resolve()), "SIM_SCENARIOS_DIR": str(scenarios_root())}
+    if os.environ.get("SIM_GAME_ROOT"):
+        env["SIM_GAME_ROOT"] = str(engine_root())
+    if not frozen:
+        env["PYTHONUTF8"] = "1"
+    return {
+        "name": name,
+        "mode": "installed" if frozen else "source",
+        "command": sys.executable,
+        "args": ["mcp"] if frozen else ["-m", "cli.main", "mcp"],
+        "env": env,
+        "cwd": None if frozen else str(Path(__file__).resolve().parents[1]),
+    }
+
+
+def integration_info() -> dict[str, Any]:
+    """GET /api/integration：让 Codex / Claude Code 经 MCP 玩同一份存档的现成命令（只读）。"""
+    spec = mcp_launch_spec()
+    name, command, args, env, cwd = spec["name"], spec["command"], spec["args"], spec["env"], spec["cwd"]
+    tail = " ".join([_sh(command), *(_sh(arg) for arg in args)])
+    env_codex = "".join(" --env " + _sh(f"{k}={v}") for k, v in env.items())
+    env_claude = (" -e " + " ".join(_sh(f"{k}={v}") for k, v in env.items())) if env else ""
+    table = f"mcp_servers.{name}"
+    toml_lines = [f"[{table}]", f"command = {_toml_str(command)}", "args = [" + ", ".join(_toml_str(arg) for arg in args) + "]"]
+    if cwd:
+        toml_lines.append(f"cwd = {_toml_str(cwd)}")
+    toml_lines += ["startup_timeout_sec = 30", "tool_timeout_sec = 120", 'default_tools_approval_mode = "approve"']
+    if env:
+        toml_lines += ["", f"[{table}.env]", *(f"{k} = {_toml_str(v)}" for k, v in env.items())]
+    exec_flags = [f"{table}.command={json.dumps(command, ensure_ascii=False)}", f"{table}.args={json.dumps(args, ensure_ascii=False)}"]
+    if cwd:
+        exec_flags.append(f"{table}.cwd={json.dumps(cwd, ensure_ascii=False)}")
+    if env:
+        exec_flags.append(f"{table}.env={{" + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in env.items()) + "}")
+    exec_flags.append(f'{table}.default_tools_approval_mode="approve"')
+    server_json: dict[str, Any] = {"type": "stdio", "command": command, "args": args}
+    if env:
+        server_json["env"] = env
+    setup = None
+    script = engine_root() / "integrations" / "setup_mcp.ps1"
+    if script.is_file():
+        flags = f" -ServerExe {_sh(command)}" if spec["mode"] == "installed" else " -Source"
+        if "LLM_SIM_HOME" in env:
+            flags += f" -SimHome {_sh(env['LLM_SIM_HOME'])}"
+        base = f"powershell -NoProfile -ExecutionPolicy Bypass -File {_sh(str(script))}{flags}"
+        setup = {"script": str(script), "codex": base + " -Codex", "claude": base + " -Claude"}
+    return {
+        "name": name,
+        "mode": spec["mode"],
+        "server": {"command": command, "args": args, "env": env, "cwd": cwd},
+        "home": env.get("LLM_SIM_HOME") or str(sim_home().resolve()),
+        "scenarios_dir": env.get("SIM_SCENARIOS_DIR") or str(scenarios_root()),
+        "codex": {
+            "add": f"codex mcp add {name}{env_codex} -- {tail}",
+            "toml": "\n".join(toml_lines) + "\n",
+            "exec_flags": exec_flags,
+            "note": "codex mcp add 不写 default_tools_approval_mode；codex exec 需要它，否则工具调用会被取消。也可以把 toml 整段贴进 ~/.codex/config.toml。",
+        },
+        "claude": {
+            "add": f"claude mcp add {name}{env_claude} -- {tail}",
+            "add_user": f"claude mcp add {name} --scope user{env_claude} -- {tail}",
+            "mcp_json": json.dumps({"mcpServers": {name: server_json}}, ensure_ascii=False, indent=2) + "\n",
+        },
+        "setup": setup,
+    }
+
+
 def _error(status: int, code: str, message: str) -> UTF8JSONResponse:
     return UTF8JSONResponse({"detail": {"code": code, "message": message}}, status_code=status)
 
@@ -230,6 +337,10 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
         return {"ok": True, "version": ENGINE_VERSION, "scenarios": service.scenario_ids()}
+
+    @app.get("/api/integration")
+    async def integration() -> dict[str, Any]:
+        return integration_info()
 
     @app.get("/api/scenarios")
     async def list_scenarios() -> list[dict[str, Any]]:
