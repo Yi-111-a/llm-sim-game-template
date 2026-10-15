@@ -97,8 +97,11 @@ def resolve_turn(
         report.facts.append(Fact(kind="project_progress", text=f"{project.name}进度 {project.progress}/{project.turns}", entity=project.id))
         if project.progress >= project.turns:
             for raw_op in project.on_complete:
-                updated, facts = apply(parse_op(raw_op), updated)
-                report.facts.extend(facts)
+                try:
+                    updated, facts = apply(parse_op(raw_op), updated)
+                    report.facts.extend(facts)
+                except ValueError as exc:
+                    report.warnings.append(f"竣工效果未执行：{project.name}: {exc}")
             report.facts.append(Fact(kind="project_complete", text=f"工程竣工：{project.name}", entity=project.id))
             completed.append(project)
     for project in completed:
