@@ -35,7 +35,18 @@ from simcore.domain.ops import (
     StateOp,
     parse_op,
 )
-from simcore.domain.rules import STATUS_NAMES, Rejected, entity_name, held_offices, stat_name, trait_name, validate
+from simcore.domain.rules import (
+    STATUS_NAMES,
+    Rejected,
+    entity_name,
+    find_route,
+    held_offices,
+    stat_name,
+    trait_name,
+    turn_unit_label,
+    validate,
+)
+from simcore.domain.visibility import format_number
 
 
 class OpRejected(ValueError):
@@ -47,14 +58,27 @@ class OpRejected(ValueError):
         self.message = message
 
 
+def signed_number(value: float) -> str:
+    """带符号的变化量：+5、−40（全角减号，与奏疏摘要一致）。"""
+    text = format_number(abs(value))
+    return f"−{text}" if round(value, 1) < 0 else f"+{text}"
+
+
 def apply(
-    op_value: StateOp | dict[str, Any], state: WorldState, *, turn: int | None = None, inplace: bool = False
+    op_value: StateOp | dict[str, Any],
+    state: WorldState,
+    *,
+    turn: int | None = None,
+    inplace: bool = False,
+    source: str | None = None,
 ) -> tuple[WorldState, list[Fact]]:
     """校验并执行一条操作，返回新状态与事实。
 
     turn 为写入 flag_turns 等时间戳所用的回合；回合结算中传入正在结算进入的回合，缺省为 state.turn。
     inplace=True 时直接修改传入的状态（调用方已持有私有副本，例如回合结算中）；校验在任何修改之前完成，
     被拒时状态不变。缺省返回新副本、不动传入状态。
+    source 为来源说明（奏疏标题、事件标题、抉择、工程、常设令等）：op 没写 reason 时作为事实的原因（Fact.cause），
+    数值型事实的文本写成「国库 −40（原因）」。
     """
     result = validate(op_value, state)
     if isinstance(result, Rejected):
@@ -63,6 +87,9 @@ def apply(
     stamp = state.turn if turn is None else turn
     updated = state if inplace else clone(state)
     facts: list[Fact] = []
+    reason = str(getattr(op, "reason", "") or "").strip()
+    cause = reason or (source or "").strip() or None
+    suffix = f"（{cause}）" if cause else ""
     if op.op == "adjust_resource":
         row = updated.resources[op.resource]
         before = row.amount
@@ -72,7 +99,9 @@ def apply(
         if row.maximum is not None:
             amount = min(row.maximum, amount)
         row.amount = amount
-        facts.append(Fact(kind="resource", text=f"{row.name}变化", entity=op.resource, before=before, after=amount))
+        facts.append(
+            Fact(kind="resource", text=f"{row.name} {signed_number(amount - before)}{suffix}", entity=op.resource, before=before, after=amount)
+        )
     elif isinstance(op, AddLedger):
         updated.ledger.append(
             LedgerEntry(
@@ -132,18 +161,16 @@ def apply(
         facts.append(Fact(kind="status", text=text, entity=op.character, before=before, after=op.status))
     elif isinstance(op, MoveCharacter):
         character = updated.characters[op.character]
-        turns = updated.regions[character.region].adjacency[op.to_region]
-        character.in_transit = {"to_region": op.to_region, "eta_turn": updated.turn + turns}
-        origin, destination = updated.regions[character.region].name, updated.regions[op.to_region].name
+        route_text = _start_transit(updated, character, op.to_region, character.faction)
+        origin = updated.regions[character.region].name
         facts.append(
-            Fact(kind="movement", text=f"{character.name}自{origin}启程赴{destination}", entity=op.character, before=character.region, after=op.to_region)
+            Fact(kind="movement", text=f"{character.name}自{origin}启程赴{route_text}", entity=op.character, before=character.region, after=op.to_region)
         )
     elif isinstance(op, MoveArmy):
         army = updated.armies[op.army]
-        turns = updated.regions[army.region].adjacency[op.to_region]
-        army.in_transit = {"to_region": op.to_region, "eta_turn": updated.turn + turns}
-        origin, destination = updated.regions[army.region].name, updated.regions[op.to_region].name
-        facts.append(Fact(kind="movement", text=f"{army.name}自{origin}开拔，赴{destination}", entity=op.army, before=army.region, after=op.to_region))
+        route_text = _start_transit(updated, army, op.to_region, army.faction)
+        origin = updated.regions[army.region].name
+        facts.append(Fact(kind="movement", text=f"{army.name}自{origin}开拔，赴{route_text}", entity=op.army, before=army.region, after=op.to_region))
     elif isinstance(op, StartProject):
         updated.projects.append(
             Project(
@@ -163,7 +190,7 @@ def apply(
         facts.append(
             Fact(
                 kind="region",
-                text=f"{region.name}{stat_name(updated, op.stat)}变化",
+                text=f"{region.name}{stat_name(updated, op.stat)} {signed_number(op.delta)}{suffix}",
                 entity=op.region,
                 before=before,
                 after=region.stats[op.stat],
@@ -182,7 +209,14 @@ def apply(
             target_faction.relations[op.b] = before + op.delta
             after = before + op.delta
         facts.append(
-            Fact(kind="relation", text=f"{entity_name(updated, op.a)}与{entity_name(updated, op.b)}关系变化", entity=op.a, before=before, after=after, key=op.b)
+            Fact(
+                kind="relation",
+                text=f"{entity_name(updated, op.a)}与{entity_name(updated, op.b)}关系 {signed_number(op.delta)}{suffix}",
+                entity=op.a,
+                before=before,
+                after=after,
+                key=op.b,
+            )
         )
     elif isinstance(op, AddStandingOrder):
         updated.standing_orders.append(
@@ -211,8 +245,7 @@ def apply(
         army = updated.armies[op.army]
         before = army.strength
         army.strength = max(0.0, before + op.delta)
-        reason = (op.reason or "").strip()
-        text = reason if reason and army.name in reason else (f"{army.name}兵力变化" + (f"：{reason}" if reason else ""))
+        text = reason if reason and army.name in reason else f"{army.name}兵力 {signed_number(army.strength - before)}{suffix}"
         facts.append(Fact(kind="army", text=text, entity=op.army, before=before, after=army.strength))
     elif isinstance(op, SetArmyFaction):
         army = updated.armies[op.army]
@@ -224,7 +257,7 @@ def apply(
         army = updated.armies[op.army]
         before = army.commander
         army.commander = op.character
-        text = f"{army.name}易帅，由{entity_name(updated, op.character)}统领" if op.character else f"{army.name}统帅出缺"
+        text = f"{army.name}易帅，由{entity_name(updated, op.character)}统领" if op.character else f"罢{army.name}统帅"
         facts.append(Fact(kind="army_commander", text=text, entity=op.army, before=before, after=op.character))
     elif isinstance(op, AdjustTrait):
         character = updated.characters[op.character]
@@ -233,7 +266,7 @@ def apply(
         facts.append(
             Fact(
                 kind="trait",
-                text=f"{character.name}{trait_name(updated, op.trait)}变化",
+                text=f"{character.name}{trait_name(updated, op.trait)} {signed_number(op.delta)}{suffix}",
                 entity=op.character,
                 before=before,
                 after=before + op.delta,
@@ -267,17 +300,69 @@ def apply(
         facts.append(Fact(kind="choice", text=f"{choice.title}：{option.text}", entity=choice.event_id, after=option.id))
         for effect in option.effects:
             try:
-                updated, effect_facts = apply(effect, updated, turn=stamp, inplace=True)
+                updated, effect_facts = apply(effect, updated, turn=stamp, inplace=True, source=choice.title)
                 facts.extend(effect_facts)
             except ValueError as exc:
                 facts.append(Fact(kind="effect_skipped", text=f"选项效果未执行：{exc}", entity=choice.event_id, internal=True))
     else:
         raise TypeError(f"Unsupported operation: {op.op}")
+    if cause:
+        for fact in facts:
+            if fact.cause is None and fact.kind != "choice":
+                fact.cause = cause
     return updated, facts
 
 
+def _start_transit(state: WorldState, mover: Any, destination: str, faction: str | None) -> str:
+    """按最短路径（rules.find_route）整段出发：写入 in_transit，返回「目的地（经某某，约 n 季）」。"""
+    found = find_route(state, mover.region, destination, faction)
+    path, turns = found if found is not None else ([mover.region, destination], 1)
+    turns = max(1, turns)
+    mover.in_transit = {"to_region": destination, "eta_turn": state.turn + turns, "from_region": mover.region, "route": path}
+    via = [state.regions[region_id].name for region_id in path[1:-1]]
+    detail = (f"经{'、'.join(via)}，" if via else "") + f"约{turns}{turn_unit_label(state)}"
+    return f"{state.regions[destination].name}（{detail}）"
+
+
+RULER_TITLE_DEFAULT = "陛下"
+
+
+def edict_memories(op_value: StateOp | dict[str, Any], state: WorldState) -> list[dict[str, Any]]:
+    """诏书中任免、处置人物的条款给当事人写一条记忆（Remember op）。state 为执行该条款之前的状态。
+
+    称谓取 rules.ruler_title（缺省「陛下」）；赐死等 dead 状态不写记忆。
+    """
+    try:
+        op = parse_op(op_value)
+    except (ValueError, TypeError):
+        return []
+    character_id = getattr(op, "character", None)
+    character = state.characters.get(str(character_id)) if character_id else None
+    if character is None:
+        return []
+    ruler = str(state.rules.get("ruler_title") or RULER_TITLE_DEFAULT)
+    when = state.calendar.label or f"第{state.turn}回合"
+    if isinstance(op, (Appoint, Dismiss)):
+        office = state.offices.get(op.office)
+        if office is None:
+            return []
+        phrase = f"{ruler}任{character.name}为{office.name}" if isinstance(op, Appoint) else f"{ruler}免{character.name}{office.name}之职"
+    elif isinstance(op, SetCharacterStatus):
+        phrase = {
+            "imprisoned": f"{ruler}下{character.name}狱",
+            "exiled": f"{ruler}流放{character.name}",
+            "retired": f"{ruler}令{character.name}致仕",
+            "alive": f"{ruler}赦免{character.name}" if character.status != "alive" else "",
+        }.get(op.status, "")
+        if phrase and op.cause:
+            phrase += f"（{op.cause}）"
+    else:
+        return []
+    return [{"op": "remember", "character": character.id, "fact": f"{when}，{phrase}"}] if phrase else []
+
+
 def queue_delayed(
-    state: WorldState, ops: list[dict[str, Any]], due_turn: int, source: str = "edict"
+    state: WorldState, ops: list[dict[str, Any]], due_turn: int, source: str = "edict", label: str = ""
 ) -> WorldState:
     updated = clone(state)
     sequence = int(updated.flags.get("_internal:id_seq", 0)) + 1
@@ -288,6 +373,7 @@ def queue_delayed(
             ops=[parse_op(op).model_dump() for op in ops],
             due_turn=due_turn,
             source=source,
+            label=label,
         )
     )
     return updated

@@ -9,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from simcore.domain.calendar import format_calendar, start_season_index
+from simcore.domain.difficulty import apply_difficulty, difficulty_errors, resolve_difficulty
 from simcore.domain.events import condition_errors
 from simcore.domain.models import (
     Army,
@@ -243,6 +244,19 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
     resource_ids = {str(row.get("id")) for row in (scenario.resources if scenario else [])}
     office_ids = {str(row.get("id")) for row in (scenario.offices if scenario else [])}
 
+    def check_memory(raw: Any, location: str) -> None:
+        """奏疏选项 / 事件选项的 memory：{character, text} 或其列表；人物须存在、text 非空。"""
+        if raw is None:
+            return
+        rows = raw if isinstance(raw, list) else [raw]
+        for row in rows:
+            if not isinstance(row, dict):
+                errors.append(f"{location}.memory 必须是 {{character, text}} 对象或其列表")
+            elif row.get("character") not in character_ids:
+                errors.append(f"{location}.memory 人物不存在：{row.get('character')}")
+            elif not str(row.get("text") or "").strip():
+                errors.append(f"{location}.memory 缺少 text")
+
     def check_ops(ops: Any, location: str) -> None:
         if not isinstance(ops, list):
             errors.append(f"{location} 必须是列表")
@@ -293,6 +307,7 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
             if isinstance(choice, dict):
                 errors.extend(condition_errors(choice.get("conditions"), f"{location}.choices.{choice.get('id')}.conditions"))
                 check_ops(choice.get("effects", choice.get("ops", [])) or [], f"{location}.choices.{choice.get('id')}.effects")
+                check_memory(choice.get("memory"), f"{location}.choices.{choice.get('id')}")
         default = event.get("default_choice")
         if default is not None and default not in choice_ids:
             errors.append(f"{location}.default_choice 不在选项中：{default}")
@@ -329,6 +344,7 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
         for resource in scenario.resources:
             if resource.get("hidden") and float(resource.get("estimate_width", 0) or 0) < 0:
                 errors.append(f"资源 {resource.get('id')} 的 estimate_width 不能为负")
+        errors.extend(difficulty_errors(data.get("scenario", {}) or {}, resource_ids, seen_events))
 
     memorials = data.get("memorials", [])
     if memorials and not isinstance(memorials, list):
@@ -361,6 +377,7 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
         for option in item.get("options", []) or []:
             if isinstance(option, dict):
                 check_ops(option.get("ops", []) or [], f"{location}.options.{option.get('id')}.ops")
+                check_memory(option.get("memory"), f"{location}.options.{option.get('id')}")
     return errors
 
 
@@ -421,8 +438,10 @@ def _css_variables_only(css: str) -> bool:
     )
 
 
-def build_initial_state(data: dict[str, Any]) -> WorldState:
+def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> WorldState:
+    """场景开局状态。difficulty 为难度档 id（缺省用 default_difficulty）；未知 id 抛 DifficultyError。"""
     scenario = ScenarioDocument.model_validate(data["scenario"])
+    difficulty_row = resolve_difficulty(data["scenario"], difficulty)
     start = date.fromisoformat(scenario.start_date)
     month = start.month
     season = ("春", "夏", "秋", "冬")[(month - 1) // 3]
@@ -442,6 +461,7 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
     factions = {row["id"]: Faction(**row) for row in data.get("factions", []) or []}
     rules: dict[str, Any] = dict(scenario.settings)
     rules.setdefault("max_concurrent_offices", 1)
+    rules.setdefault("turn_unit", scenario.turn_unit)
     stat_names = {
         str(row.get("id")): str(row.get("name", row.get("id")))
         for row in data["scenario"].get("stats", []) or []
@@ -499,7 +519,7 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
             start_season_index(data["scenario"]),
             fallback_year=start.year,
         )
-    return WorldState(
+    state = WorldState(
         scenario_id=scenario.id,
         turn=0,
         calendar=Calendar(year=start.year, month=month, season=season, label=label),
@@ -511,6 +531,7 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
         armies=armies,
         rules=rules,
     )
+    return apply_difficulty(state, difficulty_row)
 
 
 def _initial_offices(row: dict[str, Any]) -> list[str]:

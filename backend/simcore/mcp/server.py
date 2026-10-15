@@ -17,6 +17,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from simcore.agent.debate import ENTITY_KIND_LABELS
 from simcore.domain.apply import OpRejected
 from simcore.domain.visibility import fact_line, format_number
 from simcore.service import ENGINE_VERSION, ROLEPLAY_RULES, GameError, GameService
@@ -35,8 +36,9 @@ INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP serve
 DESCRIPTIONS: dict[str, str] = {
     "list_scenarios": "列出可玩的场景（id、标题、时代、是否通过校验）。List available scenarios. 无参数。",
     "new_game": (
-        "新开一局：scenario 为 list_scenarios 返回的 id，seed 为随机种子（同种子可复现）。返回 session_id 与开局简报。"
-        "Start a new game from a scenario id with a seed; returns the session_id and the opening briefing."
+        "新开一局：scenario 为 list_scenarios 返回的 id，seed 为随机种子（同种子可复现），difficulty 为难度档 id"
+        "（见 list_scenarios 的 difficulties；留空用场景默认）。返回 session_id 与开局简报。"
+        "Start a new game from a scenario id with a seed and optional difficulty; returns the session_id and the opening briefing."
     ),
     "list_saves": "列出全部存档（session_id、场景、回合）。List saved sessions (shared with the desktop app via LLM_SIM_HOME).",
     "load_game": "读取存档并返回当前简报。Load a saved session by session_id and return its briefing.",
@@ -55,9 +57,10 @@ DESCRIPTIONS: dict[str, str] = {
         "Audience with a character: returns a persona card and what they know (client mode) or their reply (server mode)."
     ),
     "court_debate": (
-        "廷议：topic 为议题，participants 为 1–6 个人物 id。引擎依派系、忠诚与利益给出每人立场（support/oppose/neutral）；"
-        "client 模式返回立场 + 人设，由你写台词；server 模式返回各人台词。廷议结论只能存为谏言，不直接改变状态。"
-        "Court debate: engine-decided stances; you (client mode) write the speeches."
+        "廷议：topic 为议题，participants 为 1–6 个人物 id，memorial_id 可选（就某条本季奏疏廷议；给了它 topic 可留空）。"
+        "议题对应奏疏时用奏疏中的谏言立场，否则引擎按议题点名的人物/势力/官职/地区/军队与各人的亲疏、派系利益与忠诚给出立场"
+        "（support/oppose/neutral），并列出 topic_entities；client 模式返回立场 + 人设，由你写台词；server 模式返回各人台词。"
+        "廷议结论只能存为谏言，不直接改变状态。Court debate: engine-decided, topic-dependent stances; you (client mode) write the speeches."
     ),
     "save_advice": "把谏言存入谏言库（不改变世界状态）：character 为进言人 id，text 为谏言原文。Save a piece of advice to the advice log.",
     "draft_edict": (
@@ -109,14 +112,21 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
     @register
     async def list_scenarios() -> str:
         rows = [
-            {"id": row["folder"], "title": row["title"], "era": row["era"], "version": row["version"], "valid": row["valid"]}
+            {
+                "id": row["folder"],
+                "title": row["title"],
+                "era": row["era"],
+                "version": row["version"],
+                "valid": row["valid"],
+                "difficulties": row.get("difficulties", []),
+            }
             for row in service.list_scenarios()
         ]
         return _dump(rows)
 
     @register
-    async def new_game(scenario: str, seed: int = 0) -> str:
-        session_id, _ = service.create_session(scenario, seed)
+    async def new_game(scenario: str, seed: int = 0, difficulty: str = "") -> str:
+        session_id, _ = service.create_session(scenario, seed, difficulty or None)
         return f"已开新局 session_id={session_id}（mode={mode}）\n\n" + service.briefing(session_id)
 
     @register
@@ -142,25 +152,24 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
             reply = await service.chat(session_id, character, question)
             return f"{card['persona']['name']}：{reply['content']}"
         persona = card["persona"]
-        memories = "\n".join(f"- {item}" for item in card["memories"]) or "（无）"
         return (
             f"# 人设卡：{persona['name']}（{persona['character']}）\n"
             f"官职：{'、'.join(persona['offices']) or '无'}；派系：{persona['bloc'] or '无'}；头衔：{persona['title'] or '无'}\n"
             f"人物：{persona['persona']}\n言谈：{persona['speech_style']}\n所知：{'、'.join(persona['knowledge']) or '—'}\n\n"
-            f"# 此人可知的事实摘要（StateDigest）\n{card['digest']}\n\n# 此人的记忆\n{memories}\n\n"
+            f"# 此人可知的事实摘要（StateDigest；【记忆】为此人记得的事）\n{card['digest']}\n\n"
             f"# 口吻要求\n{card['voice']}\n\n{ROLEPLAY_RULES}"
         )
 
     @register
-    async def court_debate(session_id: str, topic: str, participants: list[str]) -> str:
+    async def court_debate(session_id: str, participants: list[str], topic: str = "", memorial_id: str = "") -> str:
         if server_mode:
-            result = await service.debate(session_id, topic, participants)
-            lines = [f"# 廷议：{topic}"]
+            result = await service.debate(session_id, topic, participants, memorial_id or None)
+            lines = [f"# 廷议：{result['topic']}", *_debate_context(result)]
             lines.extend(f"- {row['name']}（{row['stance']}）：{row['text']}" for row in result["speeches"])
             lines.append(result["summary"])
             return "\n".join(lines)
-        brief = service.debate_brief(session_id, topic, participants)
-        lines = [f"# 廷议：{topic}", brief["instructions"], "", "## 立场（引擎给定，不可更改）"]
+        brief = service.debate_brief(session_id, topic, participants, memorial_id or None)
+        lines = [f"# 廷议：{brief['topic']}", *_debate_context(brief), brief["instructions"], "", "## 立场（引擎给定，不可更改）"]
         for row in brief["stances"]:
             persona = row["persona"]
             lines.append(
@@ -210,7 +219,7 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
     @register
     async def end_turn(session_id: str) -> str:
         result = await service.end_turn(session_id, narrate=server_mode)
-        return _turn_text(result)
+        return _turn_text(result, show_memorial=server_mode)
 
     @register
     async def history(session_id: str) -> str:
@@ -253,10 +262,21 @@ def _clause_lines(clauses: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _turn_text(result: dict[str, Any]) -> str:
+def _debate_context(result: dict[str, Any]) -> list[str]:
+    lines = []
+    if result.get("memorial"):
+        lines.append(f"对应奏疏：[{result['memorial']['id']}] {result['memorial']['title']}（谏言人按奏疏中的立场）")
+    entities = result.get("topic_entities") or []
+    if entities:
+        lines.append("议题涉及：" + "、".join(f"{row['name']}（{ENTITY_KIND_LABELS.get(row['kind'], row['kind'])}）" for row in entities))
+    return lines
+
+
+def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
+    """回合结果文本。终局只在末尾的「终局」段出现一次；事实逐条去重；client 模式的纪事就是事实拼接，不再重复。"""
     report = result["report"]
     lines = [f"# 已结算至 {result['calendar_label']}（第{report.get('turn')}回合）"]
-    facts = [fact_line(fact) for fact in report.get("facts", [])]
+    facts = list(dict.fromkeys(fact_line(fact) for fact in report.get("facts", []) if fact.get("kind") != "outcome"))
     lines.append("## 事实")
     lines.extend(f"- {fact}" for fact in facts) if facts else lines.append("- （无）")
     totals: dict[str, float | None] = {}
@@ -294,8 +314,9 @@ def _turn_text(result: dict[str, Any]) -> str:
         for term in crisis.get("terms", []):
             lines.append(f"- {term.get('label')}：{term.get('display')}")
     if report.get("warnings"):
-        lines.append("## 提示：" + "；".join(report["warnings"]))
-    lines.append(f"## 纪事\n{result['memorial']}")
+        lines.append("## 提示：" + "；".join(dict.fromkeys(report["warnings"])))
+    if show_memorial and result.get("memorial"):
+        lines.append(f"## 纪事\n{result['memorial']}")
     outcome = result.get("outcome")
     if outcome:
         lines.append(f"## 终局：{outcome['title']}（{'失败' if outcome['kind'] == 'fail' else '结局'}）\n{outcome.get('text', '')}")

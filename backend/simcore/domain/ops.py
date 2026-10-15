@@ -247,3 +247,19 @@ def describe_op_error(exc: Exception, raw: Any) -> str:
         else:
             parts.append(f"字段 {location} 无效（{error.get('msg', '')}）")
     return f"{name or '操作'} 格式无效：" + "；".join(parts[:5]) if parts else f"{name or '操作'} 格式无效"
+
+
+def memory_ops(raw: Any) -> list[dict[str, Any]]:
+    """奏疏选项 / 事件选项上的 memory 字段（{character, text} 或其列表）转成 Remember op。
+
+    格式不对的条目忽略（validate_scenario 会报告）。
+    """
+    rows = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        character, text = row.get("character"), str(row.get("text") or row.get("fact") or "").strip()
+        if character and text:
+            result.append({"op": "remember", "character": str(character), "fact": text})
+    return result

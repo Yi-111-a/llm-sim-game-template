@@ -65,6 +65,7 @@ class RequestModel(BaseModel):
 class CreateSession(RequestModel):
     scenario: str
     seed: int = 0
+    difficulty: str | None = None
 
 
 class ForkSession(RequestModel):
@@ -91,8 +92,9 @@ class ChooseOption(RequestModel):
 
 
 class DebateRequest(RequestModel):
-    topic: str
+    topic: str = ""
     participants: list[str]
+    memorial_id: str | None = None
 
 
 class AdviceRequest(RequestModel):
@@ -235,8 +237,13 @@ def create_app() -> FastAPI:
 
     @app.post("/api/sessions")
     async def create_session(request: CreateSession) -> dict[str, Any]:
-        session_id, session = service.create_session(request.scenario, request.seed)
-        return {"id": session_id, "scenario": request.scenario, "state": service.public_state(session)}
+        session_id, session = service.create_session(request.scenario, request.seed, request.difficulty)
+        return {
+            "id": session_id,
+            "scenario": request.scenario,
+            "difficulty": service.difficulty_info(session.head_state()),
+            "state": service.public_state(session),
+        }
 
     @app.get("/api/sessions")
     async def list_sessions() -> list[dict[str, Any]]:
@@ -305,7 +312,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/sessions/{session_id}/debate")
     async def debate(session_id: str, request: DebateRequest) -> dict[str, Any]:
-        return await service.debate(session_id, request.topic, request.participants)
+        return await service.debate(session_id, request.topic, request.participants, request.memorial_id)
 
     @app.get("/api/sessions/{session_id}/advice")
     async def list_advice(session_id: str) -> list[dict[str, Any]]:

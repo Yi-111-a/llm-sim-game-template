@@ -4,10 +4,11 @@ import os
 import random
 from typing import Any
 
-from simcore.domain.apply import apply
+from simcore.domain.apply import apply, edict_memories
 from simcore.domain.battle import advance_ai_routes, resolve_battles
 from simcore.domain.calendar import format_calendar, start_season_index
 from simcore.domain.crisis import crisis_report, evaluate_terms, formula_values
+from simcore.domain.difficulty import drift_factor, gravity_factor
 from simcore.domain.events import matches
 from simcore.domain.formulas import evaluate
 from simcore.domain.models import (
@@ -21,7 +22,7 @@ from simcore.domain.models import (
     WorldState,
     clone,
 )
-from simcore.domain.ops import parse_op
+from simcore.domain.ops import memory_ops, parse_op
 
 
 class GameOver(RuntimeError):
@@ -56,12 +57,18 @@ def resolve_turn(
     pending = [row for row in updated.pending_clauses if row.due_turn <= target]
     updated.pending_clauses = [row for row in updated.pending_clauses if row.due_turn > target]
     for clause in pending:
+        label = clause.label or ("延期诏令" if clause.source == "edict" else clause.source)
         for op in clause.ops:
+            memories = edict_memories(op, updated) if clause.source == "edict" else []
             try:
-                updated, facts = apply(op, updated, turn=target, inplace=True)
+                updated, facts = apply(op, updated, turn=target, inplace=True, source=label)
                 report.facts.extend(facts)
             except ValueError as exc:
                 report.warnings.append(f"延期条款未执行：{exc}")
+                continue
+            for memory in memories:
+                updated, facts = apply(memory, updated, turn=target, inplace=True)
+                report.facts.extend(facts)
 
     # 3. 常设命令
     for order in list(updated.standing_orders):
@@ -70,7 +77,7 @@ def resolve_turn(
             continue
         for op in order.ops:
             try:
-                updated, facts = apply(op, updated, turn=target, inplace=True)
+                updated, facts = apply(op, updated, turn=target, inplace=True, source=f"常设令：{order.text}")
                 report.facts.extend(facts)
             except ValueError as exc:
                 report.warnings.append(f"常设命令未执行：{exc}")
@@ -119,7 +126,7 @@ def resolve_turn(
         if project.progress >= project.turns:
             for raw_op in project.on_complete:
                 try:
-                    updated, facts = apply(parse_op(raw_op), updated, turn=target, inplace=True)
+                    updated, facts = apply(parse_op(raw_op), updated, turn=target, inplace=True, source=f"{project.name}竣工")
                     report.facts.extend(facts)
                 except ValueError as exc:
                     report.warnings.append(f"竣工效果未执行：{project.name}: {exc}")
@@ -163,7 +170,7 @@ def resolve_turn(
         if crisis and resource_id == crisis.get("resource"):
             crisis_terms = evaluate_terms(crisis, values)
         try:
-            amount = evaluate(expression, values)
+            amount = evaluate(expression, values) * drift_factor(updated, resource_id)
         except (ValueError, ZeroDivisionError) as exc:
             report.warnings.append(f"漂移公式无效：{resource_id}: {exc}")
             continue
@@ -250,13 +257,14 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         return state
     if not _scheduled(event, target) or not matches(event.get("conditions"), state, target):
         return state
-    gravity = float(event.get("gravity", 1))
+    gravity = min(1.0, float(event.get("gravity", 1)) * gravity_factor(state, event_id))
     if rng.random() > gravity:
         return state
     updated = state
+    event_title = str(event.get("title", event_id))
     for op in event.get("effects", []) or []:
         try:
-            updated, facts = apply(op, updated, turn=target, inplace=True)
+            updated, facts = apply(op, updated, turn=target, inplace=True, source=event_title)
             report.facts.extend(facts)
         except ValueError as exc:
             report.warnings.append(f"事件效果未执行：{event_id}: {exc}")
@@ -270,7 +278,7 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
             ChoiceOption(
                 id=choice_option_id(row, index),
                 text=str(row.get("text") or row.get("label") or choice_option_id(row, index)),
-                effects=list(row.get("effects") or row.get("ops") or []),
+                effects=[*(row.get("effects") or row.get("ops") or []), *memory_ops(row.get("memory"))],
                 conditions=row.get("conditions"),
             )
             for index, row in enumerate(raw_choices)

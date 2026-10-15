@@ -13,15 +13,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from simcore.agent.debate import debate_speeches, debate_summary, decide_stances, persona_card
+from simcore.agent.debate import debate_speeches, debate_summary, decide_stances, match_memorial, persona_card, topic_entities
 from simcore.agent.loop import AgentAborted
 from simcore.agent.roles import chat_availability, interpret_edict, minister_chat_messages, narrator
 from simcore.agent.tools import AgentTools
 from simcore.config import load_settings
-from simcore.domain.apply import OpRejected
+from simcore.domain.apply import OpRejected, edict_memories
+from simcore.domain.difficulty import DifficultyError, current_difficulty, public_difficulties
 from simcore.domain.digest import render_digest
 from simcore.domain.events import matches
-from simcore.domain.memorials import is_visible, memorial_flag, summarize_ops, visible_memorials
+from simcore.domain.memorials import MemorialError, is_visible, memorial_flag, summarize_ops, visible_memorials
 from simcore.domain.models import TurnReport, WorldState
 from simcore.domain.ops import OP_NAMES, op_json_schema
 from simcore.domain.rules import held_offices, player_character_id
@@ -49,6 +50,7 @@ ERROR_STATUS = {
     "UNKNOWN_ENTITY": 404,
     "UNKNOWN_CHARACTER": 404,
     "UNKNOWN_MEMORIAL": 404,
+    "UNKNOWN_DIFFICULTY": 422,
     "NOT_FOUND": 404,
     "INVALID_SCENARIO": 422,
     "INVALID_SCENARIO_PATH": 400,
@@ -167,6 +169,8 @@ class GameService:
                     "version": definition.get("version", "0.1.0"),
                     "categories": definition.get("edict_categories", []),
                     "calendar": definition.get("calendar", {}),
+                    "difficulties": public_difficulties(definition),
+                    "default_difficulty": definition.get("default_difficulty"),
                     "asset_ids": [entry.get("id", "") for entry in data.get("assets", {}).get("entries", [])],
                     "theme_css": theme.read_text(encoding="utf-8") if theme.is_file() else "",
                     "valid": not errors,
@@ -175,12 +179,15 @@ class GameService:
                 continue
         return result
 
-    def create_session(self, scenario_id: str, seed: int = 0) -> tuple[str, SessionStore]:
+    def create_session(self, scenario_id: str, seed: int = 0, difficulty: str | None = None) -> tuple[str, SessionStore]:
         scenario = self.scenario(scenario_id)
         errors = validate_scenario(scenario)
         if errors:
             raise GameError("INVALID_SCENARIO", "场景校验未通过：" + "；".join(errors[:5]))
-        initial = build_initial_state(scenario)
+        try:
+            initial = build_initial_state(scenario, difficulty or None)
+        except DifficultyError as exc:
+            raise GameError(exc.code, exc.message) from exc
         session_id = uuid.uuid4().hex
         path = session_root() / f"{session_id}.jsonl"
         session = SessionStore(path, scenario, initial, seed)
@@ -242,6 +249,7 @@ class GameService:
                     "scenario": session.header["scenario"],
                     "turn": session.head_turn(),
                     "seed": session.seed,
+                    "difficulty": session.header.get("difficulty"),
                     "created": session.header.get("timestamp"),
                 })
             except (OSError, KeyError, ValueError, IndexError, GameError):
@@ -297,6 +305,16 @@ class GameService:
             })
         return rows
 
+    @staticmethod
+    def difficulty_info(state: WorldState) -> dict[str, Any] | None:
+        row = current_difficulty(state)
+        return {"id": row.get("id"), "label": row.get("label"), "description": row.get("description", "")} if row else None
+
+    @staticmethod
+    def session_warnings(session: SessionStore) -> list[dict[str, Any]]:
+        changed = session.scenario_changed
+        return [{"code": "scenario_changed", **changed}] if changed else []
+
     def view(self, session_id: str) -> dict[str, Any]:
         session = self.session(session_id)
         state = session.state
@@ -306,6 +324,9 @@ class GameService:
             "session_id": session_id,
             "scenario": state.scenario_id,
             "turn": state.turn,
+            "difficulty": self.difficulty_info(state),
+            "scenario_changed": session.scenario_changed,
+            "warnings": self.session_warnings(session),
             "state": public_view(state, session.seed),
             "calendar_label": state.calendar.label,
             "objectives": self.objectives(session, state),
@@ -400,18 +421,26 @@ class GameService:
         receipt["changed_clauses"] = self._revalidate_draft(session, state, receipt) if state_changed else []
         clauses: list[dict[str, Any]] = receipt["clauses"]
         runnable = [clause for clause in clauses if clause["status"] == "applied" and clause.get("op")]
-        for clause, result in zip(runnable, session.append_ops([clause["op"] for clause in runnable]), strict=True):
+        results = session.append_ops([clause["op"] for clause in runnable], [self._clause_label(clause) for clause in runnable])
+        memories: list[dict[str, Any]] = []
+        for clause, result in zip(runnable, results, strict=True):
             if not result["ok"]:
                 clause["status"] = "rejected"
                 clause["reason"] = result["message"]
                 clause["code"] = result["code"]
-        delayed: dict[Any, list[dict[str, Any]]] = {}
+            else:
+                # 任免、处置人物的条款写入当事人的记忆（延期条款在下季执行时再写，见 resolve_turn）。
+                memories.extend(edict_memories(clause["op"], state))
+        if memories:
+            session.append_ops(memories)
+        delayed: dict[Any, tuple[str, list[dict[str, Any]]]] = {}
         for index, clause in enumerate(clauses):
             if clause["status"] == "delayed" and clause.get("op"):
-                delayed.setdefault(clause.get("group", f"clause-{index}"), []).append(clause["op"])
-        for ops in delayed.values():
+                group = delayed.setdefault(clause.get("group", f"clause-{index}"), (self._clause_label(clause), []))
+                group[1].append(clause["op"])
+        for label, ops in delayed.values():
             # 同组（同一奏疏选项 / 同一段诏令）的延期条款排成一个延期包，下季一并执行。
-            session.append_pending(ops, state.turn + 1)
+            session.append_pending(ops, state.turn + 1, label=label)
         flags = [
             {"op": "set_flag", "key": memorial_flag(str(row["memorial_id"])), "value": row["option_id"]}
             for row in receipt.get("adopted", [])
@@ -426,6 +455,15 @@ class GameService:
         )
         receipt["state"] = public_view(session.head_state(), session.seed)
         return receipt
+
+    @staticmethod
+    def _clause_label(clause: dict[str, Any]) -> str:
+        """条款来源说明，作为事实原因（op 没写 reason 时）：奏疏标题，或「诏令」。"""
+        if clause.get("label"):
+            return str(clause["label"])
+        if clause.get("source") == "memorial":
+            return str(clause.get("text", "")).split("：")[0] or "奏疏"
+        return "诏令"
 
     def _revalidate_draft(self, session: SessionStore, state: WorldState, receipt: dict[str, Any]) -> list[int]:
         """按当前状态重演草案：已处理/过期的奏疏整组作废，applied / delayed 条款逐条重新校验（延期骰结果保留）。
@@ -573,29 +611,48 @@ class GameService:
                 raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}不在朝，不能与议")
         return unique
 
-    def debate_brief(self, session_id: str, topic: str, participants: list[str]) -> dict[str, Any]:
+    def _debate_setup(
+        self, session: SessionStore, state: WorldState, topic: str, participants: list[str], memorial_id: str | None
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        """廷议共用部分：议题（可由 memorial_id 补出）、立场与议题分析（topic_entities / 对应奏疏）。"""
+        try:
+            memorial = match_memorial(session.scenario, state, topic, memorial_id or None)
+        except MemorialError as exc:
+            raise GameError(exc.code, exc.message) from exc
+        if not topic.strip() and memorial is not None:
+            topic = str(memorial.get("title", memorial_id))
+        if not topic.strip():
+            raise GameError("INVALID_REQUEST", "廷议议题不能为空")
+        unique = self._debate_participants(session, state, participants)
+        stances = decide_stances(
+            state, session.scenario, topic, unique, memorial_id=str(memorial["id"]) if memorial else None, seed=session.seed
+        )
+        analysis = {
+            "topic_entities": topic_entities(state, topic),
+            "memorial": {"id": memorial.get("id"), "title": memorial.get("title")} if memorial else None,
+        }
+        return topic, stances, analysis
+
+    def debate_brief(self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None) -> dict[str, Any]:
         """client 模式：只给立场与人设，由调用方模型写台词。"""
         session = self.session(session_id)
         state = session.state
-        unique = self._debate_participants(session, state, participants)
-        stances = decide_stances(state, session.scenario, topic, unique)
+        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id)
         for row in stances:
             row["persona"] = persona_card(state, row["character"])
         return {
             "topic": topic,
+            **analysis,
             "stances": stances,
             "digest": render_digest(state, session.seed, None, session.last_report(), session.scenario),
             "summary": debate_summary(stances),
             "instructions": "按 stances 的顺序为每人写一段不超过三句的发言；立场不可更改；数字只能引用 digest 中的值。",
         }
 
-    async def debate(self, session_id: str, topic: str, participants: list[str]) -> dict[str, Any]:
+    async def debate(self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None) -> dict[str, Any]:
         session = self.session(session_id)
         state = session.state
-        if not topic.strip():
-            raise GameError("INVALID_REQUEST", "廷议议题不能为空")
-        unique = self._debate_participants(session, state, participants)
-        stances = decide_stances(state, session.scenario, topic, unique)
+        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id)
         try:
             speeches = await debate_speeches(
                 state, session.scenario, topic, stances, self.provider(session.scenario, "court_debate"), session.seed, session.last_report()
@@ -605,7 +662,7 @@ class GameService:
         summary = debate_summary(stances)
         session.append_message("debate", json.dumps({"topic": topic, "speeches": speeches}, ensure_ascii=False), {"topic": topic})
         self.touch(session_id)
-        return {"topic": topic, "speeches": speeches, "summary": summary}
+        return {"topic": topic, **analysis, "speeches": speeches, "summary": summary}
 
     def add_advice(self, session_id: str, character: str, text: str, source: str = "player") -> dict[str, Any]:
         session = self.session(session_id)
@@ -641,6 +698,14 @@ class GameService:
         view = self.view(session_id)
         definition = self.definition(session)
         lines = [f"# 《{definition.get('title', state.scenario_id)}》简报 · {state.calendar.label}（第{state.turn}回合）", f"存档 session_id：{session_id}"]
+        if view["difficulty"]:
+            difficulty = view["difficulty"]
+            lines.append(f"难度：{difficulty['label']}（{difficulty['id']}）" + (f"——{difficulty['description']}" if difficulty.get("description") else ""))
+        for warning in view["warnings"]:
+            lines.append(
+                f"**注意 [{warning['code']}]**：{warning['message']}"
+                f"（存档时剧本 {warning.get('saved_version') or '?'}，当前 {warning.get('current_version') or '?'}）"
+            )
         if state.outcome is not None:
             lines.append(f"**本局已终局：{state.outcome.title}**（{'失败' if state.outcome.kind == 'fail' else '结局'}）{state.outcome.text}")
         if view["objectives"]:
@@ -731,7 +796,8 @@ class GameService:
                 "max_concurrent_offices": state.rules.get("max_concurrent_offices", 1),
                 "notes": [
                     "每条 op 是一个 JSON 对象，op 字段为操作名；未知字段会被拒绝。",
-                    "move_character / move_army 的目标必须与所在地相邻；行程按邻接表的回合数计。",
+                    "move_character / move_army 可指向任何可达地区：引擎按邻接表寻最短路（同样短时优先本方控制地区），整段一次出发，"
+                    "途中不能再下令；抵达回合 = 各段回合数之和。无路可达时返回 OUT_OF_RANGE。",
                     "appoint 前须满足官职 requires；已达兼职上限时先 dismiss。",
                     "被拒条款返回稳定错误码：UNKNOWN_ENTITY、INVALID_TARGET、OFFICE_OCCUPIED、OFFICE_HELD、OFFICE_REQUIREMENT、"
                     "CHARACTER_UNAVAILABLE、OUT_OF_RANGE、INSUFFICIENT_RESOURCE、CONDITION_FAILED、GAME_OVER。",

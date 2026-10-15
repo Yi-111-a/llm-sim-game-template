@@ -1,7 +1,9 @@
 """StateDigest：引擎渲染的事实摘要（固定格式中文文本），供 LLM 提示词与 MCP 使用。
 
 只使用公开视图可见的数值：隐藏资源一律给区间。传入 character_id 时只给该人物能知道的部分：
-本人身份、所在及相邻地区、本人统领或驻在附近的军队；全国资源与官职在任者人人可知。
+本人身份、相关地区（所在、统兵所在、所知、行程目的地、相邻）、本人统领或驻在相关地区的军队、本人记忆；
+其余地区压成一行名单。全国资源与官职在任者人人可知。
+非玩家势力控制的地区（外域）不列经济指标，只给控制者与驻军。
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from simcore.domain.models import TurnReport, WorldState
-from simcore.domain.rules import STATUS_NAMES, held_offices
+from simcore.domain.rules import STATUS_NAMES, held_offices, stat_name
 from simcore.domain.visibility import fact_line, format_number, public_report, resource_display
 
 __all__ = ["STATUS_NAMES", "digest_numbers", "render_digest"]
@@ -25,6 +27,7 @@ def render_digest(
     lines: list[str] = []
     definition = (scenario or {}).get("scenario", {}) or {}
     stat_names = {str(row.get("id")): str(row.get("name", row.get("id"))) for row in definition.get("stats", []) or [] if isinstance(row, dict)}
+    player_faction = state.rules.get("player_faction")
     character = state.characters.get(character_id) if character_id else None
     lines.append(f"【时】{state.calendar.label}（第{state.turn}回合）")
     if character is not None:
@@ -43,14 +46,31 @@ def render_digest(
         lines.append("【官职】" + "；".join(office_rows))
     visible_regions = _visible_regions(state, character)
     region_rows = []
+    foreign_rows = []
     for region_id in visible_regions:
         region = state.regions[region_id]
-        stats = " ".join(f"{stat_names.get(key, key)}{_number(value)}" for key, value in region.stats.items())
         controller = state.factions.get(region.controller) if region.controller else None
-        suffix = f"（{controller.name}）" if controller else ""
+        if not _own(region.controller, player_faction):
+            garrison = [army.name for army in state.armies.values() if army.region == region_id and army.strength > 0]
+            holder = controller.name if controller else str(region.controller)
+            foreign_rows.append(f"{region.name}（{holder}）" + (f"驻{'、'.join(garrison)}" if garrison else ""))
+            continue
+        stats = " ".join(f"{stat_names.get(key) or stat_name(state, key)}{_number(value)}" for key, value in region.stats.items())
+        suffix = f"（{controller.name}）" if controller and player_faction is None else ""
         region_rows.append(f"{region.name}{suffix} {stats}".strip())
     if region_rows:
         lines.append("【地区】" + "；".join(region_rows))
+    if foreign_rows:
+        lines.append("【外域】" + "；".join(foreign_rows))
+    others = [region_id for region_id in state.regions if region_id not in visible_regions]
+    if character is not None and others:
+        groups: dict[str, list[str]] = {}
+        for region_id in others:
+            region = state.regions[region_id]
+            faction = state.factions.get(region.controller) if region.controller else None
+            label = "本方" if _own(region.controller, player_faction) else (faction.name if faction else str(region.controller))
+            groups.setdefault(label, []).append(region.name)
+        lines.append("【他处】" + "；".join(f"{label}：{'、'.join(names)}" for label, names in groups.items()))
     army_rows = []
     for army in state.armies.values():
         if character is not None and army.commander != character.id and army.region not in visible_regions:
@@ -73,6 +93,8 @@ def render_digest(
         lines.append("【工程】" + "；".join(f"{row.name} {row.progress}/{row.turns}{'（停工）' if row.stalled else ''}" for row in state.projects))
     if state.standing_orders:
         lines.append("【常设令】" + "；".join(row.text for row in state.standing_orders))
+    if character is not None and character.memories:
+        lines.append("【记忆】" + "；".join(character.memories[-12:]))
     if state.pending_choices and character is None:
         lines.append("【待决】" + "；".join(f"{row.title}（选项：{'/'.join(option.text for option in row.options)}）" for row in state.pending_choices))
     if report is not None:
@@ -92,13 +114,34 @@ def digest_numbers(digest: str) -> set[float]:
     return {float(item) for item in re.findall(r"(?<![A-Za-z0-9_.])-?\d+(?:\.\d+)?", digest)}
 
 
+def _own(controller: str | None, player_faction: Any) -> bool:
+    return player_faction is None or controller in (None, player_faction)
+
+
 def _visible_regions(state: WorldState, character: Any) -> list[str]:
+    """人物的相关地区，按相关程度排序：所在 → 统兵所在 → 所知（knowledge 写了地区 id 或名称）→ 行程目的地 → 相邻。"""
     if character is None:
         return list(state.regions)
+    ordered: list[str] = []
+
+    def add(region_id: Any) -> None:
+        if region_id in state.regions and region_id not in ordered:
+            ordered.append(str(region_id))
+
+    add(character.region)
+    for army in state.armies.values():
+        if army.commander == character.id:
+            add(army.region)
+    for item in character.knowledge:
+        for region in state.regions.values():
+            if item == region.id or region.name in str(item):
+                add(region.id)
+    if character.in_transit:
+        add(character.in_transit.get("to_region"))
     home = state.regions.get(character.region)
-    if home is None:
-        return []
-    return [home.id, *[neighbor for neighbor in home.adjacency if neighbor in state.regions]]
+    for neighbor in home.adjacency if home else {}:
+        add(neighbor)
+    return ordered
 
 
 def _office_name(state: WorldState, office_id: str) -> str:

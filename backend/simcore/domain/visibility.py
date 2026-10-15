@@ -163,9 +163,10 @@ def public_report(
             continue
         if fact.get("kind") == "resource" and fact.get("entity") in hidden:
             name = state.resources[fact["entity"]].name
-            fact.update({"text": f"{name}有所变动（数值不明）", "before": None, "after": None})
+            cause = f"{fact['cause']}；" if fact.get("cause") else ""
+            fact.update({"text": f"{name}有所变动（{cause}数值不明）", "before": None, "after": None})
         if fact.get("kind") == "trait" and _secret_trait(fact, secret_traits):
-            fact.update({"text": "某人心态有所变化", "before": None, "after": None, "key": None})
+            fact.update({"text": "某人心态有所变化", "before": None, "after": None, "key": None, "cause": None})
         fact["display"] = fact_line(fact)
         facts.append(fact)
     data["facts"] = facts
@@ -222,13 +223,14 @@ def redacted_report(report: TurnReport, state: WorldState) -> TurnReport:
     redacted.facts = [fact for fact in redacted.facts if not is_internal_fact(fact)]
     for fact in redacted.facts:
         if fact.kind == "resource" and fact.entity in hidden:
-            fact.text = f"{state.resources[fact.entity].name}有所变动"
+            fact.text = f"{state.resources[fact.entity].name}有所变动" + (f"（{fact.cause}）" if fact.cause else "")
             fact.before = None
             fact.after = None
         if fact.kind == "trait" and _secret_trait(fact.model_dump(), secret_traits):
             fact.text = "某人心态有所变化"
             fact.before = None
             fact.after = None
+            fact.cause = None
     redacted.ledger_lines = [line for line in redacted.ledger_lines if line.resource not in hidden]
     redacted.crisis = {}
     return redacted

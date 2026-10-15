@@ -9,6 +9,7 @@ from typing import Any
 
 from simcore.agent.loop import guarded_chat
 from simcore.agent.tools import AgentTools
+from simcore.domain.difficulty import delay_factor
 from simcore.domain.digest import render_digest
 from simcore.domain.memorials import MemorialError, adopted_ops
 from simcore.domain.models import TurnReport, WorldState
@@ -109,6 +110,7 @@ async def interpret_edict(
             "source": "memorial",
             "memorial_id": memorial_id,
             "option_id": option_id,
+            "label": str(item.get("title", memorial_id)),
         }
         if any(row["memorial_id"] == memorial_id for row in accepted_memorials):
             clauses.append({**base, "status": "rejected", "op": None, "reason": "同一奏疏只能采纳一个选项", "code": "DUPLICATE_MEMORIAL"})
@@ -124,7 +126,7 @@ async def interpret_edict(
             continue
         add_clauses(tools.propose_ops(operations), base)
     for client_op in client_ops or []:
-        add_clauses(tools.propose_ops([client_op]), {"category": "client", "text": "", "source": "client"})
+        add_clauses(tools.propose_ops([client_op]), {"category": "client", "text": "", "source": "client", "label": "诏令"})
 
     for index, (category, text) in enumerate(sections.items()):
         if index >= 12:
@@ -201,7 +203,7 @@ async def interpret_edict(
         if not proposed:
             clauses.append({"category": category, "text": text, "status": "narrative_only", "ops": [], "reason": "", "source": "text"})
             continue
-        add_clauses(proposed, {"category": category, "text": text, "source": "text"})
+        add_clauses(proposed, {"category": category, "text": text, "source": "text", "label": f"诏令（{category}）"})
     return {
         "id": f"edict-{uuid.uuid4().hex[:12]}",
         "turn": state.turn,
@@ -349,4 +351,5 @@ def _delay_probability(formula: dict[str, Any], state: WorldState) -> float:
     base = float(formula.get("base_delay", 0))
     authority_factor = float(formula.get("authority_factor", 0))
     corruption_factor = float(formula.get("corruption_factor", 0))
-    return min(1.0, max(0.0, base + corruption_value * corruption_factor - authority_value * authority_factor))
+    probability = base + corruption_value * corruption_factor - authority_value * authority_factor
+    return min(1.0, max(0.0, probability * delay_factor(state)))

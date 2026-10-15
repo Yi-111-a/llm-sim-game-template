@@ -21,6 +21,25 @@ def state_hash(state: WorldState) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def scenario_fingerprint(scenario: dict[str, Any]) -> dict[str, Any]:
+    """场景身份：id、version 与内容哈希（全部 YAML 解析结果，不含所在路径）。存档头记录它，读档时比对。"""
+    definition = scenario.get("scenario", {}) or {}
+    content = {key: value for key, value in scenario.items() if key != "root"}
+    encoded = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return {
+        "scenario_version": str(definition.get("version", "")),
+        "scenario_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+    }
+
+
+def _dumps(row: dict[str, Any]) -> str:
+    """存档行：紧凑 JSON（含状态快照，省去空格可小三成）。
+
+    不排序键：开局状态与快照里的资源、地区、军队等按剧本顺序保存，读回后的遍历顺序（显示、结算）与进程内一致。
+    """
+    return json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+
+
 class SessionStore:
     def __init__(
         self,
@@ -48,15 +67,39 @@ class SessionStore:
                 "timestamp": _now(),
                 "scenario": initial_state.scenario_id,
                 "seed": self.seed,
+                **scenario_fingerprint(scenario),
                 "initial_state": initial_state.model_dump(mode="json"),
                 "parentSession": None,
             }
+            difficulty = initial_state.rules.get("difficulty")
+            if isinstance(difficulty, dict):
+                self.header["difficulty"] = difficulty.get("id")
             self.entries: list[dict[str, Any]] = []
             self._write()
         # 状态快照缓存：节点 id → 该节点之后的状态。快照只读（对外一律返回副本），状态不变的节点共享同一快照。
         self._state_cache: dict[str, WorldState] = {}
         self._index: dict[str, dict[str, Any]] = {item["id"]: item for item in self.entries}
         self._drafts_cache: tuple[tuple[int, int], dict[str, Any]] | None = None
+
+    @property
+    def scenario_changed(self) -> dict[str, Any] | None:
+        """存档所用剧本与当前剧本内容不同时返回说明（旧存档头没有哈希时返回 None）。
+
+        读档以状态快照为准，剧本改动不会追溯改变已结算的回合；之后的回合按当前剧本结算。
+        """
+        recorded = self.header.get("scenario_hash")
+        if not recorded:
+            return None
+        current = scenario_fingerprint(self.scenario)
+        if current["scenario_hash"] == recorded:
+            return None
+        return {
+            "saved_version": self.header.get("scenario_version"),
+            "current_version": current["scenario_version"],
+            "saved_hash": str(recorded)[:12],
+            "current_hash": current["scenario_hash"][:12],
+            "message": "剧本自开局以来已改动：已结算的回合以存档快照为准，此后按新剧本结算。",
+        }
 
     @property
     def head_id(self) -> str | None:
@@ -71,27 +114,35 @@ class SessionStore:
         """当前状态的只读快照：不复制，调用方不得修改。"""
         return self._snapshot(self.head_id)
 
-    def append_op(self, op: dict[str, Any]) -> tuple[WorldState, list[Any], str]:
-        updated, facts = apply(op, self.head_state())
-        entry = self._append("op", {"op": parse_op(op).model_dump(mode="json"), "state_hash": state_hash(updated)})
+    def append_op(self, op: dict[str, Any], source: str | None = None) -> tuple[WorldState, list[Any], str]:
+        updated, facts = apply(op, self.head_state(), source=source)
+        payload: dict[str, Any] = {"op": parse_op(op).model_dump(mode="json"), "state_hash": state_hash(updated)}
+        if source:
+            payload["source"] = source
+        entry = self._append("op", payload)
         self._state_cache[entry["id"]] = clone(updated)
         return updated, facts, entry["id"]
 
-    def append_ops(self, ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def append_ops(self, ops: list[dict[str, Any]], sources: list[str | None] | None = None) -> list[dict[str, Any]]:
         """顺序执行一批操作（诏书确认用）：只复制一次状态；被拒的 op 不写入日志。
 
+        sources 与 ops 等长（可省略），为每条操作的来源说明（奏疏标题等），写进事实原因。
         返回与 ops 等长的结果：{ok: True, facts, id} 或 {ok: False, code, message}。
         """
         state = clone(self.head_state())
         results: list[dict[str, Any]] = []
         last_id: str | None = None
-        for op in ops:
+        for index, op in enumerate(ops):
+            source = sources[index] if sources is not None and index < len(sources) else None
             try:
-                state, facts = apply(op, state, inplace=True)
+                state, facts = apply(op, state, inplace=True, source=source)
             except ValueError as exc:
                 results.append({"ok": False, "code": getattr(exc, "code", "INVALID_TARGET"), "message": getattr(exc, "message", str(exc))})
                 continue
-            entry = self._append("op", {"op": parse_op(op).model_dump(mode="json"), "state_hash": state_hash(state)})
+            payload: dict[str, Any] = {"op": parse_op(op).model_dump(mode="json"), "state_hash": state_hash(state)}
+            if source:
+                payload["source"] = source
+            entry = self._append("op", payload)
             last_id = entry["id"]
             results.append({"ok": True, "facts": facts, "id": entry["id"]})
         if last_id is not None:
@@ -102,11 +153,13 @@ class SessionStore:
         current = self.head_state()
         rng = random.Random(self.seed + current.turn)
         updated, report = resolve_turn(current, rng, self.scenario)
+        # 每个回合节点都带结算后的完整状态快照：读档从最近的快照起步，不再用（可能已改动的）剧本重放旧回合。
         entry = self._append(
             "turn",
             {
                 "report": report.model_dump(mode="json"),
                 "state_hash": report.state_hash or state_hash(updated),
+                "snapshot": updated.model_dump(mode="json"),
             },
         )
         self._state_cache[entry["id"]] = clone(updated)
@@ -184,18 +237,13 @@ class SessionStore:
         return result
 
     def append_pending(
-        self, ops: list[dict[str, Any]], due_turn: int, source: str = "edict"
+        self, ops: list[dict[str, Any]], due_turn: int, source: str = "edict", label: str = ""
     ) -> tuple[WorldState, str]:
-        state = queue_delayed(self.head_state(), ops, due_turn, source)
-        entry = self._append(
-            "pending",
-            {
-                "ops": ops,
-                "due_turn": due_turn,
-                "source": source,
-                "state_hash": state_hash(state),
-            },
-        )
+        state = queue_delayed(self.head_state(), ops, due_turn, source, label)
+        payload: dict[str, Any] = {"ops": ops, "due_turn": due_turn, "source": source, "state_hash": state_hash(state)}
+        if label:
+            payload["label"] = label
+        entry = self._append("pending", payload)
         self._state_cache[entry["id"]] = clone(state)
         return state, entry["id"]
 
@@ -210,6 +258,11 @@ class SessionStore:
             entry_id = self.head_id
         selected = self._path_to(entry_id)
         forked = SessionStore(path, self.scenario, self.initial_state, self.seed)
+        for key in ("scenario_version", "scenario_hash", "difficulty"):
+            if key in self.header:
+                forked.header[key] = self.header[key]
+            else:
+                forked.header.pop(key, None)
         forked.entries = [dict(item) for item in selected]
         forked._index = {item["id"]: item for item in forked.entries}
         forked._state_cache = {item["id"]: self._state_cache[item["id"]] for item in selected if item["id"] in self._state_cache}
@@ -219,6 +272,35 @@ class SessionStore:
 
     def history(self) -> list[dict[str, Any]]:
         return self._path_to(self.head_id)
+
+    def verify_replay(self) -> dict[str, Any]:
+        """校验工具（`sim replay`）：用当前剧本从开局完整重放当前路径，逐个回合节点比对存档里的状态哈希。
+
+        不修改存档。发现分歧时记录 {entry_id, turn, expected, actual}，并从该节点的存档快照（若有）继续，
+        以便后续回合各自独立比对。返回 {ok, turns_checked, divergences, final_hash, scenario_changed}。
+        """
+        state = clone(self.initial_state)
+        divergences: list[dict[str, Any]] = []
+        checked = 0
+        for entry in self._path_to(self.head_id):
+            if entry["type"] == "turn":
+                state, report = resolve_turn(state, random.Random(self.seed + state.turn), self.scenario)
+                checked += 1
+                expected = entry["payload"].get("state_hash")
+                if expected and report.state_hash != expected:
+                    divergences.append({"entry_id": entry["id"], "turn": state.turn, "expected": expected, "actual": report.state_hash})
+                    snapshot = entry["payload"].get("snapshot")
+                    if isinstance(snapshot, dict):
+                        state = WorldState.model_validate(snapshot)
+            else:
+                state = self._step(entry, state)
+        return {
+            "ok": not divergences,
+            "turns_checked": checked,
+            "divergences": divergences,
+            "final_hash": state_hash(state),
+            "scenario_changed": self.scenario_changed,
+        }
 
     def replay(self, entry_id: str | None = None) -> tuple[WorldState, str]:
         state = clone(self.initial_state)
@@ -231,6 +313,7 @@ class SessionStore:
                     entry["payload"]["ops"],
                     entry["payload"]["due_turn"],
                     entry["payload"].get("source", "edict"),
+                    entry["payload"].get("label", ""),
                 )
                 if state_hash(state) != entry["payload"]["state_hash"]:
                     raise ValueError(f"Replay hash mismatch at entry {entry['id']}")
@@ -246,7 +329,11 @@ class SessionStore:
         return clone(self._snapshot(entry_id))
 
     def _snapshot(self, entry_id: str | None) -> WorldState:
-        """某节点之后的状态快照（只读、不复制）；只重放最近一个已缓存节点之后的部分。"""
+        """某节点之后的状态快照（只读、不复制）。
+
+        从路径上最近的「内存缓存或存档快照（回合节点的 snapshot）」起步，只重放其后的节点；
+        回合节点有快照，所以读档不依赖剧本当前内容。旧存档没有快照时从开局重放。
+        """
         if entry_id is None:
             return self.initial_state
         cached = self._state_cache.get(entry_id)
@@ -257,6 +344,11 @@ class SessionStore:
         start = 0
         for index in range(len(path) - 1, -1, -1):
             hit = self._state_cache.get(path[index]["id"])
+            if hit is None:
+                snapshot = path[index]["payload"].get("snapshot") if path[index]["type"] == "turn" else None
+                if isinstance(snapshot, dict):
+                    hit = WorldState.model_validate(snapshot)
+                    self._state_cache[path[index]["id"]] = hit
             if hit is not None:
                 state = hit
                 start = index + 1
@@ -276,6 +368,7 @@ class SessionStore:
                 entry["payload"]["ops"],
                 entry["payload"]["due_turn"],
                 entry["payload"].get("source", "edict"),
+                entry["payload"].get("label", ""),
             )
         elif entry["type"] == "turn":
             state, _ = resolve_turn(state, random.Random(self.seed + state.turn), self.scenario)
@@ -351,7 +444,7 @@ class SessionStore:
         self._index[entry["id"]] = entry
         # 日志只追加：写入一行即可，不必重写整个文件（重写是 O(n)，整局累计 O(n²)）。
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.write(_dumps(entry) + "\n")
         return entry
 
     def _path_to(self, entry_id: str | None) -> list[dict[str, Any]]:
@@ -378,7 +471,7 @@ class SessionStore:
     def _write(self) -> None:
         lines = [self.header, *self.entries]
         self.path.write_text(
-            "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in lines),
+            "".join(_dumps(row) + "\n" for row in lines),
             encoding="utf-8",
             newline="\n",
         )

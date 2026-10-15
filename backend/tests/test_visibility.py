@@ -101,7 +101,7 @@ def test_edict_draft_combines_memorial_client_and_text_sources(mech_scenario) ->
             None,
             seed=1,
             adopted=[{"memorial_id": "m_tax", "option_id": "approve"}, {"memorial_id": "m_tax", "option_id": "deny"}, {"memorial_id": "zz", "option_id": "x"}],
-            client_ops=[{"op": "appoint", "character": "chancellor", "office": "censor"}, {"op": "move_army", "army": "guard", "to_region": "north"}],
+            client_ops=[{"op": "appoint", "character": "chancellor", "office": "censor"}, {"op": "move_army", "army": "guard", "to_region": "capital"}],
         )
     )
     sources = [(clause["source"], clause["status"], clause.get("code")) for clause in receipt["clauses"]]
@@ -111,7 +111,7 @@ def test_edict_draft_combines_memorial_client_and_text_sources(mech_scenario) ->
         ("memorial", "rejected", "DUPLICATE_MEMORIAL"),
         ("memorial", "rejected", "UNKNOWN_MEMORIAL"),
         ("client", "applied", None),
-        ("client", "rejected", "OUT_OF_RANGE"),
+        ("client", "rejected", "INVALID_TARGET"),
         ("text", "narrative_only", None),
     ]
     assert receipt["adopted"] == [{"memorial_id": "m_tax", "option_id": "approve"}]
@@ -127,7 +127,9 @@ def test_digest_uses_public_values_and_character_scope(mech_scenario) -> None:
     assert "北镇" in digest and "叛军主力" in digest
     personal = render_digest(state, 2, "chancellor", None, mech_scenario)
     assert "【本人】李相" in personal and "宰相" in personal
-    assert "北镇" not in personal  # 京畿只与雄关相邻
+    region_line = next(line for line in personal.splitlines() if line.startswith("【地区】"))
+    assert "北镇" not in region_line  # 京畿只与雄关相邻：北镇只在「他处」一行里出现名字
+    assert "【他处】" in personal and "北镇" in personal.split("【他处】")[1].splitlines()[0]
     assert "禁军" in personal and "叛军主力" not in personal
     messages = minister_chat_messages("chancellor", state, "边事如何？", mech_scenario, 2)
     assert "StateDigest" in messages[0]["content"] and "李相" in messages[0]["content"]

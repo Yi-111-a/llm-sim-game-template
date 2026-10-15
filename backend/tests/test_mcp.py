@@ -88,11 +88,12 @@ def test_client_mode_full_play_loop_without_leaking_hidden_values(mech_env) -> N
                 session_id=session_id,
                 sections={"interior": "减赋以安民"},
                 adopted=[{"memorial_id": "m_tax", "option_id": "approve"}],
-                ops=[{"op": "move_army", "army": "guard", "to_region": "north"}],
+                ops=[{"op": "move_army", "army": "guard", "to_region": "north"}, {"op": "move_army", "army": "pass_army", "to_region": "pass"}],
             )
             assert not error
             assert "[applied 可执行] (memorial) 国库 −50" in draft
-            assert "[rejected 被拒] [OUT_OF_RANGE] (client)" in draft
+            assert "[applied 可执行] (client) 禁军 移驻 北镇（经雄关、平原，约3季）" in draft  # 非相邻目标：整段寻路
+            assert "[rejected 被拒] [INVALID_TARGET] (client)" in draft
             assert "narrative_only" in draft
             edict_id = re.search(r"edict_id=(edict-[0-9a-f]+)", draft).group(1)
             error, confirmed = await call(client, "confirm_edict", session_id=session_id, edict_id=edict_id)

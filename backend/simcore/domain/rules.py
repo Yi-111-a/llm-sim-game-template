@@ -1,3 +1,4 @@
+import heapq
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,7 +39,9 @@ STATUS_NAMES = {"alive": "在世", "dead": "已故", "imprisoned": "系狱", "ex
 
 
 def entity_name(state: WorldState, entity_id: Any) -> str:
-    """任意实体 id 的显示名：人物 / 势力 / 地区 / 军队 / 官职 / 资源；找不到时原样返回。"""
+    """任意实体 id 的显示名：人物 / 势力 / 地区 / 军队 / 官职 / 资源；找不到时原样返回；空 id 返回「无」。"""
+    if entity_id is None or entity_id == "":
+        return "无"
     key = str(entity_id)
     for table in (state.characters, state.factions, state.regions, state.armies, state.offices, state.resources):
         row = table.get(key)
@@ -72,6 +75,56 @@ def player_character_id(state: WorldState, settings: dict[str, Any] | None = Non
         office_id = source.get("player_office")
         if office_id and str(office_id) in state.offices:
             return state.offices[str(office_id)].holder
+    return None
+
+
+TURN_UNIT_LABELS = {"month": "月", "season": "季", "year": "年"}
+
+
+def turn_unit_label(state: WorldState) -> str:
+    """回合单位的显示名（rules.turn_unit_label，或按 rules.turn_unit 推断；旧存档缺省为「回合」）。"""
+    label = state.rules.get("turn_unit_label")
+    if label:
+        return str(label)
+    return TURN_UNIT_LABELS.get(str(state.rules.get("turn_unit", "")), "回合")
+
+
+def mover_faction(state: WorldState, faction: str | None) -> str | None:
+    return faction or (str(state.rules["player_faction"]) if state.rules.get("player_faction") else None)
+
+
+def find_route(state: WorldState, origin: str, destination: str, faction: str | None = None) -> tuple[list[str], int] | None:
+    """按邻接表寻路：行程回合数最短；同样短时优先途经本方控制的地区，再取途经地区最少、id 字典序最小者（确定性）。
+
+    返回 (含起点与终点的路径, 总回合数)；不可达返回 None。faction 为行进者所属势力（缺省为玩家势力）。
+    """
+    if origin not in state.regions or destination not in state.regions:
+        return None
+    if origin == destination:
+        return [origin], 0
+    own = mover_faction(state, faction)
+
+    def foreign(region_id: str) -> int:
+        controller = state.regions[region_id].controller
+        return 0 if own is None or controller in (None, own) else 1
+
+    frontier: list[tuple[int, int, int, list[str]]] = [(0, 0, 0, [origin])]
+    best: dict[str, tuple[int, int, int]] = {origin: (0, 0, 0)}
+    while frontier:
+        turns, foreign_count, hops, path = heapq.heappop(frontier)
+        here = path[-1]
+        if here == destination:
+            return path, turns
+        if best.get(here, (turns, foreign_count, hops)) < (turns, foreign_count, hops):
+            continue
+        for neighbor, cost in sorted(state.regions[here].adjacency.items()):
+            if neighbor not in state.regions or neighbor in path:
+                continue
+            key = (turns + max(0, int(cost)), foreign_count + foreign(neighbor), hops + 1)
+            if neighbor in best and best[neighbor] <= key:
+                continue
+            best[neighbor] = key
+            heapq.heappush(frontier, (*key, [*path, neighbor]))
     return None
 
 
@@ -128,16 +181,20 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
             return Rejected("UNKNOWN_ENTITY", "人物或目标地区不存在")
         if character.status != "alive" or character.in_transit:
             return Rejected("CHARACTER_UNAVAILABLE", "人物当前不能行动")
-        if op.to_region not in state.regions[character.region].adjacency:
-            return Rejected("OUT_OF_RANGE", "目标地区不与人物所在地区相邻")
+        if op.to_region == character.region:
+            return Rejected("INVALID_TARGET", f"{character.name}已在{state.regions[op.to_region].name}")
+        if find_route(state, character.region, op.to_region, character.faction) is None:
+            return Rejected("OUT_OF_RANGE", f"{character.name}无路可达{state.regions[op.to_region].name}")
     if op.op == "move_army":
         army = state.armies.get(op.army)
         if army is None or op.to_region not in state.regions:
             return Rejected("UNKNOWN_ENTITY", "军队或目标地区不存在")
         if army.in_transit:
             return Rejected("CHARACTER_UNAVAILABLE", "军队正在行军")
-        if op.to_region not in state.regions[army.region].adjacency:
-            return Rejected("OUT_OF_RANGE", "目标地区不与军队所在地区相邻")
+        if op.to_region == army.region:
+            return Rejected("INVALID_TARGET", f"{army.name}已驻{state.regions[op.to_region].name}")
+        if find_route(state, army.region, op.to_region, army.faction) is None:
+            return Rejected("OUT_OF_RANGE", f"{army.name}无路可达{state.regions[op.to_region].name}")
     if op.op == "start_project":
         if op.region not in state.regions or op.turns <= 0:
             return Rejected("INVALID_TARGET", "工程地区无效或工期必须大于零")

@@ -6,8 +6,8 @@ from typing import Any
 
 from simcore.domain.events import matches
 from simcore.domain.models import WorldState
-from simcore.domain.ops import parse_op
-from simcore.domain.rules import STATUS_NAMES, entity_name, stat_name, trait_name
+from simcore.domain.ops import memory_ops, parse_op
+from simcore.domain.rules import STATUS_NAMES, entity_name, find_route, stat_name, trait_name, turn_unit_label
 from simcore.domain.visibility import format_number
 
 
@@ -81,7 +81,10 @@ def _public_item(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
 
 
 def adopted_ops(scenario: dict[str, Any], state: WorldState, memorial_id: str, option_id: str) -> list[dict[str, Any]]:
-    """采纳某条奏疏的某个选项，返回要加入诏书草案的 ops（结构已校验）。"""
+    """采纳某条奏疏的某个选项，返回要加入诏书草案的 ops（结构已校验）。
+
+    选项的 memory（{character, text} 或其列表）追加为 Remember op，随选项一同执行。
+    """
     item = next((row for row in scenario.get("memorials") or [] if isinstance(row, dict) and row.get("id") == memorial_id), None)
     if item is None:
         raise MemorialError("UNKNOWN_MEMORIAL", f"奏疏不存在：{memorial_id}")
@@ -90,7 +93,12 @@ def adopted_ops(scenario: dict[str, Any], state: WorldState, memorial_id: str, o
     option = next((row for row in item.get("options", []) or [] if row.get("id") == option_id), None)
     if option is None:
         raise MemorialError("UNKNOWN_OPTION", f"奏疏「{item.get('title', memorial_id)}」没有选项：{option_id}")
-    return [parse_op(op).model_dump(mode="json") for op in option.get("ops", []) or []]
+    ops = [*(option.get("ops", []) or []), *memory_ops(option.get("memory"))]
+    return [parse_op(op).model_dump(mode="json") for op in ops]
+
+
+def memorial_item(scenario: dict[str, Any], memorial_id: str) -> dict[str, Any] | None:
+    return next((row for row in scenario.get("memorials") or [] if isinstance(row, dict) and str(row.get("id")) == memorial_id), None)
 
 
 INTERNAL_OPS = frozenset({"set_flag", "adjust_counter", "set_counter"})
@@ -126,7 +134,9 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
             "army": state.armies,
             "faction": state.factions,
         }[kind]
-        row = table.get(str(key)) if key is not None else None
+        if key is None or key == "":
+            return "无"
+        row = table.get(str(key))
         return getattr(row, "name", str(key)) if row is not None else str(key)
 
     def signed(value: Any) -> str:
@@ -137,6 +147,10 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
     if op in INTERNAL_OPS:
         return INTERNAL_SUMMARY
     if op == "adjust_resource":
+        resource = state.resources.get(str(raw["resource"]))
+        if resource is not None and resource.hidden:
+            # 隐藏数值不给确数，只给方向（与公开视图一致）
+            return f"{resource.name} {'↑' if float(raw['delta']) > 0 else '↓' if float(raw['delta']) < 0 else '不变'}（风闻）"
         return f"{name('resource', raw['resource'])} {signed(raw['delta'])}"
     if op == "appoint":
         return f"任 {name('character', raw['character'])} 为 {name('office', raw['office'])}"
@@ -151,14 +165,22 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
     if op == "adjust_army":
         return f"{name('army', raw['army'])} {signed(raw['delta'])}"
     if op == "move_army":
-        return f"{name('army', raw['army'])} 移驻 {name('region', raw['to_region'])}"
+        army = state.armies.get(str(raw["army"]))
+        route = _route_note(state, army.region if army else None, raw["to_region"], army.faction if army else None)
+        return f"{name('army', raw['army'])} 移驻 {name('region', raw['to_region'])}{route}"
     if op == "move_character":
-        return f"{name('character', raw['character'])} 赴 {name('region', raw['to_region'])}"
+        character = state.characters.get(str(raw["character"]))
+        route = _route_note(state, character.region if character else None, raw["to_region"], character.faction if character else None)
+        return f"{name('character', raw['character'])} 赴 {name('region', raw['to_region'])}{route}"
     if op == "set_army_faction":
         return f"{name('army', raw['army'])} 改隶 {name('faction', raw['faction'])}"
     if op == "set_army_commander":
+        if not raw.get("character"):
+            return f"罢{name('army', raw['army'])}统帅"
         return f"{name('army', raw['army'])} 由 {name('character', raw.get('character'))} 统领"
     if op == "adjust_trait":
+        if str(raw["trait"]) in {str(item) for item in state.rules.get("hidden_traits", []) or []}:
+            return f"{name('character', raw['character'])} 心态有变（不明）"
         return f"{name('character', raw['character'])} {trait_name(state, raw['trait'])} {signed(raw['delta'])}"
     if op == "adjust_relation":
         return f"{entity_name(state, raw['a'])}↔{entity_name(state, raw['b'])} 关系 {signed(raw['delta'])}"
@@ -166,4 +188,27 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
         return f"{name('character', raw['character'])} 记下：{raw['fact']}"
     if op == "set_character_status":
         return f"{name('character', raw['character'])} {STATUS_NAMES.get(raw['status'], raw['status'])}"
+    if op == "cancel_ledger":
+        ledger = next((row.name for row in state.ledger if row.id == raw.get("ledger_id")), raw.get("ledger_id"))
+        return f"取消账目「{ledger}」"
+    if op == "add_standing_order":
+        return f"常设令「{raw.get('text', '')}」"
+    if op == "cancel_standing_order":
+        order = next((row.text for row in state.standing_orders if row.id == raw.get("id")), raw.get("id"))
+        return f"撤销常设令「{order}」"
+    if op == "set_region_controller":
+        return f"{name('region', raw['region'])} 归 {name('faction', raw['faction'])}"
+    if op == "choose_event_option":
+        return f"处置待决事件 {raw.get('choice_id')}"
     return str(op)
+
+
+def _route_note(state: WorldState, origin: str | None, destination: Any, faction: str | None) -> str:
+    """非相邻行程的摘要：（经某某，约 n 季）；相邻或无路时为空串。"""
+    if origin is None:
+        return ""
+    found = find_route(state, origin, str(destination), faction)
+    if found is None or len(found[0]) <= 2:
+        return ""
+    via = "、".join(state.regions[region_id].name for region_id in found[0][1:-1])
+    return f"（经{via}，约{found[1]}{turn_unit_label(state)}）"

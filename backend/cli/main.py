@@ -52,6 +52,10 @@ def _session_path(session_id: str) -> Path:
     return Path(os.environ.get("LLM_SIM_HOME", Path.home() / ".llm-sim")) / "sessions" / f"{session_id}.jsonl"
 
 
+def _scenarios_dir() -> Path:
+    return Path(os.environ.get("SIM_SCENARIOS_DIR", _root() / "scenarios")).resolve()
+
+
 def _load_session(target: str) -> SessionStore:
     path = Path(target)
     if not path.is_file():
@@ -59,8 +63,10 @@ def _load_session(target: str) -> SessionStore:
     if not path.is_file():
         raise typer.BadParameter(f"找不到存档：{target}")
     header = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
-    scenario = load_scenario(_root() / "scenarios" / header["scenario"])
-    return SessionStore(path, scenario)
+    folder = header.get("scenario_folder") or header["scenario"]
+    candidates = [_scenarios_dir() / folder, _root() / "scenarios" / folder]
+    scenario_root = next((item for item in candidates if (item / "scenario.yaml").is_file()), candidates[0])
+    return SessionStore(path, load_scenario(scenario_root))
 
 
 @app.command()
@@ -104,15 +110,23 @@ def validate(target: str) -> None:
 
 
 @app.command("new-game")
-def new_game(scenario_id: str, seed: int = typer.Option(0, help="随机种子")) -> None:
+def new_game(
+    scenario_id: str,
+    seed: int = typer.Option(0, help="随机种子"),
+    difficulty: str | None = typer.Option(None, help="难度档 id（缺省为场景的 default_difficulty）"),
+) -> None:
     """从场景创建新存档。"""
     scenario = load_scenario(_scenario_path(scenario_id))
     errors = validate_scenario(scenario)
     if errors:
         raise typer.BadParameter("; ".join(errors))
+    try:
+        initial = build_initial_state(scenario, difficulty)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     session_id = os.urandom(16).hex()
     path = _session_path(session_id)
-    session = SessionStore(path, scenario, build_initial_state(scenario), seed)
+    session = SessionStore(path, scenario, initial, seed)
     typer.echo(json.dumps({"id": session_id, "scenario": scenario_id, "state": session.state.model_dump(mode="json")}, ensure_ascii=False))
 
 
@@ -160,10 +174,15 @@ def gen_assets(
 
 @app.command()
 def replay(target: str) -> None:
-    """重放存档事件并输出状态哈希。"""
+    """校验存档：用当前剧本从开局完整重放，逐回合比对存档中的状态哈希，报告分歧（不修改存档）。
+
+    读档本身以存档里的状态快照为准，不依赖重放；有分歧时退出码为 1。
+    """
     session = _load_session(target)
-    state, digest = session.replay()
-    typer.echo(json.dumps({"turn": state.turn, "state_hash": digest}, ensure_ascii=False))
+    result = session.verify_replay()
+    typer.echo(json.dumps({"turn": session.head_turn(), **result}, ensure_ascii=False))
+    if not result["ok"]:
+        raise typer.Exit(code=1)
 
 
 @app.command()

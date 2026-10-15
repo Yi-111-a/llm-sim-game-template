@@ -146,7 +146,8 @@ def test_movement_uses_travel_turns_and_transit_blocks_appointment() -> None:
         {"op": "move_character", "character": "minister", "to_region": "border"},
         state,
     )
-    assert state.characters["minister"].in_transit == {"to_region": "border", "eta_turn": 2}
+    transit = state.characters["minister"].in_transit
+    assert transit is not None and transit["to_region"] == "border" and transit["eta_turn"] == 2
     rejected = validate({"op": "appoint", "character": "minister", "office": "governor"}, state)
     assert isinstance(rejected, Rejected)
     assert rejected.code == "CHARACTER_UNAVAILABLE"

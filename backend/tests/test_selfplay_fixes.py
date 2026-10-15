@@ -183,11 +183,11 @@ def test_player_character_falls_back_to_player_office_holder(mech_scenario) -> N
 def test_fact_texts_name_entities_and_internal_facts_are_hidden(mech_scenario) -> None:
     state = build_initial_state(mech_scenario)
     _, facts = apply({"op": "move_character", "character": "general", "to_region": "pass"}, state)
-    assert facts[0].text == "郭将军自京畿启程赴雄关"
+    assert facts[0].text == "郭将军自京畿启程赴雄关（约1季）"
     _, facts = apply({"op": "adjust_relation", "a": "plotter", "b": "chancellor", "delta": -20}, state)
-    assert facts[0].text == "安节度与李相关系变化"
+    assert facts[0].text == "安节度与李相关系 −20"
     _, facts = apply({"op": "adjust_region", "region": "capital", "stat": "defense", "delta": 5}, state)
-    assert facts[0].text == "京畿防务变化"
+    assert facts[0].text == "京畿防务 +5"
     _, facts = apply({"op": "move_army", "army": "pass_army", "to_region": "plain"}, state)
     assert "关军" in facts[0].text and "平原" in facts[0].text
     _, flag_facts = apply({"op": "set_flag", "key": "hedong_to_an", "value": True}, state)

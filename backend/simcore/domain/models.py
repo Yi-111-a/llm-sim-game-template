@@ -163,6 +163,7 @@ class PendingClause(DomainModel):
     ops: list[dict[str, Any]]
     due_turn: int
     source: str = "edict"
+    label: str = ""  # 来源说明（奏疏标题、诏令等），写进延期执行时的事实原因
 
 
 class ChoiceOption(DomainModel):
@@ -231,6 +232,7 @@ class Fact(DomainModel):
     after: Any = None
     key: str | None = None
     internal: bool = False
+    cause: str | None = None  # 原因：op 的 reason，或来源（奏疏/事件/抉择/工程/常设令的标题）
 
 
 def is_internal_fact(fact: Fact | dict[str, Any]) -> bool:
