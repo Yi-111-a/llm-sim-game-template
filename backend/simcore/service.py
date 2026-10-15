@@ -17,7 +17,7 @@ from simcore.agent.debate import debate_speeches, debate_summary, decide_stances
 from simcore.agent.loop import AgentAborted
 from simcore.agent.offline import is_offline
 from simcore.agent.roles import chat_availability, interpret_edict, minister_chat_messages, narrator, offline_minister_text
-from simcore.agent.tools import AgentTools
+from simcore.agent.tools import PLAYER_TIER, SCENARIO_TIER, AgentTools
 from simcore.config import load_settings
 from simcore.domain.apply import OpRejected, edict_memories
 from simcore.domain.difficulty import DifficultyError, current_difficulty, public_difficulties
@@ -25,12 +25,14 @@ from simcore.domain.digest import render_digest
 from simcore.domain.events import matches
 from simcore.domain.memorials import MemorialError, is_visible, memorial_flag, summarize_ops, visible_memorials
 from simcore.domain.models import TurnReport, WorldState
-from simcore.domain.ops import OP_NAMES, op_json_schema
-from simcore.domain.rules import held_offices, player_character_id
+from simcore.domain.reference import ReferenceError, build_reference
+from simcore.domain.rules import held_offices, mover_faction, player_character_id, travel_note, traveller_label
 from simcore.domain.turn import GameOver, choice_option_id
 from simcore.domain.visibility import (
     battle_text,
     fact_line,
+    format_number,
+    precision_text,
     public_crisis,
     public_report,
     public_view,
@@ -57,6 +59,8 @@ ERROR_STATUS = {
     "INVALID_SCENARIO": 422,
     "INVALID_SCENARIO_PATH": 400,
     "INVALID_REQUEST": 422,
+    "UNKNOWN_OP": 422,
+    "OP_NOT_PERMITTED": 403,
     "GAME_OVER": 409,
     "EDICT_CONFIRMED": 409,
     "EDICT_STALE": 409,
@@ -322,6 +326,7 @@ class GameService:
         state = session.state
         crisis = self.definition(session).get("crisis")
         report = session.last_report()
+        over = state.outcome is not None
         return {
             "session_id": session_id,
             "scenario": state.scenario_id,
@@ -333,11 +338,48 @@ class GameService:
             "calendar_label": state.calendar.label,
             "objectives": self.objectives(session, state),
             "crisis": public_crisis(crisis, state, session.seed),
-            "memorials": visible_memorials(session.scenario, state),
-            "pending_choices": [row.model_dump(mode="json") for row in state.pending_choices],
+            # 终局后不再列奏疏与待决事件，改给终局复盘（review）
+            "memorials": [] if over else visible_memorials(session.scenario, state),
+            "pending_choices": [] if over else [row.model_dump(mode="json") for row in state.pending_choices],
             "outcome": state.outcome.model_dump(mode="json") if state.outcome else None,
+            "review": self.final_review(session, state) if over else None,
             "last_report": public_report(report, state, session.seed, crisis),
             "can_advance": state.outcome is None,
+        }
+
+    def final_review(self, session: SessionStore, state: WorldState) -> dict[str, Any] | None:
+        """终局复盘：结局与判定条件、目标状态、关键数值（隐藏数值只给风闻区间）、时间线要事。"""
+        if state.outcome is None:
+            return None
+        stats = [{"id": key, "display": resource_display(state, key, session.seed)} for key in state.resources]
+        own = mover_faction(state, None)
+        troops = sum(row.strength for row in state.armies.values() if own is None or row.faction == own)
+        held = sum(1 for row in state.regions.values() if own is None or row.controller in (None, own))
+        stats.append({"id": "_armies", "display": f"本方兵力 {format_number(troops)}"})
+        stats.append({"id": "_regions", "display": f"本方控制 {held}/{len(state.regions)} 地"})
+        highlights: list[tuple[int, int, str]] = []
+        for entry in session.history():
+            if entry["type"] != "turn":
+                continue
+            payload = entry["payload"]
+            report = payload.get("report") or {}
+            snapshot = payload.get("snapshot") or {}
+            when = str((snapshot.get("calendar") or {}).get("label") or f"第{report.get('turn')}回合")
+            turn = int(report.get("turn", 0) or 0)
+            for event in report.get("events", []) or []:
+                if event.get("internal") or event.get("outcome"):
+                    continue
+                highlights.append((int(event.get("importance", 0) or 0), turn, f"T{turn} {when}：{event.get('title')}"))
+            for battle in report.get("battles", []) or []:
+                highlights.append((2, turn, f"T{turn} {when}：{battle.get('region_name', '')}之战，{battle_text(battle, state)}"))
+        top = sorted(highlights, key=lambda row: (-row[0], row[1]))[:16]
+        return {
+            "outcome": state.outcome.model_dump(mode="json"),
+            "satisfied": list(state.outcome.satisfied),
+            "objectives": self.objectives(session, state),
+            "stats": stats,
+            "highlights": [text for _, _, text in sorted(top, key=lambda row: row[1])],
+            "turns_played": state.turn - session.initial_state.turn,
         }
 
     def debug_state(self, session_id: str) -> dict[str, Any]:
@@ -490,7 +532,8 @@ class GameService:
                     "code": "MEMORIAL_UNAVAILABLE",
                 })
             elif previous in {"applied", "delayed"} and clause.get("op"):
-                result = tools.propose_ops([clause["op"]])[0]
+                tier = PLAYER_TIER if clause.get("source") in {"client", "text"} else SCENARIO_TIER
+                result = tools.propose_ops([clause["op"]], tier=tier)[0]
                 if result["status"] == "rejected":
                     clause.update({"status": "rejected", "reason": result.get("reason", ""), "code": result.get("code")})
             if clause["status"] != previous:
@@ -765,12 +808,25 @@ class GameService:
             status_names = {"on_track": "守住", "at_risk": "告急", "failed": "已失", "achieved": "达成", "pending": "待定"}
             lines.extend(f"- {row['title']}：{status_names.get(row['status'], row['status'])}。{row['detail']}" for row in view["objectives"])
         lines.append("\n## 国势（公开数值）")
-        lines.extend(f"- {resource_display(state, key, session.seed)}" for key in state.resources)
+        for key, row in state.resources.items():
+            precision = f"——{precision_text(state, key)}" if row.hidden else ""
+            lines.append(f"- {resource_display(state, key, session.seed)}{precision}")
         crisis = view["crisis"]
         if crisis:
             lines.append(f"\n## 危机计：{crisis['title']} {crisis['display']}（{crisis['band']}）")
             for term in crisis["terms"]:
                 lines.append(f"- 分项 {term['label']}：{term['display']}")
+        if view.get("review"):
+            lines.extend(self._review_lines(view["review"]))
+        travellers = self._traveller_lines(state)
+        if travellers:
+            lines.append("\n## 在途")
+            lines.extend(f"- {line}" for line in travellers)
+        if state.pending_clauses and state.outcome is None:
+            lines.append("\n## 待执行的延期条款")
+            for clause in state.pending_clauses:
+                summary = "；".join(summarize_ops(clause.ops, state))
+                lines.append(f"- {clause.label or '延期诏令'}：{summary}（第{clause.due_turn}回合结算时执行）")
         if view["memorials"]:
             lines.append("\n## 本季奏疏（可在 draft_edict 的 adopted 中采纳：{memorial_id, option_id}）")
             for item in view["memorials"]:
@@ -785,7 +841,7 @@ class GameService:
                     ops = "；".join(option["ops_summary"]) or "不改变状态"
                     hint = f" 〔{option['hint']}〕" if option.get("hint") else ""
                     lines.append(f"- 选项 `{option['id']}`「{option['label']}」{hint} → {ops}")
-        if state.pending_choices:
+        if view["pending_choices"]:
             lines.append("\n## 待决事件（用 choose 处置：choice_id + option_id）")
             for choice in state.pending_choices:
                 options = "；".join(f"`{option.id}`「{option.text}」" for option in choice.options)
@@ -805,7 +861,8 @@ class GameService:
                 lines.append("上季时事：" + "、".join(f"「{row['title']}」" for row in featured))
         player = self.player_character(session, state)
         people = [
-            f"{row.name}（`{row.id}`{'，' + role if (role := _role_label(state, row)) else ''}）"
+            f"{row.name}（`{row.id}`{'，' + role if (role := _role_label(state, row)) else ''}"
+            f"{'，' + note if (note := travel_note(state, row)) else ''}）"
             for row in state.characters.values()
             if row.status == "alive" and row.id != player
         ]
@@ -813,49 +870,44 @@ class GameService:
         lines.append("\n" + ROLEPLAY_RULES)
         return "\n".join(lines)
 
-    def op_reference(self, session_id: str) -> dict[str, Any]:
+    @staticmethod
+    def _review_lines(review: dict[str, Any]) -> list[str]:
+        outcome = review["outcome"]
+        lines = [
+            "\n## 终局复盘",
+            f"结局：{outcome['title']}（{'失败' if outcome['kind'] == 'fail' else '结局'}，T{outcome['turn']}）；共历 {review['turns_played']} 回合。",
+        ]
+        if review["satisfied"]:
+            lines.append("判定条件：" + "；".join(f"「{line}」" for line in review["satisfied"]))
+        status_names = {"on_track": "守住", "at_risk": "未达", "failed": "已失", "achieved": "达成", "pending": "待定"}
+        if review["objectives"]:
+            lines.append("目标：" + "；".join(f"{row['title']} {status_names.get(row['status'], row['status'])}" for row in review["objectives"]))
+        lines.append("关键数值：" + "；".join(row["display"] for row in review["stats"]))
+        if review["highlights"]:
+            lines.append("要事：")
+            lines.extend(f"- {line}" for line in review["highlights"])
+        lines.append("（本局已终局：不再有奏疏与待决事件；可用 history / rewind 回到更早节点另开分支。）")
+        return lines
+
+    @staticmethod
+    def _traveller_lines(state: WorldState) -> list[str]:
+        """在途的人物与本方军队：「某某（自A赴B，约n季后到）」。"""
+        own = mover_faction(state, None)
+        rows = [traveller_label(state, row) for row in state.characters.values() if row.in_transit and row.status == "alive"]
+        rows.extend(
+            traveller_label(state, row)
+            for row in state.armies.values()
+            if row.in_transit and (own is None or row.faction == own) and row.strength > 0
+        )
+        return rows
+
+    def op_reference(
+        self, session_id: str, op: str | None = None, entity_kind: str | None = None, ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        """玩家可用操作与实体表（见 domain.reference.build_reference）：缺省紧凑；op / entity_kind / ids 过滤。"""
         session = self.session(session_id)
-        state = session.state
-        return {
-            "ops": list(OP_NAMES),
-            "schema": op_json_schema(),
-            "entities": {
-                "resources": [{"id": row.id, "name": row.name, "hidden": row.hidden, "unit": row.unit} for row in state.resources.values()],
-                "characters": [
-                    {"id": row.id, "name": row.name, "status": row.status, "offices": held_offices(row), "region": row.region, "bloc": row.bloc}
-                    for row in state.characters.values()
-                ],
-                "offices": [{"id": row.id, "name": row.name, "holder": row.holder, "requires": row.requires} for row in state.offices.values()],
-                "regions": [
-                    {"id": row.id, "name": row.name, "controller": row.controller, "adjacency": row.adjacency, "stats": list(row.stats)}
-                    for row in state.regions.values()
-                ],
-                "armies": [
-                    {
-                        "id": row.id,
-                        "name": row.name,
-                        "faction": row.faction,
-                        "region": row.region,
-                        "strength": row.strength,
-                        "commander": row.commander,
-                        "in_transit": bool(row.in_transit),
-                    }
-                    for row in state.armies.values()
-                ],
-                "factions": [{"id": row.id, "name": row.name} for row in state.factions.values()],
-                "ledger": [{"id": row.id, "name": row.name} for row in state.ledger],
-                "standing_orders": [{"id": row.id, "text": row.text} for row in state.standing_orders],
-                "pending_choices": [{"id": row.id, "options": [option.id for option in row.options]} for row in state.pending_choices],
-            },
-            "rules": {
-                "max_concurrent_offices": state.rules.get("max_concurrent_offices", 1),
-                "notes": [
-                    "每条 op 是一个 JSON 对象，op 字段为操作名；未知字段会被拒绝。",
-                    "move_character / move_army 可指向任何可达地区：引擎按邻接表寻最短路（同样短时优先本方控制地区），整段一次出发，"
-                    "途中不能再下令；抵达回合 = 各段回合数之和。无路可达时返回 OUT_OF_RANGE。",
-                    "appoint 前须满足官职 requires；已达兼职上限时先 dismiss。",
-                    "被拒条款返回稳定错误码：UNKNOWN_ENTITY、INVALID_TARGET、OFFICE_OCCUPIED、OFFICE_HELD、OFFICE_REQUIREMENT、"
-                    "CHARACTER_UNAVAILABLE、OUT_OF_RANGE、INSUFFICIENT_RESOURCE、CONDITION_FAILED、GAME_OVER。",
-                ],
-            },
-        }
+        state = session.head_state()
+        try:
+            return build_reference(state, op or None, entity_kind or None, ids or None, self.player_character(session, state))
+        except ReferenceError as exc:
+            raise GameError(exc.code, exc.message) from exc

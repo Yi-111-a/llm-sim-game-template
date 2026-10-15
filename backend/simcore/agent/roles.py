@@ -9,12 +9,12 @@ from typing import Any
 
 from simcore.agent.loop import guarded_chat
 from simcore.agent.offline import chronicle_numbers, is_offline, offline_chronicle, offline_minister_reply
-from simcore.agent.tools import AgentTools
+from simcore.agent.tools import PLAYER_TIER, AgentTools
 from simcore.domain.difficulty import delay_factor
 from simcore.domain.digest import digest_numbers, render_digest
 from simcore.domain.memorials import MemorialError, adopted_ops
 from simcore.domain.models import TurnReport, WorldState
-from simcore.domain.visibility import resource_display
+from simcore.domain.visibility import format_number, resource_display
 from simcore.llm.base import LLMProvider, ToolCallingUnsupported
 from simcore.prompts.loader import render_prompt
 
@@ -81,23 +81,26 @@ async def interpret_edict(
 
     group_counter = 0
 
+    delay = delay_explanation(execution, state)
+
     def add_clauses(receipt: list[dict[str, Any]], base: dict[str, Any]) -> None:
         """一组条款（一个奏疏选项 / 一条客户端 op / 一段诏令文本）只掷一次延期骰，组内 ops 同进同退。"""
         nonlocal group_counter
         group_counter += 1
-        delayed = any(item["status"] == "applied" for item in receipt) and rng.random() < _delay_probability(execution, state)
+        delayed = any(item["status"] == "applied" for item in receipt) and rng.random() < delay["probability"]
         for item in receipt:
             status = item["status"]
-            if status == "applied" and delayed:
-                status = "delayed"
-            clauses.append({
+            row = {
                 **base,
                 "group": group_counter,
                 "status": status,
                 "op": item.get("op"),
                 "reason": item.get("reason", ""),
                 "code": item.get("code"),
-            })
+            }
+            if status == "applied" and delayed:
+                row.update({"status": "delayed", "delay_reason": delay["reason"], "due_turn": state.turn + 1})
+            clauses.append(row)
 
     memorial_items = {str(row.get("id")): row for row in scenario.get("memorials") or [] if isinstance(row, dict)}
     for choice in adopted or []:
@@ -127,7 +130,7 @@ async def interpret_edict(
             continue
         add_clauses(tools.propose_ops(operations), base)
     for client_op in client_ops or []:
-        add_clauses(tools.propose_ops([client_op]), {"category": "client", "text": "", "source": "client", "label": "诏令"})
+        add_clauses(tools.propose_ops([client_op], tier=PLAYER_TIER), {"category": "client", "text": "", "source": "client", "label": "诏令"})
 
     for index, (category, text) in enumerate(sections.items()):
         if index >= 12:
@@ -188,12 +191,12 @@ async def interpret_edict(
         proposed: list[dict[str, Any]] = []
         for call in result.tool_calls:
             if call.name in {"propose_ops", "submit_ops"}:
-                receipt = tools.propose_ops(call.arguments.get("ops", []))
+                receipt = tools.propose_ops(call.arguments.get("ops", []), tier=PLAYER_TIER)
                 proposed.extend(receipt)
         if not result.tool_calls and result.content:
             try:
                 operations = _parse_ops_json(result.content)
-                proposed.extend(tools.propose_ops(operations))
+                proposed.extend(tools.propose_ops(operations, tier=PLAYER_TIER))
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 proposed.append({
                     "op": {},
@@ -367,6 +370,16 @@ def _entity_context(scenario: dict[str, Any]) -> str:
 
 
 def _delay_probability(formula: dict[str, Any], state: WorldState) -> float:
+    return float(delay_explanation(formula, state)["probability"])
+
+
+def delay_explanation(formula: dict[str, Any], state: WorldState) -> dict[str, Any]:
+    """诏令延期的概率与原因（由 formulas.execution 的各项推出）。
+
+    概率 = (base_delay + 积弊 × corruption_factor − 君威 × authority_factor) × 难度 delay_scale，截到 [0, 1]。
+    原因取贡献最大的正项：积弊项 →「吏治积弊高（55），有司稽迟」；基础项 →「文书往返需时，有司未及施行」；
+    难度系数 > 1 时补「时局多事」；君威项把概率压低时注明「君威尚能督责」。
+    """
     authority_id = formula.get("authority_resource", "authority")
     corruption_id = formula.get("corruption_resource", "corruption")
     authority = state.resources.get(authority_id)
@@ -374,7 +387,20 @@ def _delay_probability(formula: dict[str, Any], state: WorldState) -> float:
     authority_value = authority.amount if authority else 0
     corruption_value = corruption.amount if corruption else 0
     base = float(formula.get("base_delay", 0))
-    authority_factor = float(formula.get("authority_factor", 0))
-    corruption_factor = float(formula.get("corruption_factor", 0))
-    probability = base + corruption_value * corruption_factor - authority_value * authority_factor
-    return min(1.0, max(0.0, probability * delay_factor(state)))
+    authority_term = authority_value * float(formula.get("authority_factor", 0))
+    corruption_term = corruption_value * float(formula.get("corruption_factor", 0))
+    scale = delay_factor(state)
+    probability = min(1.0, max(0.0, (base + corruption_term - authority_term) * scale))
+    parts: list[str] = []
+    if corruption is not None and corruption_term > 0 and corruption_term >= base:
+        parts.append(f"{corruption.name}高（{format_number(corruption_value)}），有司稽迟")
+    else:
+        parts.append("文书往返需时，有司未及施行")
+        if corruption is not None and corruption_term > 0:
+            parts.append(f"{corruption.name}（{format_number(corruption_value)}）亦有拖累")
+    if scale > 1:
+        parts.append("时局多事，政令更易稽迟")
+    if authority is not None and authority_term > 0:
+        parts.append(f"{authority.name}（{format_number(authority_value)}）尚能督责")
+    terms = {"base": round(base, 4), "corruption": round(corruption_term, 4), "authority": round(-authority_term, 4), "scale": scale}
+    return {"probability": probability, "reason": "；".join(parts) + f"（本季延期概率约 {round(probability * 100)}%）", "terms": terms}

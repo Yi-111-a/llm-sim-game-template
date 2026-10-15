@@ -7,6 +7,7 @@ from typing import Any
 
 from simcore.domain.events import matches, relation_value
 from simcore.domain.models import Army, Fact, WorldState
+from simcore.domain.rules import commander_presence
 
 LOSER_LOSS = 0.30
 WINNER_LOSS = 0.10
@@ -110,6 +111,13 @@ def _fight(
     battle["attacker_army_names"] = [army.name for army in attackers]
     battle["defender_army_names"] = [army.name for army in defenders]
     facts: list[Fact] = []
+    # 统帅是否在军中：不在（赴任中 / 远在他处）时由副将暂摄，记入战报与事实（战力公式不变）
+    battle["commanders"] = {}
+    for army in [*attackers, *defenders]:
+        presence = commander_presence(state, army)
+        battle["commanders"][army.id] = {"name": presence["name"], "present": presence["present"], "note": presence["note"]}
+        if army.commander and not presence["present"]:
+            facts.append(Fact(kind="command", text=f"{army.name}：{presence['note']}", entity=army.id))
     if defense >= FORTRESS_DEFENSE and attack_power < FORTRESS_RATIO * defend_power:
         battle["result"] = "stalemate"
         battle.update({"winner": None, "winner_name": "", "attacker_loss": 0.0, "defender_loss": 0.0})
@@ -228,7 +236,14 @@ def advance_ai_routes(
                     facts.append(Fact(kind="ai_hold", text=f"{army.name}见敌势强，驻足{current.name}", entity=army.id))
                     continue
             army.in_transit = {"to_region": target, "eta_turn": turn + current.adjacency[target]}
-            facts.append(Fact(kind="movement", text=f"{army.name}向{state.regions[target].name}进军", entity=army.id, before=army.region, after=target))
+            escort = ""
+            commander = state.characters.get(army.commander) if army.commander else None
+            if commander is not None and commander.status == "alive" and commander.region == army.region and not commander.in_transit:
+                commander.in_transit = dict(army.in_transit)  # 统帅随军同行
+                escort = f"，{commander.name}随军"
+            facts.append(
+                Fact(kind="movement", text=f"{army.name}向{state.regions[target].name}进军{escort}", entity=army.id, before=army.region, after=target)
+            )
     return facts, warnings
 
 

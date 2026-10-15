@@ -48,8 +48,10 @@ DESCRIPTIONS: dict[str, str] = {
         "Seasonal briefing for the ruler, ending with the role-play / number rules you must follow."
     ),
     "op_reference": (
-        "全部 StateOp 的 JSON Schema 与当前可用的实体 id 表（资源、人物、官职、地区、军队、势力、账目、常设令、待决事件）。"
-        "拟 ops 前查这里。JSON Schema of every StateOp plus the current entity ids."
+        "玩家可直接下达的操作（permitted_ops：一行字段说明 + 示例）与实体 id 表（每类至多 12 行，附总数）。"
+        "其余操作（调整资源/地区/关系、旗标等）只能经奏疏选项或事件产生，客户端提交会得到 OP_NOT_PERMITTED。"
+        "过滤：op=<操作名> 看完整 JSON Schema；entity_kind=characters|offices|regions|armies|resources|factions|ledger|standing_orders|pending_choices"
+        " 看完整表；ids=[...] 只看这些 id。Player-permitted ops with examples and entity ids; filter with op / entity_kind / ids."
     ),
     "audience": (
         "召对某位人物：character 为人物 id。client 模式返回人设卡 + 该人物可知的事实摘要 + 记忆 + 口吻要求，由你扮演作答；"
@@ -142,8 +144,8 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         return service.briefing(session_id)
 
     @register
-    async def op_reference(session_id: str) -> str:
-        return _dump(service.op_reference(session_id))
+    async def op_reference(session_id: str, op: str = "", entity_kind: str = "", ids: list[str] | None = None) -> str:
+        return _dump(service.op_reference(session_id, op or None, entity_kind or None, ids or None))
 
     @register
     async def audience(session_id: str, character: str, question: str = "") -> str:
@@ -259,6 +261,9 @@ def _clause_lines(clauses: list[dict[str, Any]]) -> list[str]:
         source = clause.get("source", "text")
         what = clause.get("summary") or clause.get("text") or ""
         reason = f"；原因：{clause.get('reason')}" if clause.get("reason") else ""
+        if status == "delayed":
+            due = clause.get("due_turn")
+            reason += f"；延期原因：{clause.get('delay_reason') or '有司稽迟'}" + (f"；预计第{due}回合结算时执行" if due is not None else "")
         code = f" [{clause['code']}]" if clause.get("code") and status == "rejected" else ""
         changed = f"（草案时为 {clause.get('previous_status')}）" if clause.get("changed") else ""
         lines.append(f"{index}. [{tag}]{code} ({source}) {what}{reason}{changed}")
@@ -282,20 +287,33 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
     facts = list(dict.fromkeys(fact_line(fact) for fact in report.get("facts", []) if fact.get("kind") != "outcome"))
     lines.append("## 事实")
     lines.extend(f"- {fact}" for fact in facts) if facts else lines.append("- （无）")
-    totals: dict[str, float | None] = {}
-    for line in report.get("ledger_lines", []):
-        resource = str(line.get("resource"))
-        amount = line.get("amount")
-        if amount is None or totals.get(resource, 0) is None:
-            totals[resource] = None
-        else:
-            totals[resource] = float(totals.get(resource) or 0) + float(amount)
-    if totals:
-        lines.append("## 账目合计")
-        state_resources = result["state"]["resources"]
-        for resource, amount in totals.items():
-            name = state_resources.get(resource, {}).get("name", resource)
-            lines.append(f"- {name}：{'数值不明' if amount is None else format_number(amount, signed=True)}")
+    reconciliation = report.get("reconciliation") or []
+    if reconciliation:
+        lines.append("## 对账（期初 → 诏令 → 延期执行 → 经常收支 → 事件/选择 → 期末）")
+        lines.extend(f"- {row['display']}" for row in reconciliation)
+        shown = {row["resource"] for row in reconciliation}
+        hidden = [
+            row.get("name", key)
+            for key, row in result["state"]["resources"].items()
+            if row.get("hidden") and key not in shown and any(line.get("resource") == key for line in report.get("ledger_lines", []))
+        ]
+        if hidden:
+            lines.append("- " + "、".join(f"{name}：数值不明" for name in hidden) + "（风闻，不入对账）")
+    else:
+        totals: dict[str, float | None] = {}
+        for line in report.get("ledger_lines", []):
+            resource = str(line.get("resource"))
+            amount = line.get("amount")
+            if amount is None or totals.get(resource, 0) is None:
+                totals[resource] = None
+            else:
+                totals[resource] = float(totals.get(resource) or 0) + float(amount)
+        if totals:
+            lines.append("## 账目合计")
+            state_resources = result["state"]["resources"]
+            for resource, amount in totals.items():
+                name = state_resources.get(resource, {}).get("name", resource)
+                lines.append(f"- {name}：{'数值不明' if amount is None else format_number(amount, signed=True)}")
     if report.get("battles"):
         lines.append("## 战报")
         for battle in report["battles"]:
@@ -324,6 +342,9 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
     outcome = result.get("outcome")
     if outcome:
         lines.append(f"## 终局：{outcome['title']}（{'失败' if outcome['kind'] == 'fail' else '结局'}）\n{outcome.get('text', '')}")
+        if outcome.get("satisfied"):
+            lines.append("判定条件：" + "；".join(f"「{line}」" for line in outcome["satisfied"]))
+        lines.append("（复盘见 briefing；此后不能再推进回合。）")
     return "\n".join(lines)
 
 

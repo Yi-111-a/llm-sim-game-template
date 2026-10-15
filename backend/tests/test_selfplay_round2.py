@@ -342,7 +342,7 @@ def test_end_turn_text_shows_outcome_and_ledger_header_once(mech_env) -> None:
     result = asyncio.run(service.end_turn(session_id, narrate=False))
     assert result["outcome"]["id"] == "fail_capital"
     text = _turn_text(result, show_memorial=False)
-    assert text.count("京城不守") == 1 and text.count("终局") == 1 and text.count("账目合计") == 1
+    assert text.count("京城不守") == 1 and text.count("终局") == 1 and text.count("## 对账") == 1
     assert "## 纪事" not in text
     narrated = _turn_text({**result, "memorial": "京城陷落。"})
     assert narrated.count("终局") == 1 and "## 纪事\n京城陷落。" in narrated

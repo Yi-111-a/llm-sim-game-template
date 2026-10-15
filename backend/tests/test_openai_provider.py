@@ -24,6 +24,7 @@ def write_settings(home, base_url: str) -> None:
 
 def test_edict_interpretation_via_tool_calls(mech_scenario) -> None:
     state = build_initial_state(mech_scenario)
+    state.rules["player_ops"] = {"allow": ["adjust_resource"]}  # 剧本可放开（settings.player_ops）；缺省不许玩家直接改数值
     with FakeOpenAI() as fake:
         fake.script.append({
             "tool_calls": [{"name": "propose_ops", "arguments": {"ops": [{"op": "adjust_resource", "resource": "treasury", "delta": -40, "reason": "赈济"}]}}],
@@ -41,6 +42,7 @@ def test_edict_interpretation_via_tool_calls(mech_scenario) -> None:
 
 def test_tool_calling_unsupported_falls_back_to_json_mode(mech_scenario) -> None:
     state = build_initial_state(mech_scenario)
+    state.rules["player_ops"] = {"allow": ["adjust_resource"]}  # 剧本可放开（settings.player_ops）；缺省不许玩家直接改数值
     with FakeOpenAI(tools_supported=False) as fake:
         fake.script.append({"content": "```json\n" + json.dumps({"ops": [{"op": "adjust_resource", "resource": "grain", "delta": 25}]}) + "\n```"})
         provider = OpenAICompatProvider(fake.base_url, "", "fake-model")
@@ -117,7 +119,7 @@ def test_api_chat_streams_sse_from_openai_compatible_provider(mech_env) -> None:
 def test_api_draft_uses_provider_and_reports_provider_timeout_as_error(mech_env, monkeypatch) -> None:
     with FakeOpenAI() as fake:
         write_settings(mech_env, fake.base_url)
-        fake.script.append({"tool_calls": [{"name": "propose_ops", "arguments": {"ops": [{"op": "adjust_resource", "resource": "authority", "delta": 1}]}}]})
+        fake.script.append({"tool_calls": [{"name": "propose_ops", "arguments": {"ops": [{"op": "appoint", "character": "general", "office": "marshal"}]}}]})
         client = TestClient(create_app())
         session_id = client.post("/api/sessions", json={"scenario": "mech_test", "seed": 2}).json()["id"]
         draft = client.post(f"/api/sessions/{session_id}/edicts/draft", json={"sections": {"interior": "君威稍振"}})

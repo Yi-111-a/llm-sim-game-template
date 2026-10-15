@@ -88,19 +88,20 @@ def test_draft_confirm_with_memorial_client_ops_and_text(client) -> None:
         json={
             "sections": {"interior": "国库增加 10"},
             "adopted": [{"memorial_id": "m_tax", "option_id": "approve"}],
-            "ops": [{"op": "appoint", "character": "general", "office": "marshal"}, {"op": "adjust_resource", "resource": "nothing", "delta": 1}],
+            "ops": [{"op": "appoint", "character": "general", "office": "marshal"}, {"op": "appoint", "character": "nobody", "office": "censor"}],
         },
     )
     assert_utf8_json(draft)
     receipt = draft.json()
     assert [clause["source"] for clause in receipt["clauses"]] == ["memorial", "memorial", "client", "client", "text"]
-    assert [clause["status"] for clause in receipt["clauses"]] == ["applied", "applied", "applied", "rejected", "applied"]
+    assert [clause["status"] for clause in receipt["clauses"]] == ["applied", "applied", "applied", "rejected", "rejected"]
     assert receipt["clauses"][3]["code"] == "UNKNOWN_ENTITY"
+    assert receipt["clauses"][4]["code"] == "OP_NOT_PERMITTED"  # 文本解释出的 adjust_resource 是玩家层操作
     confirmed = client.post(f"/api/sessions/{session_id}/edicts/{receipt['id']}/confirm")
     assert confirmed.status_code == 200
     state = confirmed.json()["state"]
     assert state["flags"]["memorial:m_tax"] == "approve"
-    assert state["resources"]["treasury"]["amount"] == 960
+    assert state["resources"]["treasury"]["amount"] == 950
     assert state["offices"]["marshal"]["holder"] == "general"
     assert client.get(f"/api/sessions/{session_id}/view").json()["memorials"] == []
     assert_error(client.post(f"/api/sessions/{session_id}/edicts/{receipt['id']}/confirm"), 409, "EDICT_CONFIRMED")
@@ -145,7 +146,8 @@ def test_game_over_returns_409_and_blocks_writes(client) -> None:
         f"/api/sessions/{session_id}/edicts/draft",
         json={"ops": [{"op": "set_region_controller", "region": "capital", "faction": "rebels"}]},
     ).json()
-    client.post(f"/api/sessions/{session_id}/edicts/{receipt['id']}/confirm")
+    assert receipt["clauses"][0]["code"] == "OP_NOT_PERMITTED"  # 玩家不能直接改地区归属
+    client.app.state.runtime.service.session(session_id).append_op({"op": "set_region_controller", "region": "capital", "faction": "rebels"})
     outcome = client.post(f"/api/sessions/{session_id}/turn").json()["outcome"]
     assert outcome is not None and outcome["id"] == "fail_capital" and outcome["kind"] == "fail"
     assert_error(client.post(f"/api/sessions/{session_id}/turn"), 409, "GAME_OVER")

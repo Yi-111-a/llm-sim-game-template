@@ -13,20 +13,81 @@ from simcore.domain.models import TurnReport, WorldState, is_internal_fact
 DEFAULT_HIDDEN_WIDTH = 10.0
 
 
-def estimate_interval(state: WorldState, resource_id: str, seed: int) -> tuple[float, float]:
-    """隐藏资源的「风闻区间」。
+INTEL_PREFIX = "intel:"
+INTEL_SOURCES_PREFIX = "_internal:intel_sources:"
 
-    半宽 = estimate_width × (1 + corruption/100)，flag intel:<resource> 存在时减半；
-    区间中心带 ±半宽/2 的种子噪声，同一回合内稳定；真值始终落在区间内。
-    estimate_width 未设（≤0）时按 10 处理，避免隐藏资源意外以零宽区间泄露。
+
+def intel_precision(state: WorldState, resource_id: str) -> dict[str, Any]:
+    """隐藏资源风闻区间的精度说明。
+
+    基础半宽 = estimate_width × (1 + 积弊/100)。每条情报（flag intel:<resource> 或 intel:<resource>:<来源>，
+    以及 set_flag 时记下的不同来源）使半宽减半，但不低于精度上限 floor：settings.intel_min_width
+    （数值，或 {resource: 数值}）；未设时 floor = 基础半宽的一半，即情报不叠加，只有第一条生效。
+    返回 {half_width, base_half_width, floor, sources, narrowing, applied, capped, display}。
     """
     resource = state.resources[resource_id]
     corruption_id = str(state.rules.get("corruption_resource", "corruption"))
     corruption = state.resources[corruption_id].amount if corruption_id in state.resources else 0.0
     width = resource.estimate_width if resource.estimate_width > 0 else DEFAULT_HIDDEN_WIDTH
-    half = width * (1 + max(0.0, corruption) / 100)
-    if state.flags.get(f"intel:{resource_id}") not in (None, False):
+    base = width * (1 + max(0.0, corruption) / 100)
+    prefix = f"{INTEL_PREFIX}{resource_id}"
+    markers = [key for key, value in state.flags.items() if (key == prefix or key.startswith(prefix + ":")) and value not in (None, False)]
+    recorded = state.flags.get(f"{INTEL_SOURCES_PREFIX}{resource_id}")
+    sources = [str(item) for item in recorded] if isinstance(recorded, list) and markers else []
+    narrowing = max(len(markers), len(sources))
+    configured = state.rules.get("intel_min_width")
+    if isinstance(configured, dict):
+        configured = configured.get(resource_id)
+    try:
+        floor = float(configured) if configured is not None else base / 2
+    except (TypeError, ValueError):
+        floor = base / 2
+    floor = min(base, max(0.0, floor))
+    half = base
+    applied = 0
+    for _ in range(narrowing):
+        if half / 2 < floor - 1e-9:
+            break
         half /= 2
+        applied += 1
+    if narrowing > applied and half > floor + 1e-9:
+        half = floor  # 剩余情报把区间收到上限为止
+    capped = narrowing > applied
+    return {
+        "half_width": round(half, 2),
+        "base_half_width": round(base, 2),
+        "floor": round(floor, 2),
+        "sources": sources or (["密报"] if narrowing else []),
+        "narrowing": narrowing,
+        "applied": applied,
+        "capped": capped,
+        "display": f"±{format_number(half)}",
+    }
+
+
+def precision_text(state: WorldState, resource_id: str) -> str:
+    """简报用一句话：「精度 ±4.6（基础 ±9.2）；情报：密结颜杲卿、中使实奏；已达精度上限 ±4.6，再得情报不再收窄」。"""
+    info = intel_precision(state, resource_id)
+    text = f"精度 {info['display']}"
+    if info["narrowing"]:
+        text += f"（基础 ±{format_number(info['base_half_width'])}）；情报：{'、'.join(info['sources'])}"
+    else:
+        text += "；尚无情报来源（积弊越高区间越宽）"
+    if info["capped"]:
+        text += f"；已达精度上限 ±{format_number(info['floor'])}，再得情报不再收窄"
+    elif info["narrowing"]:
+        text += f"；精度上限 ±{format_number(info['floor'])}"
+    return text
+
+
+def estimate_interval(state: WorldState, resource_id: str, seed: int) -> tuple[float, float]:
+    """隐藏资源的「风闻区间」。
+
+    半宽见 intel_precision；区间中心带 ±半宽/2 的种子噪声，同一回合内稳定；真值始终落在区间内。
+    estimate_width 未设（≤0）时按 10 处理，避免隐藏资源意外以零宽区间泄露。
+    """
+    resource = state.resources[resource_id]
+    half = float(intel_precision(state, resource_id)["half_width"])
     rng = random.Random(f"estimate:{seed}:{state.turn}:{resource_id}")
     center = resource.amount + rng.uniform(-half / 2, half / 2)
     low, high = center - half, center + half
@@ -58,6 +119,7 @@ def public_resource(state: WorldState, resource_id: str, seed: int) -> dict[str,
         "minimum": row.minimum,
         "maximum": row.maximum,
         "display": resource_display(state, resource_id, seed),
+        "precision": intel_precision(state, resource_id),
     }
 
 
@@ -157,10 +219,13 @@ def public_report(
     secret_traits = hidden_traits(state)
     facts = []
     internal = []
+    relation_seen: set[tuple[Any, ...]] = set()
     for fact in data.get("facts", []):
         fact = dict(fact)
         if is_internal_fact(fact):
             internal.append(fact)
+            continue
+        if _duplicate_relation(fact, relation_seen):
             continue
         if fact.get("kind") == "resource" and fact.get("entity") in hidden:
             name = state.resources[fact["entity"]].name
@@ -194,8 +259,80 @@ def public_report(
         for battle in data.get("battles", []) or []
     ]
     if data.get("crisis"):
-        data["crisis"] = public_crisis(crisis, state, seed, data["crisis"].get("terms")) if crisis else {}
+        snapshot = data["crisis"].get("public")
+        if isinstance(snapshot, dict):
+            data["crisis"] = snapshot  # 结算当时计算的公开快照（end_turn / 季报 / 简报同一份数字）
+        else:
+            data["crisis"] = public_crisis(crisis, state, seed, data["crisis"].get("terms")) if crisis else {}
+    data["reconciliation"] = public_reconciliation(data.get("reconciliation"), state)
     return data
+
+
+RECONCILIATION_STEPS = (
+    ("opening", "期初"),
+    ("edicts", "诏令"),
+    ("delayed", "延期执行"),
+    ("regular", "经常收支"),
+    ("events", "事件/选择"),
+    ("closing", "期末"),
+)
+
+
+def public_reconciliation(raw: Any, state: WorldState) -> list[dict[str, Any]]:
+    """公开资源的分段对账：期初 → 诏令 → 延期执行 → 经常收支 → 事件/选择 → 期末（隐藏资源不列）。
+
+    数值字段保留原始浮点（相加等于期末，误差 < 1e-6）；shown / display 按一位小数取整，并把取整余差归入变动最大的一段，
+    使显示的各段之和与期末完全一致。
+    """
+    if not isinstance(raw, dict):
+        return []
+    hidden = hidden_resources(state)
+    rows: list[dict[str, Any]] = []
+    for key, values in raw.items():
+        if key in hidden or key not in state.resources or not isinstance(values, dict) or "opening" not in values:
+            continue
+        resource = state.resources[key]
+        numbers = {step: float(values.get(step, 0.0) or 0.0) for step, _ in RECONCILIATION_STEPS}
+        shown = {step: round(numbers[step], 1) for step, _ in RECONCILIATION_STEPS}
+        deltas = [step for step, _ in RECONCILIATION_STEPS[1:-1]]
+        residual = round(shown["closing"] - shown["opening"] - sum(shown[step] for step in deltas), 1)
+        if residual:
+            biggest = max(deltas, key=lambda step: abs(numbers[step]))
+            shown[biggest] = round(shown[biggest] + residual, 1)
+        parts = [
+            f"{label} {_signed(shown[step]) if step not in {'opening', 'closing'} else format_number(shown[step])}"
+            for step, label in RECONCILIATION_STEPS
+        ]
+        unit = f"（{resource.unit}）" if resource.unit else ""
+        rows.append({
+            "resource": key,
+            "name": resource.name,
+            "unit": resource.unit,
+            **numbers,
+            "shown": shown,
+            "display": f"{resource.name}{unit}：" + " → ".join(parts),
+        })
+    return rows
+
+
+def _signed(value: float) -> str:
+    """对账的变动量：+5、−40、0（全角减号，与事实文本一致）。"""
+    text = format_number(abs(value))
+    return "0" if text == "0" else (f"−{text}" if value < 0 else f"+{text}")
+
+
+def _duplicate_relation(fact: dict[str, Any], seen: set[tuple[Any, ...]]) -> bool:
+    """对称的关系变化（A→B 与 B→A 同幅、同因）只留第一条。"""
+    if fact.get("kind") != "relation":
+        return False
+    before, after = fact.get("before"), fact.get("after")
+    numeric = all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (before, after))
+    delta = round(float(after) - float(before), 3) if numeric else None
+    key = (frozenset({str(fact.get("entity")), str(fact.get("key"))}), delta, fact.get("cause"))
+    if key in seen:
+        return True
+    seen.add(key)
+    return False
 
 
 def _secret_trait(fact: dict[str, Any], secret_traits: set[str]) -> bool:
@@ -308,7 +445,10 @@ def redacted_report(report: TurnReport, state: WorldState) -> TurnReport:
     hidden = hidden_resources(state)
     secret_traits = hidden_traits(state)
     redacted = report.model_copy(deep=True)
-    redacted.facts = [fact for fact in redacted.facts if not is_internal_fact(fact)]
+    relation_seen: set[tuple[Any, ...]] = set()
+    redacted.facts = [
+        fact for fact in redacted.facts if not is_internal_fact(fact) and not _duplicate_relation(fact.model_dump(), relation_seen)
+    ]
     for fact in redacted.facts:
         if fact.kind == "resource" and fact.entity in hidden:
             fact.text = f"{state.resources[fact.entity].name}有所变动" + (f"（{fact.cause}）" if fact.cause else "")
@@ -321,6 +461,7 @@ def redacted_report(report: TurnReport, state: WorldState) -> TurnReport:
             fact.cause = None
     redacted.ledger_lines = [line for line in redacted.ledger_lines if line.resource not in hidden]
     redacted.crisis = {}
+    redacted.reconciliation = {key: value for key, value in redacted.reconciliation.items() if key not in hidden}
     return redacted
 
 

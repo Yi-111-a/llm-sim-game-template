@@ -153,6 +153,7 @@ class SessionStore:
         current = self.head_state()
         rng = random.Random(self.seed + current.turn)
         updated, report = resolve_turn(current, rng, self.scenario)
+        self._complete_report(updated, report)
         # 每个回合节点都带结算后的完整状态快照：读档从最近的快照起步，不再用（可能已改动的）剧本重放旧回合。
         entry = self._append(
             "turn",
@@ -164,6 +165,37 @@ class SessionStore:
         )
         self._state_cache[entry["id"]] = clone(updated)
         return updated, report, entry["id"]
+
+    def _complete_report(self, updated: WorldState, report: TurnReport) -> None:
+        """补全季报：对账的期初、诏令与季前抉择三段（来自上次结算以来的日志），以及危机计的公开快照。
+
+        期初 = 上次结算后的值；诏令 = 期间各操作条目的变化（choose_event_option 计入「事件/选择」）；
+        其后三段（延期执行、经常收支、事件/选择）由 resolve_turn 给出。各段相加恰为期末 − 期初。
+        """
+        from simcore.domain.visibility import public_crisis
+
+        path = self._path_to(self.head_id)
+        start_index = max((index for index, entry in enumerate(path) if entry["type"] == "turn"), default=-1)
+        opening_state = self._snapshot(path[start_index]["id"]) if start_index >= 0 else self.initial_state
+        previous = opening_state
+        choices: dict[str, float] = {}
+        for entry in path[start_index + 1:]:
+            after = self._snapshot(entry["id"])
+            if entry["type"] == "op" and (entry["payload"].get("op") or {}).get("op") == "choose_event_option":
+                for key, row in after.resources.items():
+                    before = previous.resources[key].amount if key in previous.resources else row.amount
+                    choices[key] = choices.get(key, 0.0) + row.amount - before
+            previous = after
+        for key, row in report.reconciliation.items():
+            opening = opening_state.resources[key].amount if key in opening_state.resources else row["start"]
+            choice = choices.get(key, 0.0)
+            row["opening"] = opening
+            row["edicts"] = row["start"] - opening - choice
+            row["events"] = row["events"] + choice
+            row.pop("start", None)
+        crisis = (self.scenario.get("scenario", {}) or {}).get("crisis")
+        if crisis and report.crisis:
+            report.crisis["public"] = public_crisis(crisis, updated, self.seed)
 
     def append_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> str:
         entry = self._append("message", {"role": role, "content": content, "metadata": metadata or {}})

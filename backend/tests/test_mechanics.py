@@ -500,7 +500,7 @@ def test_crisis_terms_are_reported_each_turn(mech_scenario) -> None:
     state.resources["corruption"].amount = 60
     state, report = resolve(state, mech_scenario)
     terms = {row["id"]: row["value"] for row in report.crisis["terms"]}
-    assert terms == {"amb": 0.0, "cor": 1.0}
+    assert terms == {"amb": 0.05, "cor": 1.0}  # 结算全部完成后（异志漂移 +0.5 之后）计算一次
     assert report.crisis["band"] == "承平"
     assert report.crisis["value"] == pytest.approx(31.0)
 

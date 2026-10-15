@@ -74,7 +74,7 @@ def test_client_mode_full_play_loop_without_leaking_hidden_values(mech_env) -> N
             briefing = (await call(client, "briefing", session_id=session_id))[1]
             assert briefing.strip().endswith("不能直接变成操作。")
             error, reference = await call(client, "op_reference", session_id=session_id)
-            assert not error and '"choose_event_option"' in reference and '"pass_army"' in reference
+            assert not error and '"choose_event_option"' in reference and "pass_army" in reference and '"permitted_ops"' in reference
             error, card = await call(client, "audience", session_id=session_id, character="plotter")
             assert not error and "人设卡：安节度" in card and "StateDigest" in card and "口吻要求" in card
             assert '"ambition": 7' not in card
@@ -159,7 +159,7 @@ def test_server_mode_uses_configured_provider(mech_env) -> None:
             error, debate = await call(client, "court_debate", session_id=session_id, topic="边镇增兵议", participants=["chancellor", "general"])
             assert not error and "李相（support）：" in debate and "郭将军（oppose）：" in debate
             error, draft = await call(client, "draft_edict", session_id=session_id, sections={"interior": "国库增加 10"})
-            assert not error and "[applied 可执行] (text) 国库 +10" in draft
+            assert not error and "[rejected 被拒] [OP_NOT_PERMITTED] (text) 国库 +10" in draft
             error, report = await call(client, "end_turn", session_id=session_id)
             assert not error and "## 纪事" in report
 

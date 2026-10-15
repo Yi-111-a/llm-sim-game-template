@@ -47,15 +47,60 @@ def visible_memorials(scenario: dict[str, Any], state: WorldState) -> list[dict[
     return [_public_item(item, state) for item in items if isinstance(item, dict) and is_visible(item, state)]
 
 
+ADVISOR_ABSENT = frozenset({"dead", "imprisoned", "exiled"})
+ADVISOR_REQUIRES = frozenset({"office", "region", "alive"})
+
+
+def advisor_present(advisor: dict[str, Any], state: WorldState) -> tuple[bool, bool]:
+    """谏言人此刻能否进言：返回 (可显示, 是否为旧议)。
+
+    缺省要求在世且未系狱、流放（致仕者仍可进言）。advisor.requires 可加：
+    office（官职 id 或列表：须任其一）、region（地区 id 或列表：须身在其一）、
+    alive: false（允许引用已不在朝者的旧议，显示时标「旧议」）。
+    """
+    character = state.characters.get(str(advisor.get("character")))
+    if character is None:
+        return False, False
+    requires = advisor.get("requires") if isinstance(advisor.get("requires"), dict) else {}
+    absent = character.status in ADVISOR_ABSENT
+    if absent and requires.get("alive", True) is not False:
+        return False, False
+    office = requires.get("office")
+    if office is not None:
+        wanted = {str(item) for item in office} if isinstance(office, list) else {str(office)}
+        held = set(character.offices) | ({character.office} if character.office else set())
+        if not wanted & held:
+            return False, False
+    region = requires.get("region")
+    if region is not None:
+        wanted = {str(item) for item in region} if isinstance(region, list) else {str(region)}
+        if character.region not in wanted or character.in_transit:
+            return False, False
+    return True, absent
+
+
+def present_advisors(item: dict[str, Any], state: WorldState) -> list[dict[str, Any]]:
+    """当季能进言的谏言人（剔除已故、系狱、流放及不满足 requires 者）。"""
+    rows = []
+    for advisor in item.get("advisors", []) or []:
+        if not isinstance(advisor, dict):
+            continue
+        shown, old = advisor_present(advisor, state)
+        if shown:
+            rows.append({**advisor, "_old": old})
+    return rows
+
+
 def _public_item(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
     advisors = []
-    for advisor in item.get("advisors", []) or []:
-        character = state.characters.get(str(advisor.get("character")))
+    for advisor in present_advisors(item, state):
+        character = state.characters[str(advisor.get("character"))]
         advisors.append({
             "character": advisor.get("character"),
-            "name": character.name if character else advisor.get("character"),
+            "name": character.name + ("（旧议）" if advisor["_old"] else ""),
             "stance": advisor.get("stance", "neutral"),
             "line": advisor.get("line", ""),
+            **({"old": True} if advisor["_old"] else {}),
         })
     options = [
         {
@@ -111,7 +156,13 @@ def summarize_ops(ops: list[dict[str, Any]], state: WorldState) -> list[str]:
     旗标 / 计数等内部操作不暴露键名，合并为一句「记入档案（影响后续事件）」。
     """
     lines: list[str] = []
+    pairs: set[tuple[frozenset[str], str]] = set()
     for raw in ops:
+        if isinstance(raw, dict) and raw.get("op") == "adjust_relation":
+            pair = (frozenset({str(raw.get("a")), str(raw.get("b"))}), str(raw.get("delta")))
+            if pair in pairs:
+                continue  # A→B 与 B→A 同幅变化只写一次「A↔B」
+            pairs.add(pair)
         try:
             line = summarize_op(raw, state)
         except (KeyError, TypeError, ValueError):
@@ -164,10 +215,16 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
         return f"账目「{raw['name']}」{signed(raw['amount'])}"
     if op == "adjust_army":
         return f"{name('army', raw['army'])} {signed(raw['delta'])}"
-    if op == "move_army":
+    if op in {"move_army", "march"}:
         army = state.armies.get(str(raw["army"]))
         route = _route_note(state, army.region if army else None, raw["to_region"], army.faction if army else None)
-        return f"{name('army', raw['army'])} 移驻 {name('region', raw['to_region'])}{route}"
+        escort = ""
+        if army is not None and raw.get("with_commander", True) and army.commander in state.characters:
+            commander = state.characters[str(army.commander)]
+            if commander.region == army.region and not commander.in_transit:
+                escort = f"，{commander.name}随军"
+        verb = "率军赴" if op == "march" else "移驻"
+        return f"{name('army', raw['army'])} {verb} {name('region', raw['to_region'])}{route}{escort}"
     if op == "move_character":
         character = state.characters.get(str(raw["character"]))
         route = _route_note(state, character.region if character else None, raw["to_region"], character.faction if character else None)

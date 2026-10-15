@@ -128,6 +128,56 @@ def find_route(state: WorldState, origin: str, destination: str, faction: str | 
     return None
 
 
+def travel_note(state: WorldState, mover: Any) -> str:
+    """在途者的行程说明：「自A赴B，约n季后到」（不在途返回空串）。mover.region 在抵达前始终是出发地。"""
+    transit = getattr(mover, "in_transit", None)
+    if not transit:
+        return ""
+    origin = state.regions.get(str(transit.get("from_region") or mover.region))
+    target = state.regions.get(str(transit.get("to_region")))
+    left = int(transit.get("eta_turn", state.turn)) - state.turn
+    when = f"约{left}{turn_unit_label(state)}后到" if left > 0 else "即将抵达"
+    origin_name = origin.name if origin else str(mover.region)
+    target_name = target.name if target else str(transit.get("to_region"))
+    return f"自{origin_name}赴{target_name}，{when}"
+
+
+def traveller_label(state: WorldState, mover: Any) -> str:
+    """「某某（自A赴B，约n季后到）」；不在途时只给名字。"""
+    note = travel_note(state, mover)
+    return f"{mover.name}（{note}）" if note else str(mover.name)
+
+
+def army_station(army: Any) -> str:
+    """军队的落脚地：在途时为目的地，否则为驻地。"""
+    return str(army.in_transit.get("to_region")) if army.in_transit else str(army.region)
+
+
+def commander_presence(state: WorldState, army: Any) -> dict[str, Any]:
+    """统帅是否在军中：{commander, name, present, note}。
+
+    统帅与军队同驻一地（或同一行程同时抵达）为在军；否则「赴任中 / 不在军中」，作战时由副将暂摄。
+    """
+    commander = state.characters.get(army.commander) if army.commander else None
+    if commander is None:
+        return {"commander": None, "name": "", "present": False, "note": "无统帅"}
+    if army.in_transit or commander.in_transit:
+        together = bool(army.in_transit and commander.in_transit) and (
+            army.in_transit.get("to_region") == commander.in_transit.get("to_region")
+            and army.in_transit.get("eta_turn") == commander.in_transit.get("eta_turn")
+        )
+    else:
+        together = commander.region == army.region
+    if together:
+        return {"commander": commander.id, "name": commander.name, "present": True, "note": ""}
+    if commander.in_transit and commander.in_transit.get("to_region") == army_station(army):
+        note = f"主帅{commander.name}赴任中（{travel_note(state, commander)}），由副将暂摄"
+    else:
+        where = state.regions.get(commander.region)
+        note = f"主帅{commander.name}不在军中（今在{where.name if where else commander.region}），由副将暂摄"
+    return {"commander": commander.id, "name": commander.name, "present": False, "note": note}
+
+
 def max_concurrent_offices(state: WorldState) -> int:
     try:
         return max(1, int(state.rules.get("max_concurrent_offices", 1)))
@@ -179,18 +229,22 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
         character = state.characters.get(op.character)
         if character is None or op.to_region not in state.regions:
             return Rejected("UNKNOWN_ENTITY", "人物或目标地区不存在")
-        if character.status != "alive" or character.in_transit:
+        if character.status != "alive":
             return Rejected("CHARACTER_UNAVAILABLE", "人物当前不能行动")
+        if character.in_transit:
+            if character.in_transit.get("to_region") == op.to_region:
+                return Rejected("INVALID_TARGET", f"{character.name}已在途中（{travel_note(state, character)}），无须再下令")
+            return Rejected("CHARACTER_UNAVAILABLE", f"{character.name}正在途中（{travel_note(state, character)}），途中不能另行调遣")
         if op.to_region == character.region:
             return Rejected("INVALID_TARGET", f"{character.name}已在{state.regions[op.to_region].name}")
         if find_route(state, character.region, op.to_region, character.faction) is None:
             return Rejected("OUT_OF_RANGE", f"{character.name}无路可达{state.regions[op.to_region].name}")
-    if op.op == "move_army":
+    if op.op in {"move_army", "march"}:
         army = state.armies.get(op.army)
         if army is None or op.to_region not in state.regions:
             return Rejected("UNKNOWN_ENTITY", "军队或目标地区不存在")
         if army.in_transit:
-            return Rejected("CHARACTER_UNAVAILABLE", "军队正在行军")
+            return Rejected("CHARACTER_UNAVAILABLE", f"{army.name}正在行军（{travel_note(state, army)}），途中不能另行调遣")
         if op.to_region == army.region:
             return Rejected("INVALID_TARGET", f"{army.name}已驻{state.regions[op.to_region].name}")
         if find_route(state, army.region, op.to_region, army.faction) is None:
@@ -219,7 +273,7 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
         return Rejected("UNKNOWN_ENTITY", f"常设命令不存在：{op.id}")
     if op.op == "remember" and op.character not in state.characters:
         return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.character}")
-    if op.op in {"adjust_army", "set_army_faction", "set_army_commander"} and op.army not in state.armies:
+    if op.op in {"adjust_army", "set_army_faction", "set_army_commander", "march"} and op.army not in state.armies:
         return Rejected("UNKNOWN_ENTITY", f"军队不存在：{op.army}")
     if op.op == "set_army_faction" and op.faction not in state.factions:
         return Rejected("UNKNOWN_ENTITY", f"势力不存在：{op.faction}")

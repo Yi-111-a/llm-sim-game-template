@@ -7,7 +7,8 @@ from typing import Any
 from simcore.domain.apply import apply, edict_memories
 from simcore.domain.battle import advance_ai_routes, resolve_battles
 from simcore.domain.calendar import format_calendar, start_season_index
-from simcore.domain.crisis import crisis_report, evaluate_terms, formula_values
+from simcore.domain.crisis import crisis_report, formula_values
+from simcore.domain.describe import describe_satisfied, stamp
 from simcore.domain.difficulty import drift_factor, gravity_factor
 from simcore.domain.events import matches
 from simcore.domain.formulas import evaluate
@@ -46,12 +47,15 @@ def resolve_turn(
     target = state.turn + 1
     updated = clone(state)
     report = TurnReport(turn=target)
+    # 分段对账：各资源在每段结算前后的值（差值逐段相加恰等于期末 − 期初）
+    marks: list[dict[str, float]] = [_amounts(updated)]
 
     # 1. 到期的待决事件执行默认项
     for choice in list(updated.pending_choices):
         if choice.deadline_turn > target:
             continue
         updated = _resolve_default_choice(updated, choice, target, report)
+    marks.append(_amounts(updated))
 
     # 2. 延期条款
     pending = [row for row in updated.pending_clauses if row.due_turn <= target]
@@ -69,6 +73,7 @@ def resolve_turn(
             for memory in memories:
                 updated, facts = apply(memory, updated, turn=target, inplace=True)
                 report.facts.extend(facts)
+    marks.append(_amounts(updated))
 
     # 3. 常设命令
     for order in list(updated.standing_orders):
@@ -159,16 +164,13 @@ def resolve_turn(
     report.facts.extend(route_facts)
     report.warnings.extend(route_warnings)
 
-    # 9. 漂移；危机分项与危机资源的漂移使用同一组变量快照
+    # 9. 漂移
     crisis = scenario_definition.get("crisis") or {}
-    crisis_terms: list[dict[str, Any]] | None = None
     for resource_id, expression in (formulas.get("drift", {}) or {}).items():
         if resource_id not in updated.resources:
             continue
         resource = updated.resources[resource_id]
         values = formula_values(updated, target)
-        if crisis and resource_id == crisis.get("resource"):
-            crisis_terms = evaluate_terms(crisis, values)
         try:
             amount = evaluate(expression, values) * drift_factor(updated, resource_id)
         except (ValueError, ZeroDivisionError) as exc:
@@ -177,8 +179,7 @@ def resolve_turn(
         report.ledger_lines.append(
             LedgerLine(name=f"{resource.name}变动", amount=_credit(resource, amount), kind="drift", resource=resource_id, reason="场景漂移公式")
         )
-    if crisis and crisis_terms is None:
-        crisis_terms = evaluate_terms(crisis, formula_values(updated, target))
+    marks.append(_amounts(updated))
 
     # 10. 事件
     for event in scenario.get("events", []) or []:
@@ -191,6 +192,17 @@ def resolve_turn(
             updated.counters[key] = updated.counters.get(key, 0) + 1
         elif counter.get("mode", "streak") == "streak":
             updated.counters[key] = 0
+    marks.append(_amounts(updated))
+    report.reconciliation = {
+        key: {
+            "delayed": marks[2][key] - marks[1][key],
+            "regular": marks[3][key] - marks[2][key],
+            "events": (marks[1][key] - marks[0][key]) + (marks[4][key] - marks[3][key]),
+            "start": marks[0][key],
+            "closing": marks[4][key],
+        }
+        for key in marks[0]
+    }
 
     # 12. 结局判定
     outcome = judge_outcome(updated, scenario_definition, target)
@@ -226,7 +238,9 @@ def resolve_turn(
             fallback_year=updated.calendar.year,
         )
     if crisis:
-        report.crisis = crisis_report(crisis, updated, crisis_terms)
+        # 危机计只在一切结算（延期条款、事件、抉择默认项）之后按最终状态计算一次：
+        # end_turn、季报、/view 与 briefing 读到的是同一份数字。
+        report.crisis = crisis_report(crisis, updated)
     from simcore.store.session import state_hash
 
     if os.environ.get("SIM_CHECK_INVARIANTS"):
@@ -378,7 +392,7 @@ def judge_outcome(state: WorldState, scenario_definition: dict[str, Any], turn: 
         if ending.get("conditions") in (None, {}, []):
             continue
         if matches(ending["conditions"], state, turn):
-            return _outcome(ending, turn)
+            return _outcome(ending, turn, stamp(describe_satisfied(ending["conditions"], state, turn), turn))
     length = scenario_definition.get("game_length") or {}
     if not length or length.get("last_turn") is None:
         return None
@@ -388,16 +402,31 @@ def judge_outcome(state: WorldState, scenario_definition: dict[str, Any], turn: 
         last_turn = int(length.get("overtime_last_turn", last_turn))
     if turn < last_turn:
         return None
+    satisfied = [f"T{turn} 时已至终局时限 T{last_turn}，其他结局条件均未满足"]
+    if last_turn != int(length["last_turn"]):
+        flag = describe_satisfied({"kind": "flag", "key": overtime_flag, "value": True}, state, turn)
+        satisfied.insert(0, f"{flag[0] if flag else overtime_flag}，时限由 T{int(length['last_turn'])} 延至 T{last_turn}")
     fallback = length.get("fallback_ending")
     ending = next((row for row in endings if row.get("id") == fallback), None)
     if ending is not None:
-        return _outcome(ending, turn)
-    return Outcome(kind="ending", id=str(fallback or "time_up"), title=str(fallback or "时限已至"), text="", turn=turn)
+        return _outcome(ending, turn, satisfied)
+    return Outcome(kind="ending", id=str(fallback or "time_up"), title=str(fallback or "时限已至"), text="", turn=turn, satisfied=satisfied)
 
 
-def _outcome(ending: dict[str, Any], turn: int) -> Outcome:
+def _outcome(ending: dict[str, Any], turn: int, satisfied: list[str] | None = None) -> Outcome:
     kind = "fail" if ending.get("kind") == "fail" else "ending"
-    return Outcome(kind=kind, id=str(ending["id"]), title=str(ending.get("title", ending["id"])), text=str(ending.get("text", "")), turn=turn)
+    return Outcome(
+        kind=kind,
+        id=str(ending["id"]),
+        title=str(ending.get("title", ending["id"])),
+        text=str(ending.get("text", "")),
+        turn=turn,
+        satisfied=list(satisfied or []),
+    )
+
+
+def _amounts(state: WorldState) -> dict[str, float]:
+    return {key: row.amount for key, row in state.resources.items()}
 
 
 def _collect_income(state: WorldState, incomes: dict[str, Any], target: int, report: TurnReport) -> None:

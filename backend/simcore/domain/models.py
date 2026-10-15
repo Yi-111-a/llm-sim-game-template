@@ -138,6 +138,7 @@ class LedgerEntry(DomainModel):
     kind: Literal["one_off", "recurring"]
     turns: int | None = None
     reason: str = ""
+    cancellable: bool = True
 
 
 class Project(DomainModel):
@@ -190,6 +191,7 @@ class Outcome(DomainModel):
     title: str
     text: str = ""
     turn: int
+    satisfied: list[str] = Field(default_factory=list)  # 判定命中的条件（中文可读），见 describe.describe_satisfied
 
 
 class WorldState(DomainModel):
@@ -263,4 +265,7 @@ class TurnReport(DomainModel):
     choices_opened: list[dict[str, Any]] = Field(default_factory=list)
     outcome: Outcome | None = None
     crisis: dict[str, Any] = Field(default_factory=dict)
+    # 本季各资源分段对账：{resource: {opening?, edicts?, delayed, regular, events, closing}}；
+    # resolve_turn 填 delayed / regular / events（季内三段），SessionStore.append_turn 补期初、诏令与季前抉择。
+    reconciliation: dict[str, dict[str, float]] = Field(default_factory=dict)
     state_hash: str = ""

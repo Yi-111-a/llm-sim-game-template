@@ -345,6 +345,7 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
             if resource.get("hidden") and float(resource.get("estimate_width", 0) or 0) < 0:
                 errors.append(f"资源 {resource.get('id')} 的 estimate_width 不能为负")
         errors.extend(difficulty_errors(data.get("scenario", {}) or {}, resource_ids, seen_events))
+        errors.extend(player_ops_errors((data.get("scenario", {}) or {}).get("settings") or {}))
 
     memorials = data.get("memorials", [])
     if memorials and not isinstance(memorials, list):
@@ -369,6 +370,8 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
                 errors.append(f"{location} 的谏言人不存在：{advisor.get('character') if isinstance(advisor, dict) else advisor}")
             elif advisor.get("stance", "neutral") not in {"support", "oppose", "neutral"}:
                 errors.append(f"{location} 的谏言立场无效：{advisor.get('stance')}")
+            elif advisor.get("requires") is not None:
+                errors.extend(_advisor_requires_errors(advisor, location, region_ids))
         option_ids = [str(option.get("id")) for option in item.get("options", []) or [] if isinstance(option, dict)]
         if not option_ids:
             errors.append(f"{location} 至少需要一个选项")
@@ -378,6 +381,50 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
             if isinstance(option, dict):
                 check_ops(option.get("ops", []) or [], f"{location}.options.{option.get('id')}.ops")
                 check_memory(option.get("memory"), f"{location}.options.{option.get('id')}")
+    return errors
+
+
+def _advisor_requires_errors(advisor: dict[str, Any], location: str, region_ids: set[str]) -> list[str]:
+    """谏言人 requires：{office: id|[id], region: id|[id], alive: bool}。"""
+    requires = advisor.get("requires")
+    who = advisor.get("character")
+    if not isinstance(requires, dict):
+        return [f"{location} 的谏言人 {who} 的 requires 必须是对象"]
+    errors = [f"{location} 的谏言人 {who} 的 requires 含未知键：{key}" for key in requires if key not in {"office", "region", "alive"}]
+    region = requires.get("region")
+    for region_id in region if isinstance(region, list) else ([region] if region is not None else []):
+        if region_ids and str(region_id) not in region_ids:
+            errors.append(f"{location} 的谏言人 {who} 的 requires.region 不存在：{region_id}")
+    if "alive" in requires and not isinstance(requires["alive"], bool):
+        errors.append(f"{location} 的谏言人 {who} 的 requires.alive 必须是 true/false")
+    return errors
+
+
+def player_ops_errors(settings: dict[str, Any]) -> list[str]:
+    """settings.player_ops：操作名列表，或 {allow, deny, statuses}。"""
+    from simcore.domain.ops import OP_NAMES
+
+    config = settings.get("player_ops") if isinstance(settings, dict) else None
+    if config is None:
+        return []
+    names: list[Any] = []
+    statuses: list[Any] = []
+    if isinstance(config, list):
+        names = config
+    elif isinstance(config, dict):
+        unknown = [key for key in config if key not in {"allow", "deny", "statuses"}]
+        if unknown:
+            return [f"settings.player_ops 含未知键：{'、'.join(map(str, unknown))}"]
+        names = [*(config.get("allow") or []), *(config.get("deny") or [])]
+        statuses = list(config.get("statuses") or [])
+    else:
+        return ["settings.player_ops 必须是操作名列表或 {allow, deny, statuses}"]
+    errors = [f"settings.player_ops 含未知操作：{name}" for name in names if name not in OP_NAMES]
+    errors.extend(
+        f"settings.player_ops.statuses 含未知状态：{status}"
+        for status in statuses
+        if status not in {"alive", "dead", "imprisoned", "exiled", "retired"}
+    )
     return errors
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from simcore.domain.models import TurnReport, WorldState
-from simcore.domain.rules import STATUS_NAMES, held_offices, stat_name
+from simcore.domain.rules import STATUS_NAMES, commander_presence, held_offices, stat_name, travel_note, traveller_label
 from simcore.domain.visibility import fact_line, format_number, public_report, resource_display
 
 __all__ = ["STATUS_NAMES", "digest_numbers", "render_digest"]
@@ -33,9 +33,12 @@ def render_digest(
     if character is not None:
         offices = "、".join(_office_name(state, office) for office in held_offices(character)) or "无官职"
         region = state.regions.get(character.region)
+        where = region.name if region else character.region
+        if character.in_transit:
+            where += f"（{travel_note(state, character)}）"
         lines.append(
             f"【本人】{character.name}{('（' + character.title + '）') if character.title else ''}；{offices}；"
-            f"所在 {region.name if region else character.region}；{STATUS_NAMES.get(character.status, character.status)}"
+            f"所在 {where}；{STATUS_NAMES.get(character.status, character.status)}"
         )
     lines.append("【国势】" + "；".join(resource_display(state, key, seed) for key in state.resources))
     office_rows = []
@@ -82,13 +85,21 @@ def render_digest(
         if faction:
             parts.append(f"属{faction.name}")
         if commander:
-            parts.append(f"统帅{commander.name}")
+            presence = commander_presence(state, army)
+            if presence["present"]:
+                parts.append(f"统帅{commander.name}")
+            elif commander.in_transit:
+                parts.append(f"统帅{commander.name}未到任（{travel_note(state, commander)}），副将暂摄")
+            else:
+                parts.append(f"统帅{commander.name}不在军中，副将暂摄")
         if army.in_transit:
-            target = state.regions.get(army.in_transit.get("to_region", ""))
-            parts.append(f"行军往{target.name if target else army.in_transit.get('to_region')}")
+            parts.append(f"在途（{travel_note(state, army)}）")
         army_rows.append("，".join(parts))
     if army_rows:
         lines.append("【军队】" + "；".join(army_rows))
+    travellers = [traveller_label(state, row) for row in state.characters.values() if row.in_transit and row.status == "alive"]
+    if travellers:
+        lines.append("【在途】" + "；".join(travellers))
     if state.projects:
         lines.append("【工程】" + "；".join(f"{row.name} {row.progress}/{row.turns}{'（停工）' if row.stalled else ''}" for row in state.projects))
     if state.standing_orders:

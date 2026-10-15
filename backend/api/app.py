@@ -268,6 +268,13 @@ def create_app() -> FastAPI:
     async def get_view(session_id: str) -> dict[str, Any]:
         return service.view(session_id)
 
+    @app.get("/api/sessions/{session_id}/op_reference")
+    async def get_op_reference(
+        session_id: str, op: str | None = None, entity_kind: str | None = None, ids: str | None = None
+    ) -> dict[str, Any]:
+        id_list = [item for item in (ids or "").split(",") if item]
+        return service.op_reference(session_id, op, entity_kind, id_list or None)
+
     @app.get("/api/sessions/{session_id}/digest")
     async def get_digest(session_id: str, character: str | None = None) -> dict[str, Any]:
         return {"digest": service.digest(session_id, character)}

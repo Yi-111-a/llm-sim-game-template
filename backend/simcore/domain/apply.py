@@ -22,6 +22,7 @@ from simcore.domain.ops import (
     CancelStandingOrder,
     ChooseEventOption,
     Dismiss,
+    March,
     MoveArmy,
     MoveCharacter,
     Remember,
@@ -38,6 +39,8 @@ from simcore.domain.ops import (
 from simcore.domain.rules import (
     STATUS_NAMES,
     Rejected,
+    army_station,
+    commander_presence,
     entity_name,
     find_route,
     held_offices,
@@ -112,6 +115,7 @@ def apply(
                 kind=op.kind,
                 turns=op.turns,
                 reason=op.reason,
+                cancellable=op.cancellable,
             )
         )
         facts.append(Fact(kind="ledger", text=f"新增账目：{op.name}", entity=op.category))
@@ -166,11 +170,15 @@ def apply(
         facts.append(
             Fact(kind="movement", text=f"{character.name}自{origin}启程赴{route_text}", entity=op.character, before=character.region, after=op.to_region)
         )
-    elif isinstance(op, MoveArmy):
+    elif isinstance(op, (MoveArmy, March)):
         army = updated.armies[op.army]
         route_text = _start_transit(updated, army, op.to_region, army.faction)
         origin = updated.regions[army.region].name
-        facts.append(Fact(kind="movement", text=f"{army.name}自{origin}开拔，赴{route_text}", entity=op.army, before=army.region, after=op.to_region))
+        escort = _escort_commander(updated, army) if op.with_commander else ""
+        verb = "出征" if isinstance(op, March) else "开拔"
+        facts.append(
+            Fact(kind="movement", text=f"{army.name}自{origin}{verb}，赴{route_text}{escort}", entity=op.army, before=army.region, after=op.to_region)
+        )
     elif isinstance(op, StartProject):
         updated.projects.append(
             Project(
@@ -236,6 +244,7 @@ def apply(
         before = updated.flags.get(op.key)
         updated.flags[op.key] = op.value
         updated.flag_turns[op.key] = stamp
+        _record_intel_source(updated, op.key, op.value, cause)
         facts.append(Fact(kind="flag", text=f"旗标改变：{op.key}", before=before, after=op.value, key=op.key, internal=True))
     elif isinstance(op, Remember):
         updated.characters[op.character].memories.append(op.fact)
@@ -258,6 +267,8 @@ def apply(
         before = army.commander
         army.commander = op.character
         text = f"{army.name}易帅，由{entity_name(updated, op.character)}统领" if op.character else f"罢{army.name}统帅"
+        if op.character:
+            text += _dispatch_commander(updated, army, op.dispatch)
         facts.append(Fact(kind="army_commander", text=text, entity=op.army, before=before, after=op.character))
     elif isinstance(op, AdjustTrait):
         character = updated.characters[op.character]
@@ -322,6 +333,50 @@ def _start_transit(state: WorldState, mover: Any, destination: str, faction: str
     via = [state.regions[region_id].name for region_id in path[1:-1]]
     detail = (f"经{'、'.join(via)}，" if via else "") + f"约{turns}{turn_unit_label(state)}"
     return f"{state.regions[destination].name}（{detail}）"
+
+
+INTEL_PREFIX = "intel:"
+INTEL_SOURCES_PREFIX = "_internal:intel_sources:"
+
+
+def _record_intel_source(state: WorldState, key: str, value: Any, cause: str | None) -> None:
+    """情报旗标（intel:<resource>[:<来源>]）记下来源，供风闻精度说明与叠加（visibility.intel_precision）。"""
+    if not key.startswith(INTEL_PREFIX):
+        return
+    resource = key[len(INTEL_PREFIX):].split(":", 1)[0]
+    if not resource:
+        return
+    slot = f"{INTEL_SOURCES_PREFIX}{resource}"
+    if value in (None, False):
+        state.flags.pop(slot, None)
+        return
+    sources = [str(item) for item in state.flags.get(slot) or []]
+    label = (cause or "").strip() or "密报"
+    if label not in sources:
+        sources.append(label)
+    state.flags[slot] = sources
+
+
+def _escort_commander(state: WorldState, army: Any) -> str:
+    """统帅与军队同驻一地（且不在途）时随军同行：复制军队的行程，返回事实后缀「，统帅某某随军」。"""
+    commander = state.characters.get(army.commander) if army.commander else None
+    if commander is None or commander.status != "alive" or commander.in_transit or commander.region != army.region:
+        return ""
+    commander.in_transit = dict(army.in_transit or {})
+    return f"，统帅{commander.name}随军"
+
+
+def _dispatch_commander(state: WorldState, army: Any, dispatch: bool) -> str:
+    """新统帅不在军中时：dispatch 且未在途则自动启程赴军（赴任中）；否则遥领。两种情形都由副将暂摄。返回事实后缀。"""
+    commander = state.characters[army.commander]
+    if commander_presence(state, army)["present"]:
+        return ""
+    station = army_station(army)
+    if dispatch and commander.in_transit is None and commander.region != station and commander.status == "alive":
+        if find_route(state, commander.region, station, commander.faction) is not None:
+            route_text = _start_transit(state, commander, station, commander.faction)
+            return f"；{commander.name}自{state.regions[commander.region].name}赴任{route_text}，未到之前由副将暂摄"
+    return f"；{commander_presence(state, army)['note']}"
 
 
 RULER_TITLE_DEFAULT = "陛下"

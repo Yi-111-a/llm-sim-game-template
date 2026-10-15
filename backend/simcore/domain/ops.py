@@ -24,6 +24,7 @@ class AddLedger(OpModel):
     kind: Literal["one_off", "recurring"]
     turns: int | None = None
     reason: str = ""
+    cancellable: bool = True  # False：玩家不能以 cancel_ledger 撤销（剧本 / 事件设的固定开支）
 
 
 class CancelLedger(OpModel):
@@ -60,6 +61,16 @@ class MoveArmy(OpModel):
     op: Literal["move_army"]
     army: str
     to_region: str
+    with_commander: bool = True  # 统帅与军队同驻一地时随军同行（False：统帅留驻原地）
+
+
+class March(OpModel):
+    """率军出征：军队与其统帅作为同一行程出发（统帅须与军队同在一地）。"""
+
+    op: Literal["march"]
+    army: str
+    to_region: str
+    with_commander: bool = True
 
 
 class StartProject(OpModel):
@@ -126,6 +137,8 @@ class SetArmyCommander(OpModel):
     op: Literal["set_army_commander"]
     army: str
     character: str | None = None
+    # True：新统帅不在军中时自动启程赴任（玩家层提议缺省为 True；剧本 / 事件缺省 False，即遥领，由副将暂摄）
+    dispatch: bool = False
 
 
 class AdjustTrait(OpModel):
@@ -168,6 +181,7 @@ StateOp: TypeAlias = Annotated[
     | SetCharacterStatus
     | MoveCharacter
     | MoveArmy
+    | March
     | StartProject
     | AdjustRegion
     | AdjustRelation
@@ -195,6 +209,7 @@ OP_NAMES: tuple[str, ...] = (
     "set_character_status",
     "move_character",
     "move_army",
+    "march",
     "start_project",
     "adjust_region",
     "adjust_relation",
@@ -213,6 +228,36 @@ OP_NAMES: tuple[str, ...] = (
 )
 
 STATE_OP_ADAPTER: TypeAdapter[Any] = TypeAdapter(StateOp)
+OP_MODELS: dict[str, type[OpModel]] = {
+    str(model.model_fields["op"].annotation.__args__[0]): model  # type: ignore[union-attr]
+    for model in OpModel.__subclasses__()
+}
+
+
+def op_signature(name: str) -> str:
+    """一行字段说明：「character: str, office: str, reason?: str」（? 为可省略）。"""
+    model = OP_MODELS.get(name)
+    if model is None:
+        return ""
+    parts = []
+    for field_name, field in model.model_fields.items():
+        if field_name == "op":
+            continue
+        annotation = field.annotation
+        args = getattr(annotation, "__args__", ())
+        if getattr(annotation, "__origin__", None) is Literal:
+            text = "|".join(str(item) for item in args)
+        else:
+            text = getattr(annotation, "__name__", None) if not args else None
+            text = text or str(annotation).replace("typing.", "")
+        parts.append(f"{field_name}{'' if field.is_required() else '?'}: {text}")
+    return ", ".join(parts)
+
+
+def op_model_schema(name: str) -> dict[str, Any]:
+    """单个操作的 JSON Schema。"""
+    model = OP_MODELS.get(name)
+    return model.model_json_schema() if model is not None else {}
 
 
 def parse_op(value: StateOp | dict[str, Any]) -> StateOp:

@@ -34,6 +34,7 @@ def test_scenario_validation_and_required_asset_check() -> None:
 def test_edict_preview_has_applied_and_rejected_clauses_without_mutating_state() -> None:
     scenario = load_scenario("../scenarios/_template")
     state = build_initial_state(scenario)
+    state.rules["player_ops"] = {"allow": ["adjust_resource"]}  # 剧本可放开（settings.player_ops）；缺省不许玩家直接改数值
     receipt = asyncio.run(
         interpret_edict(
             {"finance": "国库增加 10", "appointment": "任命不存在的人为大将军"},
@@ -52,6 +53,7 @@ def test_delayed_clause_is_queued_and_executes_on_next_turn(tmp_path: Path) -> N
     scenario = load_scenario("../scenarios/_template")
     scenario["scenario"]["formulas"]["execution"]["base_delay"] = 1
     state = build_initial_state(scenario)
+    state.rules["player_ops"] = {"allow": ["adjust_resource"]}  # 剧本可放开（settings.player_ops）；缺省不许玩家直接改数值
     receipt = asyncio.run(
         interpret_edict(
             {"finance": "国库增加 10"},
@@ -75,6 +77,7 @@ def test_delayed_clause_is_queued_and_executes_on_next_turn(tmp_path: Path) -> N
 def test_json_mode_fallback_parses_ops_with_mock_provider() -> None:
     scenario = load_scenario("../scenarios/_template")
     state = build_initial_state(scenario)
+    state.rules["player_ops"] = {"allow": ["adjust_resource"]}  # 剧本可放开（settings.player_ops）；缺省不许玩家直接改数值
     receipt = asyncio.run(
         interpret_edict(
             {"finance": "国库增加 10"},
@@ -184,6 +187,8 @@ def test_api_create_draft_confirm_turn_and_read_state(monkeypatch, tmp_path) -> 
     assert draft.status_code == 200
     receipt = draft.json()
     assert receipt["confirmed"] is False
+    # 诏令文本经模型解释出的 adjust_resource 属玩家层，缺省不许：OP_NOT_PERMITTED，国库只有经常收入
+    assert receipt["clauses"][0]["status"] == "rejected" and receipt["clauses"][0]["code"] == "OP_NOT_PERMITTED"
     assert created.json()["state"]["resources"]["treasury"]["amount"] == 100
 
     confirmed = client.post(
@@ -195,7 +200,7 @@ def test_api_create_draft_confirm_turn_and_read_state(monkeypatch, tmp_path) -> 
     state = client.get(f"/api/sessions/{session_id}/state")
     assert state.status_code == 200
     assert state.json()["turn"] == 1
-    assert state.json()["resources"]["treasury"]["amount"] == pytest.approx(110.32)
+    assert state.json()["resources"]["treasury"]["amount"] == pytest.approx(100.32)
     probe = client.post("/api/settings/test")
     assert probe.status_code == 200
     assert probe.json()["tool_calling"] is True

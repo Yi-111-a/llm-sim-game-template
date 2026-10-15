@@ -435,20 +435,124 @@ def pick_facts(
     return picked
 
 
-def _fact_phrase(section: str, item: str) -> str:
+def _fact_phrase(section: str, item: str, own_faction: str = "", keep_numbers: bool = False) -> str:
+    """把摘要条目改写成口语：军队、地区、外域不照搬「河东军55000，驻河东，属唐廷，统帅安禄山」这类原始行。
+
+    keep_numbers=True（廷议引数据）时兵数、指标保留摘要里的阿拉伯数字，否则兵数说成「五万余」、指标说成「颇佳 / 尚可」。
+    """
     text = humanize_fact(item)
+    if section == "军队":
+        return _army_phrase(text, own_faction, keep_numbers) or text.replace(" ", "")
     if section == "地区":
-        parts = text.split(" ")
-        text = parts[0] + ("，" + "、".join(parts[1:]) if len(parts) > 1 else "")
-    elif section in {"军队", "外域"}:
-        text = text.replace(" ", "")
-    else:
-        text = re.sub(r" (?=约?\d|约 )", "", text)
+        return _region_phrase(text, keep_numbers)
+    if section == "外域":
+        return _foreign_phrase(text)
+    text = re.sub(r" (?=约?\d|约 )", "", text)
     return text.replace("（风闻）", "")
 
 
-def _fact_sentence(rng: random.Random, tpl: dict[str, list[str]], section: str, item: str, self_name: str, first: bool) -> str:
-    fact = _fact_phrase(section, item)
+_ARMY_ROW = re.compile(r"^(?P<name>\S+?) (?P<num>\d+(?:\.\d+)?)，驻(?P<region>[^，（]+)(?P<rest>.*)$")
+_LEVELS = ((70, "颇佳"), (50, "尚可"), (30, "欠佳"), (-1e9, "堪忧"))
+
+
+COMMON_SURNAMES = frozenset(
+    "李王张刘陈杨赵黄周吴徐孙胡朱高林何郭马罗梁宋郑谢韩唐冯于董萧程曹袁邓许傅沈曾彭吕苏卢蒋蔡贾丁魏薛叶阎余潘杜戴夏钟汪田任姜范方石姚谭廖邹熊金陆郝孔白崔康毛邱秦江史顾侯邵孟龙万段雷钱汤尹黎易常武乔贺赖龚文"
+    "安颜封哥裴房狄褚长鱼"
+)
+
+
+def given_name(name: str) -> str:
+    """口语里的称呼：常见单姓的三字名去姓（安禄山→禄山），其余（郭将军、哥舒翰之类）用全名。"""
+    if len(name) == 3 and name[0] in COMMON_SURNAMES and not name.endswith(("军", "相", "公", "王", "侍", "帅", "度")):
+        return name[1:]
+    return name
+
+
+def cn_amount(value: float) -> str:
+    """兵数的口语：55000 → 五万余，8000 → 八千，120000 → 十二万。只用汉字，不引入阿拉伯数字。"""
+    number = int(value)
+    for unit, label in ((10000, "万"), (1000, "千")):
+        if number >= unit:
+            count, rest = divmod(number, unit)
+            return f"{cn_int(count)}{label}{'余' if rest else ''}"
+    return "数百" if number >= 100 else "寥寥"
+
+
+def cn_int(value: int) -> str:
+    if value <= 10:
+        return cn_number(value)
+    if value < 100:
+        tens, ones = divmod(value, 10)
+        return f"{'' if tens == 1 else cn_number(tens)}十{cn_number(ones) if ones else ''}"
+    return "数百"
+
+
+def _army_phrase(text: str, own_faction: str = "", keep_numbers: bool = False) -> str:
+    match = _ARMY_ROW.match(text)
+    if not match:
+        return ""
+    name, region, rest = match.group("name"), match.group("region"), match.group("rest")
+    base = f"{name[:-1]}之兵" if name.endswith("军") and len(name) > 2 else name
+    amount = match.group("num") if keep_numbers else cn_amount(float(match.group("num")))
+    faction = re.search(r"，属([^，（]+)", rest)
+    commander = re.search(r"，统帅([^，（]+)", rest)
+    transit = re.search(r"，在途（([^）]+)）", rest)
+    clauses = [f"{base}{amount}"]
+    if transit:
+        clauses.append(f"正{transit.group(1)}")
+    elif region not in name:
+        clauses.append(f"屯于{region}")
+    if commander:
+        who = commander.group(1)
+        if "未到任" in who or "不在军中" in who:
+            clauses.append(f"主帅{given_name(who.split('未到任')[0].split('不在军中')[0])}未至，副将暂摄")
+        else:
+            clauses.append(f"皆在{given_name(who)}麾下")
+    else:
+        clauses.append("尚无主帅")
+    if faction and own_faction and faction.group(1) != own_faction:
+        clauses.append(f"隶{faction.group(1)}")
+    return "，".join(clauses)
+
+
+def _region_phrase(text: str, keep_numbers: bool = False) -> str:
+    parts = text.split(" ")
+    name, stats = parts[0], []
+    for part in parts[1:]:
+        match = re.match(r"^(\D+?)(-?\d+(?:\.\d+)?)$", part)
+        if match:
+            stats.append((match.group(1), float(match.group(2))))
+    if not stats:
+        return name
+    notable = sorted(stats, key=lambda row: -abs(row[1] - 50))[:2]
+    words = [
+        f"{label}{format_number(value) if keep_numbers else next(word for floor, word in _LEVELS if value >= floor)}"
+        for label, value in notable
+    ]
+    return f"{name}{'、'.join(words)}"
+
+
+def _foreign_phrase(text: str) -> str:
+    match = re.match(r"^(?P<region>[^（]+)（(?P<holder>[^）]+)）(?:驻(?P<garrison>.+))?$", text.replace(" ", ""))
+    if not match:
+        return text.replace(" ", "")
+    phrase = f"{match.group('region')}今为{match.group('holder')}所据"
+    if match.group("garrison"):
+        phrase += f"，{match.group('garrison')}屯驻其地"
+    return phrase
+
+
+def _fact_sentence(
+    rng: random.Random,
+    tpl: dict[str, list[str]],
+    section: str,
+    item: str,
+    self_name: str,
+    first: bool,
+    own_faction: str = "",
+    keep_numbers: bool = False,
+) -> str:
+    fact = _fact_phrase(section, item, own_faction, keep_numbers)
     if not first:
         key = "fact_more"
     elif "风闻" in item:
@@ -531,13 +635,42 @@ def offline_minister_reply(
     own = [character.name] + ([own_region.name] if own_region else [])
     picked = pick_facts(digest, names, own, limit=2 if names else 1, prefer_numbers=bool(names))
     picked = picked[:1] + [row for row in picked[1:] if any(name in row[1] for name in names)]
+    own_faction = _own_faction_name(state)
     for index, (section, item) in enumerate(picked):
-        parts.append(_fact_sentence(rng, tpl, section, item, me, index == 0))
+        parts.append(_fact_sentence(rng, tpl, section, item, me, index == 0, own_faction))
     example = _usable_example(card, rng)
     if example and not proposal and rng.random() < 0.6:
         parts.append(_sentence(example))
-    parts.append(_pick(rng, tpl[f"close_{stance}"], addr=addr, self=me))
-    return "".join(parts)
+    parts.append(_fresh_close(rng, tpl[f"close_{stance}"], parts, addr=addr, self=me))
+    return "".join(_dedupe_sentences(parts))
+
+
+def _fresh_close(rng: random.Random, options: list[str], parts: list[str], **values: Any) -> str:
+    """结语：避开已说过的句子（开场白 / 示例台词里已有「伏惟陛下圣裁」时换一句，全都说过就不再收尾）。"""
+    said = "".join(parts)
+    rendered = [_pick(random.Random(0), [option], **values) for option in options]
+    fresh = [text for text in rendered if text and text.rstrip("。") not in said]
+    if not fresh:
+        return ""
+    return fresh[rng.randrange(len(fresh))]
+
+
+def _dedupe_sentences(parts: list[str]) -> list[str]:
+    """同一句话不说两遍（按句号切分后去重）。"""
+    seen: set[str] = set()
+    result: list[str] = []
+    for part in parts:
+        pieces = [piece for piece in re.split(r"(?<=[。！？])", part) if piece]
+        kept = [piece for piece in pieces if piece.strip() not in seen]
+        seen.update(piece.strip() for piece in pieces)
+        if kept:
+            result.append("".join(kept))
+    return result
+
+
+def _own_faction_name(state: WorldState) -> str:
+    faction = state.factions.get(str(state.rules.get("player_faction") or ""))
+    return faction.name if faction else ""
 
 
 def _names_entities(state: WorldState, text: str, exclude_id: str) -> bool:
@@ -584,10 +717,10 @@ def offline_debate_line(
     own = [character.name] + ([own_region.name] if own_region else [])
     cited = [str(row.get("text", "")) for row in previous or []]
     for section, item in pick_facts(digest, topic_names(state, topic, character_id), own, limit=1, prefer_numbers=True, exclude=cited):
-        parts.append(_fact_sentence(rng, tpl, section, item, me, True))
+        parts.append(_fact_sentence(rng, tpl, section, item, me, True, _own_faction_name(state), keep_numbers=True))
     example = _usable_example(card, rng)
     if example and stance == "neutral" and rng.random() < 0.5:
         parts.append(_sentence(example))
     else:
-        parts.append(_pick(rng, tpl[f"close_{stance}"], addr=addr, self=me))
-    return "".join(parts)
+        parts.append(_fresh_close(rng, tpl[f"close_{stance}"], parts, addr=addr, self=me))
+    return "".join(_dedupe_sentences(parts))

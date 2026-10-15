@@ -65,7 +65,7 @@ def test_confirm_revalidates_when_state_changed_since_drafting(mech_env) -> None
         service,
         session_id,
         adopted=adopted,
-        ops=[{"op": "adjust_resource", "resource": "treasury", "delta": -10}],
+        ops=[{"op": "appoint", "character": "general", "office": "marshal"}],
     )
     GameService().confirm_edict(session_id, first["id"])
     result = GameService().confirm_edict(session_id, second["id"])
@@ -77,7 +77,8 @@ def test_confirm_revalidates_when_state_changed_since_drafting(mech_env) -> None
     client_clause = next(clause for clause in result["clauses"] if clause["source"] == "client")
     assert client_clause["status"] == "applied" and not client_clause.get("changed")
     state = service.session(session_id).state
-    assert state.resources["treasury"].amount == 1000 - 50 - 10  # 奏疏只执行一次
+    assert state.resources["treasury"].amount == 1000 - 50  # 奏疏只执行一次
+    assert state.offices["marshal"].holder == "general"
 
 
 def test_mcp_draft_and_confirm_in_separate_server_processes(mech_env) -> None:
