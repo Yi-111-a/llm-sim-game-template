@@ -1,0 +1,46 @@
+id: _template
+manifest_version: 1
+version: "0.1.0"
+requires_engine: ">=0.1.0"
+title: 新朝开局
+era: 架空古代
+start_date: "1627-01-01"
+turn_unit: season
+currency: 银
+calendar:
+  eras:
+    - {from_turn: 1, name: 新纪元, start_year: 1}
+  seasons: [春, 夏, 秋, 冬]
+  turn_format: "{era}{year}年{season}"
+  number_system: chinese
+  pre_game_turns: 0
+resources:
+  - {id: treasury, name: 国库, initial: 100, min: 0, unit: 万两}
+  - {id: grain, name: 粮储, initial: 80, min: 0, unit: 万石}
+  - {id: authority, name: 权威, initial: 55, min: 0, max: 100, unit: 点}
+  - {id: morale, name: 民心, initial: 60, min: 0, max: 100, unit: 点}
+  - {id: corruption, name: 贪腐, initial: 25, min: 0, max: 100, unit: 点}
+stats:
+  - {id: prosperity, name: 繁荣, range: [0, 100]}
+  - {id: order, name: 治安, range: [0, 100]}
+offices:
+  - {id: sovereign, name: 君主}
+  - {id: governor, name: 地方长官, requires: {ability: 2}}
+edict_categories:
+  - {id: finance, name: 财政, hint: 税赋、拨款与账目}
+  - {id: relief, name: 救济, hint: 粮食与民生}
+  - {id: personnel, name: 人事, hint: 任免官员}
+formulas:
+  income:
+    tax: {resource: treasury, formula: "tax * 0.02"}
+  drift:
+    morale: "0"
+  execution:
+    authority_resource: authority
+    corruption_resource: corruption
+    base_delay: 0.02
+    authority_factor: 0.0002
+    corruption_factor: 0.0005
+settings:
+  afterlife_chat: false
+  history_gravity_default: 0.5

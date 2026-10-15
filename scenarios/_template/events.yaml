@@ -1,0 +1,26 @@
+- id: poor_harvest
+  title: 收成告急
+  kind: conditional
+  conditions:
+    kind: region_stat
+    region: frontier
+    stat: prosperity
+    operator: lte
+    value: 30
+  gravity: 0.65
+  effects:
+    - {op: adjust_resource, resource: grain, delta: -4, reason: 北境歉收}
+    - {op: set_flag, key: poor_harvest_seen, value: true}
+  illustration: event.poor_harvest.illustration
+- id: market_recovery
+  title: 商旅渐复
+  kind: scheduled
+  when: {turn: 3}
+  conditions:
+    kind: flag
+    key: poor_harvest_seen
+    value: true
+  gravity: 0.8
+  effects:
+    - {op: adjust_region, region: capital, stat: prosperity, delta: 2}
+  illustration: event.market_recovery.illustration

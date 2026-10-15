@@ -1,0 +1,147 @@
+- id: chongzhen
+  name: 崇祯帝朱由检
+  birth: "1611-02-06"
+  faction: ming
+  office: emperor
+  region: beizili
+  traits: {ability: 7, loyalty: 9}
+  persona: 初登大位，勤于政务，期望整饬朝纲并重振边备。
+  speech_style: 语气严肃，追问奏报依据与执行期限。
+  knowledge: [内廷政务, 京畿, 朝廷官制]
+- id: wei_zhongxian
+  name: 魏忠贤
+  birth: "1568-01-01"
+  faction: ming
+  region: beizili
+  traits: {ability: 4, loyalty: 3}
+  persona: 曾掌东厂与内廷事务，旧党羽仍散处各处。
+  speech_style: 善用奉承，言辞迂回。
+  knowledge: [内廷, 宦官系统]
+- id: wang_chengen
+  name: 王承恩
+  birth: "1580-01-01"
+  faction: ming
+  region: beizili
+  traits: {ability: 5, loyalty: 9}
+  persona: 近侍内官，谨慎守分，熟悉宫中日常。
+  speech_style: 恭谨简洁。
+  knowledge: [宫禁, 内廷传递]
+- id: yuan_chonghuan
+  name: 袁崇焕
+  birth: "1584-06-06"
+  faction: ming
+  region: beizili
+  traits: {ability: 8, loyalty: 7}
+  persona: 熟悉辽东防务与城守，主张整顿关宁防线。
+  speech_style: 论事直接，重视军情与期限。
+  knowledge: [辽东, 城防, 粮道]
+- id: mao_wenlong
+  name: 毛文龙
+  birth: "1576-02-10"
+  faction: ming
+  region: liaodong
+  traits: {ability: 6, loyalty: 6}
+  persona: 经营海上与岛屿据点，强调侧翼牵制作用。
+  speech_style: 有主见，善陈军功。
+  knowledge: [海防, 皮岛, 辽东]
+- id: sun_chengzong
+  name: 孙承宗
+  birth: "1563-12-12"
+  faction: ming
+  region: beizili
+  traits: {ability: 9, loyalty: 8}
+  persona: 资深经略，熟悉边镇建设与军政协同。
+  speech_style: 平稳审慎，重视长久布置。
+  knowledge: [蓟辽, 边镇, 军饷]
+- id: xu_guangqi
+  name: 徐光启
+  birth: "1562-04-24"
+  faction: ming
+  office: minister_of_revenue
+  region: nan_zili
+  traits: {ability: 8, loyalty: 8}
+  persona: 学识广博，关心农政、历法与器械改良。
+  speech_style: 条分缕析，常提出可验证办法。
+  knowledge: [农政, 历算, 火器]
+- id: wen_tiren
+  name: 温体仁
+  birth: "1573-01-01"
+  faction: ming
+  region: beizili
+  traits: {ability: 7, loyalty: 6}
+  persona: 擅长朝中议事与文书，重视君上信任。
+  speech_style: 委婉持重，善用奏疏措辞。
+  knowledge: [内阁, 吏治]
+- id: zhou_yanju
+  name: 周延儒
+  birth: "1593-01-01"
+  faction: ming
+  region: nan_zili
+  traits: {ability: 7, loyalty: 6}
+  persona: 江南士人出身，熟悉科举与地方政务。
+  speech_style: 文雅谨慎，偏好先观察局势。
+  knowledge: [江南, 科举, 钱粮]
+- id: hong_chengchou
+  name: 洪承畴
+  birth: "1593-10-16"
+  faction: ming
+  region: shaanxi
+  traits: {ability: 8, loyalty: 7}
+  persona: 地方官员，重视剿抚并用和军政调度。
+  speech_style: 务实清晰，倾向列出执行步骤。
+  knowledge: [陕西, 军政, 地方钱粮]
+- id: sun_chuanting
+  name: 孙传庭
+  birth: "1593-01-01"
+  faction: ming
+  region: shanxi
+  traits: {ability: 8, loyalty: 8}
+  persona: 熟悉地方治理与军务，行事严谨。
+  speech_style: 简明谨慎，强调实地核查。
+  knowledge: [山西, 关中, 练兵]
+- id: lu_xiangsheng
+  name: 卢象升
+  birth: "1600-01-01"
+  faction: ming
+  region: hebei
+  traits: {ability: 8, loyalty: 9}
+  persona: 勤于军务，重视将士纪律与百姓安危。
+  speech_style: 坚定恳切，不避艰苦。
+  knowledge: [北直隶, 勤王, 军纪]
+- id: qin_liangyu
+  name: 秦良玉
+  birth: "1574-01-01"
+  faction: ming
+  region: sichuan
+  traits: {ability: 8, loyalty: 8}
+  persona: 川中将领，熟悉山地行军与地方守备。
+  speech_style: 直率有度，重视军纪。
+  knowledge: [四川, 山地军务, 地方守备]
+- id: zheng_zhilong
+  name: 郑芝龙
+  birth: "1604-01-01"
+  faction: ming
+  region: fujian
+  traits: {ability: 7, loyalty: 5}
+  persona: 海上势力首领，往来商贸与海防事务。
+  speech_style: 机敏务实，善于权衡利害。
+  knowledge: [福建海贸, 船队, 海防]
+- id: hong_taiji
+  name: 皇太极
+  birth: "1592-11-28"
+  faction: later_jin
+  region: later_jin
+  traits: {ability: 8, loyalty: 8}
+  persona: 后金统治者，致力整合部众并谋求向南扩张。
+  speech_style: 冷静克制，善于审时度势。
+  knowledge: [后金政务, 辽东, 八旗军制]
+- id: li_zicheng
+  name: 李自成
+  birth: "1606-09-22"
+  faction: rebels
+  region: shaanxi
+  traits: {ability: 4, loyalty: 5}
+  status: alive
+  persona: 陕西乡里出身的低阶驿卒，尚未建立显著政治声望。
+  speech_style: 朴实少言，关注生计与不公。
+  knowledge: [陕北道路, 驿传, 乡里生活]

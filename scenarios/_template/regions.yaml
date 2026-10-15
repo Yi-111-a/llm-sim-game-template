@@ -1,0 +1,12 @@
+- id: capital
+  name: 京城
+  map: {x: 50, y: 30, polygon: [[42, 22], [58, 22], [61, 34], [50, 42], [39, 34]]}
+  adjacency:
+    - {to: frontier, travel_turns: 2}
+  stats: {prosperity: 65, order: 70, tax: 12}
+- id: frontier
+  name: 北境
+  map: {x: 76, y: 23, polygon: [[68, 16], [83, 12], [89, 24], [78, 32], [68, 28]]}
+  adjacency:
+    - {to: capital, travel_turns: 2}
+  stats: {prosperity: 35, order: 50, tax: 4}

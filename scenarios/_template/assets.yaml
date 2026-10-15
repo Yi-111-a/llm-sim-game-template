@@ -1,0 +1,14 @@
+manifest_version: 1
+entries:
+  - {id: character.ruler.portrait, kind: portrait, used_by: "character:ruler:portrait", path: assets/characters/ruler/portrait.webp, size: [768, 1024], format: webp, prompt: "年轻君主半身像，神情沉静，宫廷朝服，背景克制", status: missing}
+  - {id: character.minister.portrait, kind: portrait, used_by: "character:minister:portrait", path: assets/characters/minister/portrait.webp, size: [768, 1024], format: webp, prompt: "谨慎文官肖像，持卷册，朴素书房", status: missing}
+  - {id: character.general.portrait, kind: portrait, used_by: "character:general:portrait", path: assets/characters/general/portrait.webp, size: [768, 1024], format: webp, prompt: "边将肖像，甲衣与风尘，北地关隘背景", status: missing}
+  - {id: region.capital.card, kind: region_card, used_by: "region:capital:card", path: assets/regions/capital.webp, size: [1024, 576], format: webp, prompt: "古代都城远景，城墙与屋脊，俯视构图", status: missing}
+  - {id: region.frontier.card, kind: region_card, used_by: "region:frontier:card", path: assets/regions/frontier.webp, size: [1024, 576], format: webp, prompt: "北方边境山隘与烽火台，旷野留白", status: missing}
+  - {id: event.poor_harvest.illustration, kind: event, used_by: "event:poor_harvest:memorial", path: assets/events/poor_harvest.webp, size: [1344, 768], format: webp, prompt: "旱地与低垂谷穗，远处村落，含蓄纪实", status: missing}
+  - {id: event.market_recovery.illustration, kind: event, used_by: "event:market_recovery:memorial", path: assets/events/market_recovery.webp, size: [1344, 768], format: webp, prompt: "集市恢复往来，商旅在街巷间穿行，平和日常", status: missing}
+  - {id: ui.topbar.background, kind: ui_background, used_by: "ui:topbar:background", path: assets/ui/topbar.webp, size: [1920, 320], format: webp, prompt: "古代政务游戏顶部装饰横幅，低对比山水纹样，留白", status: missing}
+  - {id: ui.edict.parchment, kind: ui_background, used_by: "ui:edict:paper", path: assets/ui/edict.webp, size: [1024, 768], format: webp, prompt: "淡色古纸纤维纹理，低对比，无文字", status: missing}
+  - {id: ui.court.backdrop, kind: ui_background, used_by: "ui:court:backdrop", path: assets/ui/court.webp, size: [1600, 900], format: webp, prompt: "宫廷议事空间远景，柔和光线，中央留白", status: missing}
+  - {id: ui.map.base, kind: map, used_by: "ui:map:base", path: assets/ui/map.webp, size: [2048, 1536], format: webp, prompt: "架空古代山河地形底图，无标注无文字", status: missing}
+  - {id: ui.memorial.banner, kind: ui_background, used_by: "ui:memorial:banner", path: assets/ui/memorial.webp, size: [1344, 480], format: webp, prompt: "古代纪事卷轴横幅，淡墨山水，中央留白", status: missing}

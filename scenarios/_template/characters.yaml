@@ -1,0 +1,29 @@
+- id: ruler
+  name: 新君
+  birth: "1600-01-01"
+  faction: court
+  office: sovereign
+  region: capital
+  traits: {ability: 5, loyalty: 8}
+  persona: 新即位的统治者，重视稳固朝局与核实奏报。
+  speech_style: 语句简短，常要求列明利弊。
+  knowledge: [朝廷制度, 京畿民情]
+- id: minister
+  name: 沈文衡
+  birth: "1585-04-03"
+  faction: court
+  office: governor
+  region: capital
+  traits: {ability: 7, loyalty: 7}
+  persona: 做事谨慎的文官，熟悉仓储与河工账目。
+  speech_style: 先陈事实，再谈处置。
+  knowledge: [仓储, 河工]
+- id: general
+  name: 许定边
+  birth: "1579-09-18"
+  faction: court
+  region: frontier
+  traits: {ability: 6, loyalty: 6}
+  persona: 长年驻守边地的将领，重视粮道和侦察。
+  speech_style: 直接务实，少作夸饰。
+  knowledge: [边防, 行军]

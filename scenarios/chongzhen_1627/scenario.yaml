@@ -1,0 +1,54 @@
+id: chongzhen_1627
+manifest_version: 1
+version: "0.1.0"
+requires_engine: ">=0.1.0"
+title: 崇祯初政
+era: 明末
+start_date: "1627-12-01"
+turn_unit: season
+currency: 两
+calendar:
+  eras:
+    - {from_turn: 1, name: 崇祯, start_year: 1}
+  seasons: [春, 夏, 秋, 冬]
+  turn_format: "{era}{year}年{season}"
+  number_system: chinese
+  pre_game_turns: 0
+resources:
+  - {id: treasury, name: 国库, initial: 5000, min: 0, unit: 万两}
+  - {id: inner_treasury, name: 内帑, initial: 1200, min: 0, unit: 万两}
+  - {id: grain, name: 粮储, initial: 1800, min: 0, unit: 万石}
+  - {id: authority, name: 权威, initial: 62, min: 0, max: 100, unit: 点}
+  - {id: morale, name: 民心, initial: 54, min: 0, max: 100, unit: 点}
+  - {id: corruption, name: 贪腐, initial: 42, min: 0, max: 100, unit: 点}
+stats:
+  - {id: prosperity, name: 繁荣, range: [0, 100]}
+  - {id: order, name: 治安, range: [0, 100]}
+  - {id: defense, name: 防务, range: [0, 100]}
+  - {id: tax, name: 税基, range: [0, 100]}
+offices:
+  - {id: emperor, name: 皇帝}
+  - {id: grand_secretary, name: 内阁首辅, requires: {ability: 5}}
+  - {id: border_commander, name: 边务总理, requires: {ability: 4}}
+  - {id: censor, name: 都察官, requires: {loyalty: 4}}
+  - {id: minister_of_revenue, name: 户部尚书, requires: {ability: 4}}
+edict_categories:
+  - {id: finance, name: 财政, hint: 国库、内帑、赋税与常设账目}
+  - {id: relief, name: 救济, hint: 粮储、赈济与地方安抚}
+  - {id: personnel, name: 人事, hint: 任免与官职安排}
+  - {id: military, name: 军务, hint: 边防、军队与工程}
+  - {id: diplomacy, name: 外交, hint: 朝贡、议和与边境往来}
+formulas:
+  income:
+    tax: {resource: treasury, formula: "tax * 0.04"}
+  drift:
+    morale: "-max(0, corruption - 35) * 0.01"
+  execution:
+    authority_resource: authority
+    corruption_resource: corruption
+    base_delay: 0.07
+    authority_factor: 0.0005
+    corruption_factor: 0.001
+settings:
+  afterlife_chat: false
+  history_gravity_default: 0.55

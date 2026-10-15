@@ -1,0 +1,129 @@
+- id: shaanxi_drought
+  title: 陕西旱情加剧
+  kind: conditional
+  conditions:
+    all:
+      - {kind: turn, value: 2}
+      - {kind: region_stat, region: shaanxi, stat: prosperity, operator: lte, value: 30}
+  gravity: 0.75
+  effects:
+    - {op: adjust_resource, resource: grain, delta: -80, reason: 旱情影响收成}
+    - {op: adjust_region, region: shaanxi, stat: prosperity, delta: -4}
+    - {op: set_flag, key: drought_chain, value: true}
+  choices:
+    - text: 调粮赈济
+      effects: [{op: adjust_resource, resource: grain, delta: -30, reason: 临时赈济}]
+    - text: 暂缓处置
+      effects: [{op: set_flag, key: relief_deferred, value: true}]
+  illustration: event.shaanxi_drought.illustration
+- id: jisi_crisis
+  title: 辽西边警
+  kind: scheduled
+  when: {turn: 8}
+  conditions:
+    all:
+      - {kind: region_stat, region: liaodong, stat: defense, operator: lte, value: 70}
+      - {kind: region_stat, region: hebei, stat: defense, operator: lte, value: 70}
+  gravity: 0.7
+  effects:
+    - {op: adjust_resource, resource: treasury, delta: -120, reason: 边防急报}
+    - {op: set_flag, key: jisi_crisis, value: true}
+  choices:
+    - text: 增援关宁
+      effects: [{op: adjust_region, region: liaodong, stat: defense, delta: 5}]
+    - text: 先固蓟镇
+      effects: [{op: adjust_region, region: hebei, stat: defense, delta: 5}]
+  illustration: event.jisi_crisis.illustration
+- id: refugee_unrest
+  title: 流民聚众
+  kind: conditional
+  conditions:
+    all:
+      - {kind: turn, value: 5}
+      - {kind: resource, id: morale, operator: lte, value: 35}
+      - {kind: region_stat, region: shaanxi, stat: prosperity, operator: lte, value: 25}
+  gravity: 0.6
+  effects:
+    - {op: adjust_region, region: shaanxi, stat: order, delta: -8}
+    - {op: set_flag, key: unrest_reported, value: true}
+  illustration: event.refugee_unrest.illustration
+- id: court_reform
+  title: 新政议论渐起
+  kind: scheduled
+  when: {turn: 1}
+  gravity: 0.9
+  effects:
+    - {op: adjust_resource, resource: authority, delta: 2, reason: 朝令初行}
+  illustration: event.court_reform.illustration
+- id: granary_audit
+  title: 仓储核验
+  kind: conditional
+  conditions: {kind: turn, value: 3}
+  gravity: 0.8
+  effects:
+    - {op: adjust_resource, resource: corruption, delta: -2, reason: 核查仓储}
+    - {op: set_flag, key: granary_audited, value: true}
+  illustration: event.granary_audit.illustration
+- id: harvest_recovery
+  title: 江南秋收
+  kind: scheduled
+  when: {turn: 4}
+  conditions:
+    kind: region_stat
+    region: nan_zili
+    stat: prosperity
+    operator: gte
+    value: 60
+  gravity: 0.85
+  effects: [{op: adjust_resource, resource: grain, delta: 60, reason: 江南收成入仓}]
+  illustration: event.harvest_recovery.illustration
+- id: coastal_trade
+  title: 海舶复航
+  kind: random
+  conditions: {kind: region_stat, region: fujian, stat: order, operator: gte, value: 40}
+  gravity: 0.25
+  effects:
+    - {op: adjust_resource, resource: treasury, delta: 35, reason: 海贸税入}
+  illustration: event.coastal_trade.illustration
+- id: border_scouts
+  title: 边地侦骑来报
+  kind: random
+  when: {turn: 6}
+  gravity: 0.5
+  effects: [{op: adjust_region, region: liaodong, stat: defense, delta: 2}]
+  illustration: event.border_scouts.illustration
+- id: river_repair
+  title: 河工修复
+  kind: conditional
+  conditions: {kind: turn, value: 7}
+  gravity: 0.7
+  effects:
+    - {op: adjust_resource, resource: treasury, delta: -40, reason: 河工支出}
+    - {op: adjust_region, region: nan_zili, stat: prosperity, delta: 2}
+  illustration: event.river_repair.illustration
+- id: salt_revenue
+  title: 盐课清核
+  kind: conditional
+  conditions: {kind: flag, key: granary_audited, value: true}
+  gravity: 0.5
+  effects: [{op: adjust_resource, resource: treasury, delta: 25, reason: 盐课核入}]
+  illustration: event.salt_revenue.illustration
+- id: mountain_relief
+  title: 山区赈务奏报
+  kind: conditional
+  conditions:
+    all:
+      - {kind: turn, value: 9}
+      - {kind: resource, id: grain, operator: gte, value: 100}
+  gravity: 0.8
+  effects:
+    - {op: adjust_resource, resource: grain, delta: -20, reason: 山区赈济}
+    - {op: adjust_resource, resource: morale, delta: 2, reason: 赈济安民}
+  illustration: event.mountain_relief.illustration
+- id: court_review
+  title: 朝议复核
+  kind: conditional
+  conditions: {kind: turn, value: 12}
+  gravity: 1
+  effects: [{op: set_flag, key: first_year_review, value: true}]
+  illustration: event.court_review.illustration

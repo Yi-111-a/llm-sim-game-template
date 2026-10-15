@@ -1,0 +1,5 @@
+- id: northern_guard
+  name: 北境守军
+  faction: court
+  region: frontier
+  strength: 8000

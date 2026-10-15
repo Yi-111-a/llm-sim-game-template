@@ -1,0 +1,15 @@
+- id: guanning
+  name: 关宁守军
+  faction: ming
+  region: liaodong
+  strength: 42000
+- id: ji_town
+  name: 蓟镇守军
+  faction: ming
+  region: hebei
+  strength: 18000
+- id: jin_banners
+  name: 后金诸旗
+  faction: later_jin
+  region: later_jin
+  strength: 52000

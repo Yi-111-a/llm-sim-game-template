@@ -1,0 +1,9 @@
+- id: ming
+  name: 大明朝廷
+  relations: {later_jin: -75, rebels: -35}
+- id: later_jin
+  name: 后金
+  relations: {ming: -75}
+- id: rebels
+  name: 陕北流民群体
+  relations: {ming: -35}
