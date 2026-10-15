@@ -1,0 +1,17 @@
+.env
+.venv/
+**/.venv/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.jsonl
+.llm-sim/
+settings.json
+settings*.json
+scenarios/*/assets/
