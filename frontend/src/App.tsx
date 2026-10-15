@@ -92,7 +92,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
-    const detail = Array.isArray(body.detail) ? body.detail.join("；") : body.detail;
+    const raw = body.detail as { message?: unknown } | unknown[] | string | undefined;
+    const detail = Array.isArray(raw)
+      ? raw.join("；")
+      : raw && typeof raw === "object" && typeof (raw as { message?: unknown }).message === "string"
+        ? (raw as { message: string }).message
+        : raw;
     throw new Error(typeof detail === "string" ? detail : `请求失败 (${response.status})`);
   }
   return response.json() as Promise<T>;

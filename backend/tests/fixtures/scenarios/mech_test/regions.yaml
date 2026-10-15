@@ -1,0 +1,17 @@
+- id: capital
+  name: 京畿
+  stats: {prosperity: 60, defense: 50, tax: 10}
+  adjacency: [{to: pass, travel_turns: 1}]
+- id: pass
+  name: 雄关
+  stats: {prosperity: 20, defense: 85, tax: 2}
+  adjacency: [{to: capital, travel_turns: 1}, {to: plain, travel_turns: 1}]
+- id: plain
+  name: 平原
+  stats: {prosperity: 40, defense: 10, tax: 5}
+  adjacency: [{to: pass, travel_turns: 1}, {to: north, travel_turns: 1}]
+- id: north
+  name: 北镇
+  controller: rebels
+  stats: {prosperity: 30, defense: 30, tax: 3}
+  adjacency: [{to: plain, travel_turns: 1}]

@@ -48,6 +48,7 @@ npm run dev
 - [图片资产清单](ASSETS.md)
 - [模型提供方与路由](PROVIDERS.md)
 - [提示词约定](PROMPTS.md)
+- [MCP 接入（Claude Code / Codex）](MCP.md)
 - [技能目录](skills/create-llm-sim-game/SKILL.md)
 
 完整检查：

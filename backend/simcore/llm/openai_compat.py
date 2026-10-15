@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -70,6 +71,27 @@ class OpenAICompatProvider:
             ),
             model=payload.get("model", self.model),
         )
+
+    async def stream_text(self, messages: list[dict[str, Any]]) -> AsyncIterator[str]:
+        """以 SSE 流式请求，逐段产出文本增量。"""
+        body = self.request_body(messages, None, True, None)
+        headers = dict(self.extra_headers)
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream("POST", f"{self.base_url}/chat/completions", json=body, headers=headers) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if raw == "[DONE]":
+                        break
+                    chunk = json.loads(raw)
+                    for choice in chunk.get("choices", []):
+                        text = (choice.get("delta") or {}).get("content")
+                        if text:
+                            yield text
 
     def request_body(
         self,

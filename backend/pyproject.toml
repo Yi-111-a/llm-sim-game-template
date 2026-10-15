@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-sim-game"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local-first, data-driven simulation game engine"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
   "jinja2>=3.1,<4",
   "textual>=0.80,<2",
   "typer>=0.12,<1",
+  "mcp>=2.3,<3",
 ]
 
 [project.optional-dependencies]

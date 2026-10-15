@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DomainModel(BaseModel):
@@ -23,6 +23,8 @@ class Resource(DomainModel):
     minimum: float | None = None
     maximum: float | None = None
     unit: str = ""
+    hidden: bool = False
+    estimate_width: float = 0
 
 
 class Office(DomainModel):
@@ -46,6 +48,7 @@ class Region(DomainModel):
     polygon: list[list[float]] = Field(default_factory=list)
     adjacency: dict[str, int] = Field(default_factory=dict)
     stats: dict[str, float] = Field(default_factory=dict)
+    controller: str | None = None
 
 
 class Character(DomainModel):
@@ -53,6 +56,9 @@ class Character(DomainModel):
     name: str
     faction: str | None = None
     office: str | None = None
+    offices: list[str] = Field(default_factory=list)
+    bloc: str | None = None
+    title: str = ""
     region: str
     traits: dict[str, float] = Field(default_factory=dict)
     persona: str = ""
@@ -62,6 +68,14 @@ class Character(DomainModel):
     in_transit: dict[str, Any] | None = None
     memories: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _sync_offices(cls, data: Any) -> Any:
+        """旧存档只有主职 office：构造时补齐 offices；两者此后由 apply 同步维护。"""
+        if isinstance(data, dict) and data.get("office") and not data.get("offices"):
+            data = {**data, "offices": [data["office"]]}
+        return data
+
 
 class Army(DomainModel):
     id: str
@@ -70,6 +84,9 @@ class Army(DomainModel):
     region: str
     strength: float = 0
     in_transit: dict[str, Any] | None = None
+    commander: str | None = None
+    loyal_to: str | None = None
+    quality: float = 1.0
 
 
 class LedgerEntry(DomainModel):
@@ -107,6 +124,32 @@ class PendingClause(DomainModel):
     source: str = "edict"
 
 
+class ChoiceOption(DomainModel):
+    id: str
+    text: str
+    effects: list[dict[str, Any]] = Field(default_factory=list)
+    conditions: Any = None
+
+
+class PendingChoice(DomainModel):
+    id: str
+    event_id: str
+    title: str
+    text: str = ""
+    options: list[ChoiceOption]
+    default_option: str
+    created_turn: int
+    deadline_turn: int
+
+
+class Outcome(DomainModel):
+    kind: Literal["ending", "fail"]
+    id: str
+    title: str
+    text: str = ""
+    turn: int
+
+
 class WorldState(DomainModel):
     scenario_id: str
     turn: int
@@ -123,6 +166,11 @@ class WorldState(DomainModel):
     pending_clauses: list[PendingClause] = Field(default_factory=list)
     flags: dict[str, Any] = Field(default_factory=dict)
     rng_state: list[Any] | None = None
+    counters: dict[str, int] = Field(default_factory=dict)
+    flag_turns: dict[str, int] = Field(default_factory=dict)
+    pending_choices: list[PendingChoice] = Field(default_factory=list)
+    outcome: Outcome | None = None
+    rules: dict[str, Any] = Field(default_factory=dict)
 
 
 class Fact(DomainModel):
@@ -147,4 +195,8 @@ class TurnReport(DomainModel):
     ledger_lines: list[LedgerLine] = Field(default_factory=list)
     events_fired: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    battles: list[dict[str, Any]] = Field(default_factory=list)
+    choices_opened: list[dict[str, Any]] = Field(default_factory=list)
+    outcome: Outcome | None = None
+    crisis: dict[str, Any] = Field(default_factory=dict)
     state_hash: str = ""

@@ -51,6 +51,7 @@ class SessionStore:
             }
             self.entries: list[dict[str, Any]] = []
             self._write()
+        self._state_cache: dict[str, WorldState] = {}
 
     @property
     def head_id(self) -> str | None:
@@ -64,6 +65,7 @@ class SessionStore:
         current = self.state
         updated, facts = apply(op, current)
         entry = self._append("op", {"op": parse_op(op).model_dump(mode="json"), "state_hash": state_hash(updated)})
+        self._state_cache[entry["id"]] = updated.model_copy(deep=True)
         return updated, facts, entry["id"]
 
     def append_turn(self) -> tuple[WorldState, TurnReport, str]:
@@ -77,11 +79,79 @@ class SessionStore:
                 "state_hash": state_hash(updated),
             },
         )
+        self._state_cache[entry["id"]] = updated.model_copy(deep=True)
         return updated, report, entry["id"]
 
     def append_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> str:
         entry = self._append("message", {"role": role, "content": content, "metadata": metadata or {}})
         return entry["id"]
+
+    def append_advice(self, character: str, text: str, source: str = "player") -> dict[str, Any]:
+        """谏言库条目：只记入日志，不改变 WorldState，也不进入状态哈希。"""
+        entry = self._append(
+            "advice",
+            {"character": character, "text": text, "source": source, "turn": self.state.turn},
+        )
+        return {"id": entry["id"], **entry["payload"]}
+
+    def advice(self) -> list[dict[str, Any]]:
+        return [
+            {"id": entry["id"], **entry["payload"]}
+            for entry in self._path_to(self.head_id)
+            if entry["type"] == "advice"
+        ]
+
+    def head_turn(self) -> int:
+        """不重放即可得到的当前回合（初始回合 + 当前路径上的回合推进次数）。"""
+        return self.initial_state.turn + sum(1 for entry in self._path_to(self.head_id) if entry["type"] == "turn")
+
+    def last_report(self) -> dict[str, Any] | None:
+        for entry in reversed(self._path_to(self.head_id)):
+            if entry["type"] == "turn":
+                report = entry["payload"].get("report")
+                return report if isinstance(report, dict) else None
+        return None
+
+    def messages(self, role: str | None = None) -> list[dict[str, Any]]:
+        return [
+            {"id": entry["id"], **entry["payload"]}
+            for entry in self._path_to(self.head_id)
+            if entry["type"] == "message" and (role is None or entry["payload"].get("role") == role)
+        ]
+
+    def timeline(self) -> list[dict[str, Any]]:
+        """全部分支的时间线：[{id, type, turn, label, parentId, on_path, head}]；分支标记节点被折叠。"""
+        indexed = {item["id"]: item for item in self.entries}
+
+        def visible_parent(parent: str | None) -> str | None:
+            while parent is not None and indexed.get(parent, {}).get("type") == "branch":
+                parent = indexed[parent]["parentId"]
+            return parent
+
+        on_path = {item["id"] for item in self._path_to(self.head_id)}
+        turns: dict[str, int] = {}
+        result: list[dict[str, Any]] = []
+        for entry in self.entries:
+            if entry["type"] == "branch":
+                continue
+            parent = visible_parent(entry["parentId"])
+            base = turns.get(parent, self.initial_state.turn) if parent else self.initial_state.turn
+            turn = int(entry["payload"].get("report", {}).get("turn", base + 1)) if entry["type"] == "turn" else base
+            turns[entry["id"]] = turn
+            result.append({
+                "id": entry["id"],
+                "type": entry["type"],
+                "turn": turn,
+                "label": _entry_label(entry),
+                "parentId": parent,
+                "timestamp": entry.get("timestamp"),
+                "on_path": entry["id"] in on_path,
+                "head": False,
+            })
+        head = visible_parent(self.head_id)
+        for row in result:
+            row["head"] = row["id"] == head
+        return result
 
     def append_pending(
         self, ops: list[dict[str, Any]], due_turn: int, source: str = "edict"
@@ -139,20 +209,37 @@ class SessionStore:
         return state, state_hash(state)
 
     def state_at(self, entry_id: str | None) -> WorldState:
+        path = self._path_to(entry_id)
         state = self.initial_state.model_copy(deep=True)
-        for entry in self._path_to(entry_id):
-            if entry["type"] == "op":
-                state, _ = apply(entry["payload"]["op"], state)
-            elif entry["type"] == "pending":
-                state = queue_delayed(
-                    state,
-                    entry["payload"]["ops"],
-                    entry["payload"]["due_turn"],
-                    entry["payload"].get("source", "edict"),
-                )
-            elif entry["type"] == "turn":
-                state, _ = resolve_turn(state, random.Random(self.seed + state.turn), self.scenario)
+        start = 0
+        for index in range(len(path) - 1, -1, -1):
+            cached = self._state_cache.get(path[index]["id"])
+            if cached is not None:
+                state = cached.model_copy(deep=True)
+                start = index + 1
+                break
+        for entry in path[start:]:
+            state = self._step(entry, state)
+            self._state_cache[entry["id"]] = state.model_copy(deep=True)
         return state
+
+    def _step(self, entry: dict[str, Any], state: WorldState) -> WorldState:
+        if entry["type"] == "op":
+            state, _ = apply(entry["payload"]["op"], state)
+        elif entry["type"] == "pending":
+            state = queue_delayed(
+                state,
+                entry["payload"]["ops"],
+                entry["payload"]["due_turn"],
+                entry["payload"].get("source", "edict"),
+            )
+        elif entry["type"] == "turn":
+            state, _ = resolve_turn(state, random.Random(self.seed + state.turn), self.scenario)
+        return state
+
+    def reload(self) -> None:
+        """从磁盘重读（另一进程写入同一存档后调用）。日志只追加、节点不可变，缓存按节点 id 保持有效。"""
+        self.header, self.entries = self._read()
 
     def _append(
         self, entry_type: str, payload: dict[str, Any], parent_id: str | None = None
@@ -195,6 +282,53 @@ class SessionStore:
             "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in lines),
             encoding="utf-8",
         )
+
+
+_OP_LABELS = {
+    "adjust_resource": "调整资源",
+    "add_ledger": "新增账目",
+    "cancel_ledger": "取消账目",
+    "appoint": "任命",
+    "dismiss": "免职",
+    "set_character_status": "人物状态",
+    "move_character": "人物行程",
+    "move_army": "调动军队",
+    "start_project": "兴工",
+    "adjust_region": "地区调整",
+    "adjust_relation": "关系调整",
+    "add_standing_order": "常设令",
+    "cancel_standing_order": "撤常设令",
+    "set_flag": "旗标",
+    "remember": "人物记忆",
+    "adjust_army": "兵力调整",
+    "set_army_faction": "军队改隶",
+    "set_army_commander": "军队易帅",
+    "adjust_trait": "心态调整",
+    "adjust_counter": "计数调整",
+    "set_counter": "计数设定",
+    "set_region_controller": "地区易手",
+    "choose_event_option": "事件抉择",
+}
+
+
+def _entry_label(entry: dict[str, Any]) -> str:
+    payload = entry.get("payload", {})
+    kind = entry["type"]
+    if kind == "op":
+        op = payload.get("op", {})
+        return f"{_OP_LABELS.get(op.get('op'), op.get('op'))}"
+    if kind == "turn":
+        report = payload.get("report", {})
+        outcome = report.get("outcome")
+        suffix = f"·终局：{outcome.get('title')}" if isinstance(outcome, dict) else ""
+        return f"推进至第{report.get('turn')}回合{suffix}"
+    if kind == "pending":
+        return f"延期条款（第{payload.get('due_turn')}回合执行）"
+    if kind == "advice":
+        return f"谏言：{str(payload.get('text', ''))[:20]}"
+    if kind == "message":
+        return f"{payload.get('role', '')}：{str(payload.get('content', ''))[:20]}"
+    return kind
 
 
 def _now() -> str:

@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from typing import Any
 
-from simcore.domain.models import WorldState
-from simcore.domain.ops import StateOp, parse_op
+from simcore.domain.events import matches
+from simcore.domain.models import Character, WorldState
+from simcore.domain.ops import StateOp, describe_op_error, parse_op
 
 
 @dataclass(frozen=True)
@@ -16,11 +17,28 @@ class Rejected:
     message: str
 
 
+def held_offices(character: Character) -> list[str]:
+    """人物当前担任的全部官职（兼容只写了主职 office 的旧状态）。"""
+    held = list(character.offices)
+    if character.office and character.office not in held:
+        held.insert(0, character.office)
+    return held
+
+
+def max_concurrent_offices(state: WorldState) -> int:
+    try:
+        return max(1, int(state.rules.get("max_concurrent_offices", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Rejected:
     try:
         op = parse_op(op_value)
     except (ValueError, TypeError) as exc:
-        return Rejected("INVALID_TARGET", str(exc))
+        return Rejected("INVALID_TARGET", describe_op_error(exc, op_value))
+    if state.outcome is not None:
+        return Rejected("GAME_OVER", f"本局已终局（{state.outcome.title}），不能再改变世界状态")
 
     if op.op == "adjust_resource" and op.resource not in state.resources:
         return Rejected("UNKNOWN_ENTITY", f"未知资源：{op.resource}")
@@ -38,15 +56,19 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
                 return Rejected("CHARACTER_UNAVAILABLE", "人物当前不能任职")
             if office.holder not in (None, op.character):
                 return Rejected("OFFICE_OCCUPIED", "该官职已有任职者")
-            if character.office not in (None, op.office):
-                return Rejected("OFFICE_HELD", "人物已担任其他官职，需先免去原职")
+            held = held_offices(character)
+            limit = max_concurrent_offices(state)
+            if op.office not in held and len(held) >= limit:
+                if limit == 1:
+                    return Rejected("OFFICE_HELD", "人物已担任其他官职，需先免去原职")
+                return Rejected("OFFICE_HELD", f"人物已兼任 {len(held)} 职，达到上限 {limit}")
             if any(
                 character.traits.get(key, 0) < value
                 for key, value in office.requires.items()
                 if isinstance(value, (int, float))
             ):
                 return Rejected("OFFICE_REQUIREMENT", "人物不满足任职条件")
-        elif character.office != op.office or office.holder != op.character:
+        elif op.office not in held_offices(character) or office.holder != op.character:
             return Rejected("INVALID_TARGET", "该人物并未担任此官职")
     if op.op == "set_character_status" and op.character not in state.characters:
         return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.character}")
@@ -90,4 +112,30 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
         return Rejected("UNKNOWN_ENTITY", f"常设命令不存在：{op.id}")
     if op.op == "remember" and op.character not in state.characters:
         return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.character}")
+    if op.op in {"adjust_army", "set_army_faction", "set_army_commander"} and op.army not in state.armies:
+        return Rejected("UNKNOWN_ENTITY", f"军队不存在：{op.army}")
+    if op.op == "set_army_faction" and op.faction not in state.factions:
+        return Rejected("UNKNOWN_ENTITY", f"势力不存在：{op.faction}")
+    if op.op == "set_army_commander" and op.character is not None:
+        commander = state.characters.get(op.character)
+        if commander is None:
+            return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.character}")
+        if commander.status != "alive":
+            return Rejected("CHARACTER_UNAVAILABLE", f"{commander.name}不在世或不能统兵")
+    if op.op == "adjust_trait" and op.character not in state.characters:
+        return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.character}")
+    if op.op == "set_region_controller":
+        if op.region not in state.regions:
+            return Rejected("UNKNOWN_ENTITY", f"地区不存在：{op.region}")
+        if state.factions and op.faction not in state.factions:
+            return Rejected("UNKNOWN_ENTITY", f"势力不存在：{op.faction}")
+    if op.op == "choose_event_option":
+        choice = next((row for row in state.pending_choices if row.id == op.choice_id), None)
+        if choice is None:
+            return Rejected("UNKNOWN_ENTITY", f"待决事件不存在或已处置：{op.choice_id}")
+        option = next((row for row in choice.options if row.id == op.option_id), None)
+        if option is None:
+            return Rejected("UNKNOWN_ENTITY", f"「{choice.title}」没有选项：{op.option_id}")
+        if not matches(option.conditions, state):
+            return Rejected("CONDITION_FAILED", f"选项「{option.text}」的前提条件尚不满足")
     return Ok(op)

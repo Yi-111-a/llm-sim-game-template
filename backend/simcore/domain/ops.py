@@ -109,6 +109,56 @@ class Remember(OpModel):
     fact: str
 
 
+class AdjustArmy(OpModel):
+    op: Literal["adjust_army"]
+    army: str
+    delta: float
+    reason: str = ""
+
+
+class SetArmyFaction(OpModel):
+    op: Literal["set_army_faction"]
+    army: str
+    faction: str
+
+
+class SetArmyCommander(OpModel):
+    op: Literal["set_army_commander"]
+    army: str
+    character: str | None = None
+
+
+class AdjustTrait(OpModel):
+    op: Literal["adjust_trait"]
+    character: str
+    trait: str
+    delta: float
+
+
+class AdjustCounter(OpModel):
+    op: Literal["adjust_counter"]
+    key: str
+    delta: int
+
+
+class SetCounter(OpModel):
+    op: Literal["set_counter"]
+    key: str
+    value: int
+
+
+class SetRegionController(OpModel):
+    op: Literal["set_region_controller"]
+    region: str
+    faction: str
+
+
+class ChooseEventOption(OpModel):
+    op: Literal["choose_event_option"]
+    choice_id: str
+    option_id: str
+
+
 StateOp: TypeAlias = Annotated[
     AdjustResource
     | AddLedger
@@ -124,14 +174,76 @@ StateOp: TypeAlias = Annotated[
     | AddStandingOrder
     | CancelStandingOrder
     | SetFlag
-    | Remember,
+    | Remember
+    | AdjustArmy
+    | SetArmyFaction
+    | SetArmyCommander
+    | AdjustTrait
+    | AdjustCounter
+    | SetCounter
+    | SetRegionController
+    | ChooseEventOption,
     Field(discriminator="op"),
 ]
 
-STATE_OP_ADAPTER = TypeAdapter(StateOp)
+OP_NAMES: tuple[str, ...] = (
+    "adjust_resource",
+    "add_ledger",
+    "cancel_ledger",
+    "appoint",
+    "dismiss",
+    "set_character_status",
+    "move_character",
+    "move_army",
+    "start_project",
+    "adjust_region",
+    "adjust_relation",
+    "add_standing_order",
+    "cancel_standing_order",
+    "set_flag",
+    "remember",
+    "adjust_army",
+    "set_army_faction",
+    "set_army_commander",
+    "adjust_trait",
+    "adjust_counter",
+    "set_counter",
+    "set_region_controller",
+    "choose_event_option",
+)
+
+STATE_OP_ADAPTER: TypeAdapter[Any] = TypeAdapter(StateOp)
 
 
 def parse_op(value: StateOp | dict[str, Any]) -> StateOp:
     if isinstance(value, BaseModel):
         return value
     return STATE_OP_ADAPTER.validate_python(value)
+
+
+def op_json_schema() -> dict[str, Any]:
+    """全部 StateOp 的 JSON Schema（判别字段为 op）。"""
+    return STATE_OP_ADAPTER.json_schema()
+
+
+def describe_op_error(exc: Exception, raw: Any) -> str:
+    """把 Pydantic 校验错误写成简短中文说明（供回执与 MCP 返回）。"""
+    errors = exc.errors() if hasattr(exc, "errors") else []
+    name = raw.get("op") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict):
+        return "操作必须是 JSON 对象"
+    parts: list[str] = []
+    for error in errors:
+        kind = error.get("type", "")
+        if kind == "union_tag_not_found":
+            return "缺少 op 字段"
+        if kind == "union_tag_invalid":
+            return f"未知操作：{name}（可用操作见 op_reference）"
+        location = ".".join(str(item) for item in error.get("loc", ())[1:]) or "?"
+        if kind == "missing":
+            parts.append(f"缺少字段 {location}")
+        elif kind == "extra_forbidden":
+            parts.append(f"不支持的字段 {location}")
+        else:
+            parts.append(f"字段 {location} 无效（{error.get('msg', '')}）")
+    return f"{name or '操作'} 格式无效：" + "；".join(parts[:5]) if parts else f"{name or '操作'} 格式无效"

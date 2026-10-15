@@ -7,9 +7,12 @@ import re
 import uuid
 from typing import Any
 
-from simcore.agent.loop import guarded_chat, world_summary
+from simcore.agent.loop import guarded_chat
 from simcore.agent.tools import AgentTools
+from simcore.domain.digest import render_digest
+from simcore.domain.memorials import MemorialError, adopted_ops
 from simcore.domain.models import TurnReport, WorldState
+from simcore.domain.visibility import resource_display
 from simcore.llm.base import LLMProvider, ToolCallingUnsupported
 from simcore.prompts.loader import render_prompt
 
@@ -53,16 +56,68 @@ async def interpret_edict(
     sections: dict[str, str],
     scenario: dict[str, Any],
     state: WorldState,
-    provider: LLMProvider,
+    provider: LLMProvider | None,
     seed: int,
     abort_event: asyncio.Event | None = None,
+    adopted: list[dict[str, str]] | None = None,
+    client_ops: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    """生成诏书草案回执（不改变状态）。
+
+    处理顺序：采纳的奏疏选项（source=memorial）→ 客户端模型直接给出的 ops（source=client）
+    → 各类别诏令文本经 LLM 解释（source=text）。所有条款按顺序累积预演，并按同一种子 RNG 判定延期。
+    provider 为 None（MCP client 模式）时，文本只记为 narrative_only。
+    """
     tools = AgentTools(state)
     clauses: list[dict[str, Any]] = []
     rng = random.Random(seed + state.turn)
     formulas = scenario.get("scenario", {}).get("formulas", {})
     execution = formulas.get("execution", {}) if isinstance(formulas, dict) else {}
     deadline = asyncio.get_running_loop().time() + 120
+    accepted_memorials: list[dict[str, str]] = []
+
+    def add_clauses(receipt: list[dict[str, Any]], base: dict[str, Any]) -> None:
+        for item in receipt:
+            status = item["status"]
+            if status == "applied" and rng.random() < _delay_probability(execution, state):
+                status = "delayed"
+            clauses.append({
+                **base,
+                "status": status,
+                "op": item.get("op"),
+                "reason": item.get("reason", ""),
+                "code": item.get("code"),
+            })
+
+    memorial_items = {str(row.get("id")): row for row in scenario.get("memorials") or [] if isinstance(row, dict)}
+    for choice in adopted or []:
+        memorial_id = str(choice.get("memorial_id", ""))
+        option_id = str(choice.get("option_id", ""))
+        item = memorial_items.get(memorial_id, {})
+        option: dict[str, Any] = next((row for row in item.get("options", []) or [] if row.get("id") == option_id), {})
+        base = {
+            "category": "memorial",
+            "text": f"{item.get('title', memorial_id)}：{option.get('label', option_id)}",
+            "source": "memorial",
+            "memorial_id": memorial_id,
+            "option_id": option_id,
+        }
+        if any(row["memorial_id"] == memorial_id for row in accepted_memorials):
+            clauses.append({**base, "status": "rejected", "op": None, "reason": "同一奏疏只能采纳一个选项", "code": "DUPLICATE_MEMORIAL"})
+            continue
+        try:
+            operations = adopted_ops(scenario, state, memorial_id, option_id)
+        except MemorialError as exc:
+            clauses.append({**base, "status": "rejected", "op": None, "reason": exc.message, "code": exc.code})
+            continue
+        accepted_memorials.append({"memorial_id": memorial_id, "option_id": option_id})
+        if not operations:
+            clauses.append({**base, "status": "narrative_only", "op": None, "reason": "此选项不改变状态", "code": None})
+            continue
+        add_clauses(tools.propose_ops(operations), base)
+    if client_ops:
+        add_clauses(tools.propose_ops(list(client_ops)), {"category": "client", "text": "", "source": "client"})
+
     for index, (category, text) in enumerate(sections.items()):
         if index >= 12:
             clauses.append({
@@ -75,12 +130,22 @@ async def interpret_edict(
             continue
         if not text.strip():
             continue
+        if provider is None:
+            clauses.append({
+                "category": category,
+                "text": text,
+                "status": "narrative_only",
+                "ops": [],
+                "reason": "客户端模式下诏令文本不经解释，仅作记录；请以 ops 提交可执行条款。",
+                "source": "text",
+            })
+            continue
         prompt = (
             render_prompt(
                 "edict_interpreter",
                 {
                     "entity_context": _entity_context(scenario),
-                    "state_summary": world_summary(state),
+                    "state_summary": render_digest(tools.state, seed, scenario=scenario),
                     "category": category,
                     "text": text,
                 },
@@ -126,23 +191,13 @@ async def interpret_edict(
                     "code": "INVALID_TARGET",
                 })
         if not proposed:
-            clauses.append({"category": category, "text": text, "status": "narrative_only", "ops": [], "reason": ""})
+            clauses.append({"category": category, "text": text, "status": "narrative_only", "ops": [], "reason": "", "source": "text"})
             continue
-        for item in proposed:
-            status = item["status"]
-            delay_probability = _delay_probability(execution, state)
-            if status == "applied" and rng.random() < delay_probability:
-                status = "delayed"
-            clauses.append({
-                "category": category,
-                "text": text,
-                "status": status,
-                "op": item.get("op"),
-                "reason": item.get("reason", ""),
-                "code": item.get("code"),
-            })
+        add_clauses(proposed, {"category": category, "text": text, "source": "text"})
     return {
         "id": f"edict-{uuid.uuid4().hex[:12]}",
+        "turn": state.turn,
+        "adopted": accepted_memorials,
         "clauses": clauses,
         "execution_rate": (
             sum(clause["status"] == "applied" for clause in clauses) / len(clauses) if clauses else 1
@@ -196,20 +251,28 @@ def _number_allowed(text: str, report: TurnReport) -> bool:
     return any(abs(number - value) < 1e-6 for value in allowed)
 
 
-async def minister_chat(
-    character_id: str,
-    state: WorldState,
-    provider: LLMProvider,
-    afterlife_chat: bool = False,
-    user_text: str = "请就当前朝局谨慎回应。",
-    scenario: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def chat_availability(character_id: str, state: WorldState, afterlife_chat: bool = False) -> dict[str, str] | None:
+    """人物不能应答时返回 {status, content}；可以应答时返回 None。"""
     character = state.characters.get(character_id)
     if character is None:
         return {"status": "not_found", "content": "未找到此人物。"}
     if character.status in {"dead", "imprisoned"} and not afterlife_chat:
         return {"status": "refused", "content": "此人当前无法应答。"}
-    result = await provider.chat([
+    return None
+
+
+def minister_chat_messages(
+    character_id: str,
+    state: WorldState,
+    user_text: str,
+    scenario: dict[str, Any] | None = None,
+    seed: int = 0,
+    report: TurnReport | dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """召对提示词：人设 + 该人物可知的 StateDigest + 该人物记忆。"""
+    character = state.characters[character_id]
+    digest = render_digest(state, seed, character_id, report, scenario)
+    return [
         {
             "role": "system",
             "content": render_prompt(
@@ -220,31 +283,33 @@ async def minister_chat(
                     "speech_style": character.speech_style,
                     "calendar": state.calendar.label,
                     "turn": state.turn,
-                    "resources": {key: row.amount for key, row in state.resources.items()},
+                    "resources": "；".join(resource_display(state, key, seed) for key in state.resources),
+                    "digest": digest,
+                    "memories": character.memories[-12:],
                     "user_text": user_text,
                 },
                 (scenario or {}).get("root"),
             ),
         },
         {"role": "user", "content": user_text},
-    ])
-    return {"status": "ok", "content": result.content}
+    ]
 
 
-async def court_debate(
-    topic: str,
+async def minister_chat(
+    character_id: str,
     state: WorldState,
     provider: LLMProvider,
+    afterlife_chat: bool = False,
+    user_text: str = "请就当前朝局谨慎回应。",
     scenario: dict[str, Any] | None = None,
-) -> str:
-    result = await provider.chat([
-        {"role": "system", "content": render_prompt("court_debate", {
-            "topic": topic,
-            "officials": [item.name for item in state.characters.values() if item.office],
-        }, (scenario or {}).get("root"))},
-        {"role": "user", "content": topic},
-    ])
-    return result.content
+    seed: int = 0,
+    report: TurnReport | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    refusal = chat_availability(character_id, state, afterlife_chat)
+    if refusal is not None:
+        return refusal
+    result = await provider.chat(minister_chat_messages(character_id, state, user_text, scenario, seed, report))
+    return {"status": "ok", "content": result.content}
 
 
 async def chronicler(

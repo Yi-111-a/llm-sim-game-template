@@ -8,6 +8,8 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from simcore.domain.calendar import format_calendar, start_season_index
+from simcore.domain.events import condition_errors
 from simcore.domain.models import (
     Army,
     Calendar,
@@ -18,10 +20,19 @@ from simcore.domain.models import (
     Resource,
     WorldState,
 )
+from simcore.domain.ops import parse_op
 from simcore.images.manifest import asset_path
 from simcore.scenario.schema import AssetManifest, ScenarioDocument
 
-SCENARIO_FILES = ("characters.yaml", "regions.yaml", "factions.yaml", "armies.yaml", "events.yaml", "assets.yaml")
+SCENARIO_FILES = (
+    "characters.yaml",
+    "regions.yaml",
+    "factions.yaml",
+    "armies.yaml",
+    "events.yaml",
+    "assets.yaml",
+    "memorials.yaml",
+)
 MAX_TEXT_LENGTH = 10_000
 MAX_SCENARIO_FILES = 1_000
 MAX_IMAGE_DIMENSION = 4_096
@@ -183,6 +194,143 @@ def validate_scenario(data_or_path: dict[str, Any] | str | Path) -> list[str]:
             errors.append("calendar.turn_format 只能使用 era、year、season 占位符")
     if manifest is not None and manifest.manifest_version != 1:
         errors.append("不支持的资产 manifest_version")
+    errors.extend(_mechanics_errors(data, scenario))
+    return errors
+
+
+def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -> list[str]:
+    """§1 引擎扩展字段的结构与引用检查：事件抉择、结局、计数器、危机计、AI 路线、奏疏。"""
+    errors: list[str] = []
+
+    def rows(key: str) -> list[dict[str, Any]]:
+        value = data.get(key, [])
+        return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+    region_ids = {str(row.get("id")) for row in rows("regions")}
+    character_ids = {str(row.get("id")) for row in rows("characters")}
+    faction_ids = {str(row.get("id")) for row in rows("factions")}
+    army_ids = {str(row.get("id")) for row in rows("armies")}
+    resource_ids = {str(row.get("id")) for row in (scenario.resources if scenario else [])}
+    office_ids = {str(row.get("id")) for row in (scenario.offices if scenario else [])}
+
+    def check_ops(ops: Any, location: str) -> None:
+        if not isinstance(ops, list):
+            errors.append(f"{location} 必须是列表")
+            return
+        for index, op in enumerate(ops):
+            try:
+                parse_op(op)
+            except (ValueError, TypeError) as exc:
+                first = str(exc).splitlines()[0]
+                errors.append(f"{location}[{index}] 不是合法操作：{first}")
+
+    for character in rows("characters"):
+        for office in [character.get("office"), *(character.get("offices") or [])]:
+            if office is not None and office_ids and office not in office_ids:
+                errors.append(f"人物 {character.get('id')} 的官职不存在：{office}")
+    for army in rows("armies"):
+        if army.get("region") not in region_ids:
+            errors.append(f"军队 {army.get('id')} 的地区不存在：{army.get('region')}")
+        if army.get("faction") is not None and faction_ids and army.get("faction") not in faction_ids:
+            errors.append(f"军队 {army.get('id')} 的势力不存在：{army.get('faction')}")
+        if army.get("commander") is not None and army.get("commander") not in character_ids:
+            errors.append(f"军队 {army.get('id')} 的统帅不存在：{army.get('commander')}")
+    for region in rows("regions"):
+        controller = region.get("controller")
+        if controller is not None and controller not in faction_ids:
+            errors.append(f"地区 {region.get('id')} 的控制势力不存在：{controller}")
+
+    seen_events: set[str] = set()
+    for event in rows("events"):
+        event_id = str(event.get("id"))
+        location = f"事件 {event_id}"
+        if event_id in seen_events:
+            errors.append(f"{location} id 重复")
+        seen_events.add(event_id)
+        errors.extend(condition_errors(event.get("conditions"), f"{location}.conditions"))
+        check_ops(event.get("effects", []) or [], f"{location}.effects")
+        choices = event.get("choices") or []
+        if not isinstance(choices, list):
+            errors.append(f"{location}.choices 必须是列表")
+            continue
+        if not all(isinstance(choice, dict) for choice in choices):
+            errors.append(f"{location}.choices 选项必须是对象")
+            continue
+        choice_ids = [str(choice.get("id") or f"option_{index + 1}") for index, choice in enumerate(choices)]
+        if len(set(choice_ids)) != len(choice_ids):
+            errors.append(f"{location}.choices 选项 id 重复")
+        for choice in choices:
+            if isinstance(choice, dict):
+                errors.extend(condition_errors(choice.get("conditions"), f"{location}.choices.{choice.get('id')}.conditions"))
+                check_ops(choice.get("effects", choice.get("ops", [])) or [], f"{location}.choices.{choice.get('id')}.effects")
+        default = event.get("default_choice")
+        if default is not None and default not in choice_ids:
+            errors.append(f"{location}.default_choice 不在选项中：{default}")
+        if event.get("choice_deadline") is not None and int(event.get("choice_deadline", 1)) < 1:
+            errors.append(f"{location}.choice_deadline 至少为 1")
+
+    if scenario is not None:
+        ending_ids = [ending.id for ending in scenario.endings]
+        if len(set(ending_ids)) != len(ending_ids):
+            errors.append("endings 的 id 重复")
+        for ending in scenario.endings:
+            errors.extend(condition_errors(ending.conditions, f"结局 {ending.id}.conditions"))
+        length = scenario.game_length
+        if length is not None and length.fallback_ending and scenario.endings and length.fallback_ending not in ending_ids:
+            errors.append(f"game_length.fallback_ending 不在 endings 中：{length.fallback_ending}")
+        if length is not None and length.overtime_last_turn is not None and length.overtime_last_turn < length.last_turn:
+            errors.append("game_length.overtime_last_turn 不能早于 last_turn")
+        for counter in scenario.counters:
+            errors.extend(condition_errors(counter.conditions, f"计数器 {counter.id}.conditions"))
+        if scenario.crisis is not None and scenario.crisis.resource not in resource_ids:
+            errors.append(f"crisis.resource 不存在：{scenario.crisis.resource}")
+        for route in scenario.ai_routes:
+            if faction_ids and route.faction not in faction_ids:
+                errors.append(f"ai_routes 势力不存在：{route.faction}")
+            for region_id in route.route:
+                if region_id not in region_ids:
+                    errors.append(f"ai_routes 地区不存在：{region_id}")
+            for army_id in route.armies:
+                if army_id not in army_ids:
+                    errors.append(f"ai_routes 军队不存在：{army_id}")
+        for objective in scenario.objectives:
+            errors.extend(condition_errors(objective.conditions, f"目标 {objective.id}.conditions"))
+            errors.extend(condition_errors(objective.fail_conditions, f"目标 {objective.id}.fail_conditions"))
+        for resource in scenario.resources:
+            if resource.get("hidden") and float(resource.get("estimate_width", 0) or 0) < 0:
+                errors.append(f"资源 {resource.get('id')} 的 estimate_width 不能为负")
+
+    memorials = data.get("memorials", [])
+    if memorials and not isinstance(memorials, list):
+        errors.append("memorials.yaml 顶层必须是列表")
+        memorials = []
+    memorial_ids: set[str] = set()
+    for item in memorials or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            errors.append("memorials.yaml 含缺少 id 的条目")
+            continue
+        location = f"奏疏 {item['id']}"
+        if item["id"] in memorial_ids:
+            errors.append(f"{location} id 重复")
+        memorial_ids.add(item["id"])
+        if not item.get("title"):
+            errors.append(f"{location} 缺少 title")
+        if item.get("region") is not None and item.get("region") not in region_ids:
+            errors.append(f"{location} 的地区不存在：{item.get('region')}")
+        errors.extend(condition_errors(item.get("conditions"), f"{location}.conditions"))
+        for advisor in item.get("advisors", []) or []:
+            if not isinstance(advisor, dict) or advisor.get("character") not in character_ids:
+                errors.append(f"{location} 的谏言人不存在：{advisor.get('character') if isinstance(advisor, dict) else advisor}")
+            elif advisor.get("stance", "neutral") not in {"support", "oppose", "neutral"}:
+                errors.append(f"{location} 的谏言立场无效：{advisor.get('stance')}")
+        option_ids = [str(option.get("id")) for option in item.get("options", []) or [] if isinstance(option, dict)]
+        if not option_ids:
+            errors.append(f"{location} 至少需要一个选项")
+        if len(set(option_ids)) != len(option_ids):
+            errors.append(f"{location} 选项 id 重复")
+        for option in item.get("options", []) or []:
+            if isinstance(option, dict):
+                check_ops(option.get("ops", []) or [], f"{location}.options.{option.get('id')}.ops")
     return errors
 
 
@@ -256,9 +404,17 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
             minimum=row.get("min"),
             maximum=row.get("max"),
             unit=row.get("unit", ""),
+            hidden=bool(row.get("hidden", False)),
+            estimate_width=float(row.get("estimate_width", 0) or 0),
         )
         for row in scenario.resources
     }
+    factions = {row["id"]: Faction(**row) for row in data.get("factions", []) or []}
+    rules: dict[str, Any] = dict(scenario.settings)
+    rules.setdefault("max_concurrent_offices", 1)
+    if factions:
+        rules.setdefault("player_faction", next(iter(factions)))
+    main_faction = rules.get("player_faction")
     regions = {
         row["id"]: Region(
             id=row["id"],
@@ -268,6 +424,7 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
             polygon=row.get("map", {}).get("polygon", []),
             adjacency={edge["to"]: int(edge.get("travel_turns", 1)) for edge in row.get("adjacency", [])},
             stats=row.get("stats", {}),
+            controller=row.get("controller", main_faction),
         )
         for row in data.get("regions", [])
     }
@@ -276,7 +433,10 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
             id=row["id"],
             name=row["name"],
             faction=row.get("faction"),
-            office=row.get("office"),
+            office=row.get("office") or next(iter(row.get("offices") or []), None),
+            offices=_initial_offices(row),
+            bloc=row.get("bloc"),
+            title=row.get("title", ""),
             region=row.get("region", next(iter(regions))),
             traits=row.get("traits", {}),
             persona=row.get("persona", ""),
@@ -288,21 +448,39 @@ def build_initial_state(data: dict[str, Any]) -> WorldState:
     }
     offices = {row["id"]: Office(**row) for row in scenario.offices}
     for character in characters.values():
-        if character.office in offices:
-            offices[character.office].holder = character.id
-    factions = {row["id"]: Faction(**row) for row in data.get("factions", [])}
-    armies = {row["id"]: Army(**row) for row in data.get("armies", [])}
+        for office_id in character.offices:
+            if office_id in offices:
+                offices[office_id].holder = character.id
+    armies = {row["id"]: Army(**row) for row in data.get("armies", []) or []}
+    calendar_config = scenario.calendar.model_dump(mode="json", exclude_none=True)
+    label = scenario.start_date
+    if scenario.calendar.eras:
+        label = format_calendar(
+            0,
+            season,
+            calendar_config,
+            start_season_index(data["scenario"]),
+            fallback_year=start.year,
+        )
     return WorldState(
         scenario_id=scenario.id,
         turn=0,
-        calendar=Calendar(year=start.year, month=month, season=season, label=scenario.start_date),
+        calendar=Calendar(year=start.year, month=month, season=season, label=label),
         resources=resources,
         regions=regions,
         characters=characters,
         offices=offices,
         factions=factions,
         armies=armies,
+        rules=rules,
     )
+
+
+def _initial_offices(row: dict[str, Any]) -> list[str]:
+    offices = [str(item) for item in row.get("offices") or []]
+    if row.get("office") and row["office"] not in offices:
+        offices.insert(0, str(row["office"]))
+    return offices
 
 
 def scenario_json_schema() -> dict[str, Any]:

@@ -1,0 +1,28 @@
+- id: petition
+  title: 边将请饷
+  text: 边将上表请增军饷。
+  when: {turn: 1}
+  gravity: 1
+  effects:
+    - {op: set_flag, key: petition_seen, value: true}
+  choices:
+    - {id: grant, text: 准其所请, effects: [{op: adjust_resource, resource: treasury, delta: -100, reason: 增饷}]}
+    - {id: deny, text: 驳回, effects: [{op: adjust_resource, resource: authority, delta: 2, reason: 驳回请饷}]}
+    - {id: special, text: 特旨厚赏, conditions: {kind: resource, id: authority, operator: gte, value: 95}, effects: []}
+  default_choice: deny
+  choice_deadline: 1
+- id: famine
+  title: 饥荒
+  repeatable: true
+  cooldown: 2
+  conditions: {kind: flag, key: famine_on}
+  gravity: 1
+  effects:
+    - {op: adjust_resource, resource: grain, delta: -10, reason: 饥荒}
+- id: uprising
+  title: 北镇起兵
+  conditions: {all: [{kind: flag, key: force_uprising}, {kind: flag, key: uprising, operator: absent}]}
+  gravity: 1
+  effects:
+    - {op: set_flag, key: uprising, value: true}
+    - {op: adjust_resource, resource: authority, delta: -5, reason: 起兵}

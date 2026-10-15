@@ -1,0 +1,44 @@
+- id: ruler
+  name: 皇帝
+  faction: court
+  office: sovereign
+  region: capital
+  traits: {ability: 6, loyalty: 10}
+  persona: 在位已久的君主。
+  speech_style: 简短。
+- id: chancellor
+  name: 李相
+  faction: court
+  bloc: xiang
+  office: chancellor
+  region: capital
+  traits: {ability: 8, loyalty: 6}
+  persona: 宰相，善揣上意。
+  speech_style: 先颂圣后转折。
+  knowledge: [百官]
+- id: general
+  name: 郭将军
+  faction: court
+  bloc: army
+  title: 郡王
+  region: capital
+  traits: {ability: 7, loyalty: 9}
+  persona: 宿将，忠勇。
+  speech_style: 直率。
+- id: plotter
+  name: 安节度
+  faction: court
+  bloc: border
+  region: north
+  traits: {ability: 8, loyalty: 2, ambition: 7, "relation:chancellor": -40}
+  persona: 边镇节度，手握重兵。
+  speech_style: 自称胡人，憨直。
+  knowledge: [边镇]
+- id: eunuch
+  name: 高内侍
+  faction: court
+  bloc: neiting
+  region: capital
+  traits: {ability: 5, loyalty: 10}
+  persona: 内廷宿老。
+  speech_style: 话少。

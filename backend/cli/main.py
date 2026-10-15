@@ -66,11 +66,21 @@ def _load_session(target: str) -> SessionStore:
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1", help="监听地址"),
-    port: int = typer.Option(8000, min=1, max=65535, help="监听端口"),
+    port: int = typer.Option(8000, min=1, max=65535, envvar="SIM_PORT", help="监听端口（也可用环境变量 SIM_PORT）"),
     reload: bool = typer.Option(False, help="开发模式热重载"),
 ) -> None:
-    """启动本地 API 服务。"""
+    """启动本地 API 服务（/health 可用于探活）。"""
     uvicorn.run("api.app:app", host=host, port=port, reload=reload)
+
+
+@app.command()
+def mcp(
+    mode: str = typer.Option("", help="client（默认，调用方模型扮演）或 server（服务端 provider 扮演）；也可用 SIM_MCP_MODE"),
+) -> None:
+    """以 stdio 启动 MCP 服务，供 Claude Code / Codex 等外部模型游玩。"""
+    from simcore.mcp.server import build_server
+
+    build_server(mode=mode or None).run("stdio")
 
 
 @app.command("validate")

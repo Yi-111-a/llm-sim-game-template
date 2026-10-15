@@ -13,29 +13,51 @@ from simcore.domain.models import (
 from simcore.domain.ops import (
     AddLedger,
     AddStandingOrder,
+    AdjustArmy,
+    AdjustCounter,
+    AdjustTrait,
     Appoint,
     CancelLedger,
     CancelStandingOrder,
+    ChooseEventOption,
     Dismiss,
     MoveArmy,
     MoveCharacter,
     Remember,
+    SetArmyCommander,
+    SetArmyFaction,
     SetCharacterStatus,
+    SetCounter,
     SetFlag,
+    SetRegionController,
     StartProject,
     StateOp,
     parse_op,
 )
-from simcore.domain.rules import Rejected, validate
+from simcore.domain.rules import Rejected, held_offices, validate
+
+
+class OpRejected(ValueError):
+    """规则层拒绝的操作；code 为稳定英文错误码，message 为中文说明。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
 
 
 def apply(
-    op_value: StateOp | dict[str, Any], state: WorldState
+    op_value: StateOp | dict[str, Any], state: WorldState, *, turn: int | None = None
 ) -> tuple[WorldState, list[Fact]]:
+    """校验并执行一条操作，返回新状态与事实。
+
+    turn 为写入 flag_turns 等时间戳所用的回合；回合结算中传入正在结算进入的回合，缺省为 state.turn。
+    """
     result = validate(op_value, state)
     if isinstance(result, Rejected):
-        raise ValueError(f"{result.code}: {result.message}")
+        raise OpRejected(result.code, result.message)
     op = result.op
+    stamp = state.turn if turn is None else turn
     updated = state.model_copy(deep=True)
     facts: list[Fact] = []
     if op.op == "adjust_resource":
@@ -65,20 +87,39 @@ def apply(
         updated.ledger = [row for row in updated.ledger if row.id != op.ledger_id]
         facts.append(Fact(kind="ledger", text="已取消账目", entity=op.ledger_id))
     elif isinstance(op, Appoint):
-        updated.characters[op.character].office = op.office
+        character = updated.characters[op.character]
+        held = held_offices(character)
+        if op.office not in held:
+            held.append(op.office)
+        character.offices = held
+        if character.office is None:
+            character.office = op.office
         updated.offices[op.office].holder = op.character
-        facts.append(Fact(kind="appointment", text="任命官职", entity=op.character, after=op.office))
+        office_name = updated.offices[op.office].name
+        facts.append(Fact(kind="appointment", text=f"{character.name}任{office_name}", entity=op.character, after=op.office))
     elif isinstance(op, Dismiss):
-        updated.characters[op.character].office = None
+        character = updated.characters[op.character]
+        held = [office for office in held_offices(character) if office != op.office]
+        character.offices = held
+        if character.office == op.office or character.office not in held:
+            character.office = held[0] if held else None
         updated.offices[op.office].holder = None
-        facts.append(Fact(kind="appointment", text="免去官职", entity=op.character, before=op.office))
+        office_name = updated.offices[op.office].name
+        facts.append(Fact(kind="appointment", text=f"{character.name}免{office_name}", entity=op.character, before=op.office))
     elif isinstance(op, SetCharacterStatus):
         character = updated.characters[op.character]
         before = character.status
         character.status = op.status
-        if op.status != "alive" and character.office:
-            updated.offices[character.office].holder = None
+        if op.status != "alive":
+            for office_id in held_offices(character):
+                if office_id in updated.offices and updated.offices[office_id].holder == character.id:
+                    updated.offices[office_id].holder = None
+            character.offices = []
             character.office = None
+            character.in_transit = None
+            for army in updated.armies.values():
+                if army.commander == character.id:
+                    army.commander = None
         facts.append(Fact(kind="status", text=op.cause or "人物状态改变", entity=op.character, before=before, after=op.status))
     elif isinstance(op, MoveCharacter):
         character = updated.characters[op.character]
@@ -135,10 +176,64 @@ def apply(
     elif isinstance(op, SetFlag):
         before = updated.flags.get(op.key)
         updated.flags[op.key] = op.value
+        updated.flag_turns[op.key] = stamp
         facts.append(Fact(kind="flag", text=f"旗标改变：{op.key}", before=before, after=op.value))
     elif isinstance(op, Remember):
         updated.characters[op.character].memories.append(op.fact)
         facts.append(Fact(kind="memory", text="记下一条人物记忆", entity=op.character, after=op.fact))
+    elif isinstance(op, AdjustArmy):
+        army = updated.armies[op.army]
+        before = army.strength
+        army.strength = max(0.0, before + op.delta)
+        facts.append(Fact(kind="army", text=op.reason or f"{army.name}兵力变化", entity=op.army, before=before, after=army.strength))
+    elif isinstance(op, SetArmyFaction):
+        army = updated.armies[op.army]
+        before = army.faction
+        army.faction = op.faction
+        faction_name = updated.factions[op.faction].name
+        facts.append(Fact(kind="army_faction", text=f"{army.name}改隶{faction_name}", entity=op.army, before=before, after=op.faction))
+    elif isinstance(op, SetArmyCommander):
+        army = updated.armies[op.army]
+        before = army.commander
+        army.commander = op.character
+        text = f"{army.name}易帅" if op.character else f"{army.name}统帅出缺"
+        facts.append(Fact(kind="army_commander", text=text, entity=op.army, before=before, after=op.character))
+    elif isinstance(op, AdjustTrait):
+        character = updated.characters[op.character]
+        before = character.traits.get(op.trait, 0)
+        character.traits[op.trait] = before + op.delta
+        facts.append(
+            Fact(kind="trait", text=f"{character.name}心态变化：{op.trait}", entity=op.character, before=before, after=before + op.delta)
+        )
+    elif isinstance(op, AdjustCounter):
+        before_count = updated.counters.get(op.key, 0)
+        updated.counters[op.key] = before_count + op.delta
+        facts.append(Fact(kind="counter", text=f"计数变化：{op.key}", entity=op.key, before=before_count, after=before_count + op.delta))
+    elif isinstance(op, SetCounter):
+        before_count = updated.counters.get(op.key, 0)
+        updated.counters[op.key] = op.value
+        facts.append(Fact(kind="counter", text=f"计数设定：{op.key}", entity=op.key, before=before_count, after=op.value))
+    elif isinstance(op, SetRegionController):
+        region = updated.regions[op.region]
+        before = region.controller
+        region.controller = op.faction
+        faction = updated.factions.get(op.faction)
+        text = f"{region.name}归{faction.name if faction else op.faction}控制"
+        facts.append(Fact(kind="region_controller", text=text, entity=op.region, before=before, after=op.faction))
+    elif isinstance(op, ChooseEventOption):
+        choice = next(row for row in updated.pending_choices if row.id == op.choice_id)
+        option = next(row for row in choice.options if row.id == op.option_id)
+        updated.pending_choices = [row for row in updated.pending_choices if row.id != op.choice_id]
+        for key in (f"choice:{choice.id}", f"event:{choice.event_id}:choice"):
+            updated.flags[key] = option.id
+            updated.flag_turns[key] = stamp
+        facts.append(Fact(kind="choice", text=f"{choice.title}：{option.text}", entity=choice.event_id, after=option.id))
+        for effect in option.effects:
+            try:
+                updated, effect_facts = apply(effect, updated, turn=stamp)
+                facts.extend(effect_facts)
+            except ValueError as exc:
+                facts.append(Fact(kind="effect_skipped", text=f"选项效果未执行：{exc}", entity=choice.event_id))
     else:
         raise TypeError(f"Unsupported operation: {op.op}")
     return updated, facts

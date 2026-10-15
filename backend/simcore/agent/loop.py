@@ -71,6 +71,6 @@ def world_summary(state: WorldState) -> dict[str, Any]:
     return {
         "turn": state.turn,
         "calendar": state.calendar.model_dump(mode="json"),
-        "resources": {key: value.amount for key, value in state.resources.items()},
+        "resources": {key: value.amount for key, value in state.resources.items() if not value.hidden},
         "offices": {key: value.holder for key, value in state.offices.items()},
     }

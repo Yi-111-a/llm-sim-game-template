@@ -4,7 +4,7 @@ from typing import Any
 
 from simcore.domain.apply import apply
 from simcore.domain.models import WorldState
-from simcore.domain.ops import parse_op
+from simcore.domain.ops import describe_op_error, parse_op
 from simcore.domain.rules import Rejected, validate
 
 
@@ -50,7 +50,7 @@ class AgentTools:
                     self.proposals.append(op.model_dump(mode="json"))
                     receipt.append({"op": op.model_dump(mode="json"), "status": "applied", "reason": ""})
             except (ValueError, TypeError) as exc:
-                receipt.append({"op": raw_op, "status": "rejected", "reason": str(exc), "code": "INVALID_TARGET"})
+                receipt.append({"op": raw_op, "status": "rejected", "reason": describe_op_error(exc, raw_op), "code": "INVALID_TARGET"})
         return receipt
 
     def ask_clarification(self, question: str) -> dict[str, str]:

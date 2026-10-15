@@ -24,14 +24,95 @@ class ScenarioDocument(BaseModel):
     edict_categories: list[dict[str, Any]] = Field(default_factory=list)
     formulas: dict[str, Any] = Field(default_factory=dict)
     settings: dict[str, Any] = Field(default_factory=dict)
+    endings: list[EndingDef] = Field(default_factory=list)
+    game_length: GameLength | None = None
+    counters: list[CounterDef] = Field(default_factory=list)
+    crisis: CrisisDef | None = None
+    ai_routes: list[AiRoute] = Field(default_factory=list)
+    wars: list[Any] = Field(default_factory=list)
+    objectives: list[ObjectiveDef] = Field(default_factory=list)
+
+
+class EndingDef(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    kind: Literal["ending", "fail"] = "ending"
+    title: str
+    text: str = ""
+    priority: float = 100
+    conditions: Any = None
+
+
+class GameLength(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    last_turn: int = Field(ge=1)
+    overtime_flag: str | None = None
+    overtime_last_turn: int | None = None
+    fallback_ending: str | None = None
+
+
+class CounterDef(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    conditions: Any = None
+    mode: Literal["streak", "count"] = "streak"
+
+
+class CrisisBand(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    max: float
+    name: str
+
+
+class CrisisTerm(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    label: str
+    expr: str
+
+
+class CrisisDef(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    resource: str
+    title: str = ""
+    bands: list[CrisisBand] = Field(default_factory=list)
+    terms: list[CrisisTerm] = Field(default_factory=list)
+
+
+class AiRoute(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    faction: str
+    route: list[str] = Field(min_length=1)
+    hold_if_outnumbered: bool = True
+    armies: list[str] = Field(default_factory=list)
+    conditions: Any = None
+
+
+class ObjectiveDef(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    title: str
+    detail: str = ""
+    conditions: Any = None
+    fail_conditions: Any = None
 
 
 class CalendarEra(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    from_turn: int = Field(ge=1)
+    from_turn: int = Field(ge=0)
     name: str
     start_year: int = Field(default=1, ge=1)
+    turn_format: str | None = None
+    number_system: Literal["chinese", "arabic"] | None = None
 
 
 class ScenarioCalendar(BaseModel):

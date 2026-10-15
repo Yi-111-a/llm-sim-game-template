@@ -11,6 +11,25 @@
 - `edict_polish`：只润色表达，保留原意，不产生操作。
 - `chronicler`：整理已记录事实，不添加来源之外的历史事实。
 
+## StateDigest（事实摘要）
+
+`simcore/domain/digest.py::render_digest(state, seed, character_id=None, report=None, scenario=None)` 渲染固定格式的中文事实摘要，是召对、廷议、诏令解释提示词与 MCP 工具的唯一数值来源：
+
+```text
+【时】天宝十载春（第0回合）
+【本人】李相；宰相；所在 京畿；在世          ← 仅人物视角
+【国势】国库 1000万贯；…；异志 约28.9–51.3点（风闻）
+【官职】宰相：李相；元帅：出缺；…
+【地区】京畿（朝廷） 繁荣60 防务50 …       ← 人物视角只含所在及相邻地区
+【军队】禁军 20000，驻京畿，属朝廷，统帅郭将军
+【工程】/【常设令】/【待决】/【本季事实】/【终局】  ← 有内容时才出现
+```
+
+- 只使用公开视图：隐藏资源一律给区间，隐藏心态不出现。
+- `minister_chat.md` 接收 `digest` 与 `memories`（该人物最近 12 条记忆）；旧变量 `resources` 仍可用（已是公开文字）。
+- `court_debate.md` 每位发言人单独调用一次，只带该发言人的人设、引擎给定的立场（support/oppose/neutral 与理由）、该人物的 StateDigest 与此前发言。台词中的数字若不在摘要或议题里，引擎改用模板台词。Mock provider 识别「【廷议发言】」标记，生成只引用摘要第一条国势的模板句。
+- 立场规则（`simcore/agent/debate.py`）：场景 `debate_topics: [{id, keywords, stances: {bloc 或人物 id: stance}}]` → 议题牵涉本人（姓名、官职、所统军队）或其亲疏之人（同派系、relation ≥ 20 / ≤ −20），按议题褒贬词判定 → 忠诚（≥8 赞成，≤3 反对，其余持中）。
+
 ## 编写规则
 
 1. 给每个输入命名并提供简短字段说明。

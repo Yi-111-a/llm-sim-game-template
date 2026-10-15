@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 from simcore.llm.base import ChatResult, ToolCall, ToolCallingUnsupported, Usage
@@ -38,6 +39,11 @@ class MockProvider:
                     total_tokens=max(1, len(prompt) // 4) + 20,
                 ),
             )
+        if "【廷议发言】" in prompt:
+            return ChatResult(
+                content=self._debate_line(prompt),
+                usage=Usage(input_tokens=max(1, len(prompt) // 4), output_tokens=30, total_tokens=max(1, len(prompt) // 4) + 30),
+            )
         if "edicts" in prompt.lower() or "诏令" in prompt or "政策" in prompt:
             calls = self._edict_calls(prompt)
             return ChatResult(
@@ -49,6 +55,21 @@ class MockProvider:
             content="臣已记录所议。此答复仅据当前已知的国情作出，不改变国中事实。",
             usage=Usage(input_tokens=max(1, len(prompt) // 4), output_tokens=20, total_tokens=max(1, len(prompt) // 4) + 20),
         )
+
+    async def stream_text(self, messages: list[dict[str, Any]]) -> AsyncIterator[str]:
+        result = await self.chat(messages)
+        for offset in range(0, len(result.content), 8):
+            yield result.content[offset:offset + 8]
+
+    @staticmethod
+    def _debate_line(prompt: str) -> str:
+        """模板台词：只引用提示词中事实摘要的第一条国势，不编造数字。"""
+        stance_match = re.search(r"立场：\S+（(support|oppose|neutral)）", prompt)
+        stance = stance_match.group(1) if stance_match else "neutral"
+        opener = {"support": "臣以为此议可行", "oppose": "臣以为此议不可", "neutral": "臣以为此事宜再详议"}[stance]
+        national = next((line for line in prompt.splitlines() if line.startswith("【国势】")), "")
+        first = national.removeprefix("【国势】").split("；")[0] if national else ""
+        return f"{opener}。今{first}，不可不察。" if first else f"{opener}。"
 
     def _edict_calls(self, prompt: str) -> list[ToolCall]:
         lines = [line.strip() for line in prompt.splitlines() if line.strip()]
