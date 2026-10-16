@@ -392,7 +392,7 @@ def public_report(
     if os.environ.get("SIM_DEBUG") == "1":
         data["internal_events"] = internal_events
     data["battles"] = [
-        {**battle, "text": battle_text(battle, state)} if isinstance(battle, dict) else battle
+        {**battle, "text": battle_text(battle, state), "detail": battle_breakdown(battle)} if isinstance(battle, dict) else battle
         for battle in data.get("battles", []) or []
     ]
     # 本季危机变化拆分（结算当时的公开快照，见 public_crisis_change）；旧存档没有时为 None
@@ -565,6 +565,51 @@ def battle_text(battle: dict[str, Any], state: WorldState | None = None) -> str:
         return f"{attacker}攻{defender}，相持一季。"
     winner = attacker if result == "attacker_won" else defender
     return f"{attacker}攻{defender}，{winner}胜。"
+
+
+def _battle_side(rows: list[dict[str, Any]]) -> str:
+    parts = []
+    for row in rows:
+        extras = []
+        quality = float(row.get("quality", 1) or 1)
+        if abs(quality - 1) > 1e-9:
+            extras.append(f"素质×{quality:g}")
+        who = str(row.get("commander") or "")
+        command = row.get("command")
+        extras.append(f"主帅{who}在军" if command == "present" else f"主帅{who}不在军中，副将暂摄" if command == "acting" else "无主帅")
+        parts.append(f"{row.get('name', row.get('army'))}{format_number(float(row.get('strength', 0)))}（{'，'.join(extras)}）")
+    return "、".join(parts) or "—"
+
+
+def battle_breakdown(battle: dict[str, Any]) -> str:
+    """战报因素一段：双方各军兵力 / 素质 / 主帅、城防加成、天时幅度、战力算法、各军伤亡与去向（退往 / 溃散）。旧存档无因素时返回空串。"""
+    factors = battle.get("factors")
+    if not isinstance(factors, dict):
+        return ""
+    defense = float(factors.get("defense_bonus") or 0)
+    luck = float(factors.get("luck_spread", 0.15) or 0) * 100
+    sides = f"攻：{_battle_side(factors.get('attacker') or [])}；守：{_battle_side(factors.get('defender') or [])}"
+    if defense:
+        sides += f"，城防+{format_number(defense)}%"
+    formula = f"战力=兵×素质{'×(1+城防%)' if defense else ''}×天时±{luck:g}%"
+    if battle.get("result") == "stalemate":
+        return f"{sides}。{formula}；城防≥80 且攻方战力不足守方两倍，据险相持，双方无损。"
+    losses = battle.get("losses") or {}
+    routed = battle.get("routed") or {}
+    retreats = battle.get("retreat_names") or {}
+    pieces = []
+    for row in [*(factors.get("attacker") or []), *(factors.get("defender") or [])]:
+        army = row.get("army")
+        if army not in losses:
+            continue
+        piece = f"{row.get('name', army)}−{format_number(float(losses[army]))}"
+        if army in routed:
+            piece += f"，无路可退，余{format_number(float(routed[army]))}溃散"
+        elif army in retreats:
+            piece += f"，退往{retreats[army]}"
+        pieces.append(piece)
+    rule = f"胜方各折{float(factors.get('winner_loss', 0.1)) * 10:g}成、败方各折{float(factors.get('loser_loss', 0.3)) * 10:g}成"
+    return f"{sides}。{formula}。伤亡（{rule}）：{'；'.join(pieces) or '无'}。"
 
 
 def public_events(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

@@ -37,12 +37,14 @@ from simcore.domain.rules import (
     mover_faction,
     office_army,
     player_character_id,
+    stat_legend,
     travel_note,
     turn_label,
     turn_unit_label,
 )
 from simcore.domain.turn import GameOver, choice_option_id, final_season_notice, upkeep_label, upkeep_rows
 from simcore.domain.visibility import (
+    battle_breakdown,
     battle_text,
     fact_line,
     format_number,
@@ -55,11 +57,9 @@ from simcore.domain.visibility import (
 )
 from simcore.export import build_export, compact_clauses
 from simcore.llm.base import LLMProvider
-from simcore.llm.factory import create_provider
 from simcore.scenario.loader import build_initial_state, load_scenario, validate_scenario
 from simcore.store.session import SessionStore, state_hash
-
-ENGINE_VERSION = "0.2.0"
+from simcore.version import ENGINE_VERSION as ENGINE_VERSION  # 兼容旧的导入位置
 
 ERROR_STATUS = {
     "SCENARIO_NOT_FOUND": 404,
@@ -137,6 +137,8 @@ ProviderFactory = Callable[[dict[str, Any], str], LLMProvider]
 
 def default_provider_factory(scenario: dict[str, Any], kind: str) -> LLMProvider:
     role = "character_chat" if kind == "minister_chat" else kind
+    from simcore.llm.factory import create_provider  # 延迟导入：provider / httpx 只在真要调模型时加载
+
     return create_provider(load_settings(), role, scenario)
 
 
@@ -1132,6 +1134,9 @@ class GameService:
         for key, row in state.resources.items():
             precision = f"——{precision_text(state, key)}" if row.hidden else ""
             lines.append(f"- {resource_display(state, key, session.seed)}{precision}")
+        legend = stat_legend(state)
+        if legend:
+            lines.append(f"- 地区指标量程：{legend}（到上下限即止，结算事实注明「已至上限 / 下限」）")
         upkeep = upkeep_rows(state, (definition.get("formulas") or {}).get("upkeep") or [])
         if upkeep and state.outcome is None:
             lines.append("\n## 养兵经常开支（按现兵额，每季结算时计入经常收支；增兵即增此项）")
@@ -1190,7 +1195,8 @@ class GameService:
             lines.append("\n## 上季事实")
             lines.extend(f"- {fact}" for fact in facts[:40]) if facts else lines.append("- （无）")
             if report.get("battles"):
-                lines.append("战报：" + "；".join(f"{row.get('region_name', '')}：{battle_text(row, state)}" for row in report["battles"]))
+                lines.append("战报：")
+                lines.extend(f"- {row.get('region_name', '')}：{battle_text(row, state)}{battle_breakdown(row)}" for row in report["battles"])
             featured = [row for row in report.get("events", []) if not row.get("outcome")]
             if featured:
                 lines.append("上季时事：" + "、".join(f"「{row['title']}」" for row in featured))

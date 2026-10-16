@@ -215,6 +215,11 @@ def _toml_str(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+# Codex 默认的 MCP 启动超时偏短；Windows 上杀毒软件扫描时 Python 冷启动可能很慢（gpt-09 没挂上服务）。
+MCP_STARTUP_TIMEOUT_SEC = 60
+MCP_TOOL_TIMEOUT_SEC = 120
+
+
 def mcp_launch_spec() -> dict[str, Any]:
     """本进程对应的 MCP 启动方式。桌面壳可用环境变量 SIM_MCP_LAUNCH（JSON）给出精确值。"""
     raw = os.environ.get("SIM_MCP_LAUNCH")
@@ -260,7 +265,7 @@ def integration_info() -> dict[str, Any]:
     toml_lines = [f"[{table}]", f"command = {_toml_str(command)}", "args = [" + ", ".join(_toml_str(arg) for arg in args) + "]"]
     if cwd:
         toml_lines.append(f"cwd = {_toml_str(cwd)}")
-    toml_lines += ["startup_timeout_sec = 30", "tool_timeout_sec = 120", 'default_tools_approval_mode = "approve"']
+    toml_lines += [f"startup_timeout_sec = {MCP_STARTUP_TIMEOUT_SEC}", f"tool_timeout_sec = {MCP_TOOL_TIMEOUT_SEC}", 'default_tools_approval_mode = "approve"']
     if env:
         toml_lines += ["", f"[{table}.env]", *(f"{k} = {_toml_str(v)}" for k, v in env.items())]
     exec_flags = [f"{table}.command={json.dumps(command, ensure_ascii=False)}", f"{table}.args={json.dumps(args, ensure_ascii=False)}"]
@@ -268,6 +273,8 @@ def integration_info() -> dict[str, Any]:
         exec_flags.append(f"{table}.cwd={json.dumps(cwd, ensure_ascii=False)}")
     if env:
         exec_flags.append(f"{table}.env={{" + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in env.items()) + "}")
+    exec_flags.append(f"{table}.startup_timeout_sec={MCP_STARTUP_TIMEOUT_SEC}")
+    exec_flags.append(f"{table}.tool_timeout_sec={MCP_TOOL_TIMEOUT_SEC}")
     exec_flags.append(f'{table}.default_tools_approval_mode="approve"')
     server_json: dict[str, Any] = {"type": "stdio", "command": command, "args": args}
     if env:

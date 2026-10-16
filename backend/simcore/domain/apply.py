@@ -30,6 +30,7 @@ from simcore.domain.ops import (
     Remember,
     SetArmyCommander,
     SetArmyFaction,
+    SetCharacterFaction,
     SetCharacterStatus,
     SetCounter,
     SetFlag,
@@ -42,6 +43,7 @@ from simcore.domain.rules import (
     STATUS_NAMES,
     Rejected,
     army_station,
+    clamp_stat,
     coalesce_postings,
     entity_name,
     find_route,
@@ -52,6 +54,7 @@ from simcore.domain.rules import (
     office_station,
     posting_plan,
     stat_name,
+    stat_range,
     trait_name,
     turn_unit_label,
     validate,
@@ -217,11 +220,17 @@ def apply(
     elif op.op == "adjust_region":
         region = updated.regions[op.region]
         before = region.stats[op.stat]
-        region.stats[op.stat] += op.delta
+        region.stats[op.stat] = clamp_stat(updated, op.stat, before + op.delta)
+        change = region.stats[op.stat] - before
+        bounds = stat_range(updated, op.stat)
+        capped = ""
+        if bounds is not None and abs(change - op.delta) > 1e-9:
+            edge = f"上限 {bounds[1]:g}" if op.delta > 0 else f"下限 {bounds[0]:g}"
+            capped = f"（已至{edge}，原拟 {signed_number(op.delta)}）"
         facts.append(
             Fact(
                 kind="region",
-                text=f"{region.name}{stat_name(updated, op.stat)} {signed_number(op.delta)}{suffix}",
+                text=f"{region.name}{stat_name(updated, op.stat)} {signed_number(change)}{capped}{suffix}",
                 entity=op.region,
                 before=before,
                 after=region.stats[op.stat],
@@ -279,6 +288,12 @@ def apply(
         army.strength = max(0.0, before + op.delta)
         text = reason if reason and army.name in reason else f"{army.name}兵力 {signed_number(army.strength - before)}{suffix}"
         facts.append(Fact(kind="army", text=text, entity=op.army, before=before, after=army.strength))
+    elif isinstance(op, SetCharacterFaction):
+        character = updated.characters[op.character]
+        before = character.faction
+        character.faction = op.faction
+        faction_name = updated.factions[op.faction].name
+        facts.append(Fact(kind="character_faction", text=f"{character.name}改属{faction_name}", entity=op.character, before=before, after=op.faction))
     elif isinstance(op, SetArmyFaction):
         army = updated.armies[op.army]
         before = army.faction

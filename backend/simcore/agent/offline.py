@@ -251,7 +251,7 @@ def offline_chronicle(
 
     others = [
         humanize_fact(fact.text)
-        for kind in ("region", "relation", "trait", "army_faction", "project", "project_complete", "standing_order")
+        for kind in ("region", "relation", "trait", "army_faction", "character_faction", "project", "project_complete", "standing_order")
         for fact in by_kind.get(kind, [])
     ]
     others.extend(humanize_fact(fact.text) for fact in by_kind.get("army", []) if not fact.text.endswith(("战损", "败绩", "溃散")))

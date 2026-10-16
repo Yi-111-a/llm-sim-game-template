@@ -12,122 +12,72 @@ import functools
 import json
 import os
 from collections.abc import Awaitable, Callable
-from typing import Any
-
-from mcp.server.mcpserver import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from typing import TYPE_CHECKING, Any
 
 from simcore.agent.debate import ENTITY_KIND_LABELS
 from simcore.domain.apply import OpRejected
 from simcore.domain.rules import delay_phrase
-from simcore.domain.visibility import battle_text, fact_line, format_number
+from simcore.domain.visibility import battle_breakdown, battle_text, fact_line, format_number
+from simcore.mcp.meta import DESCRIPTIONS as DESCRIPTIONS
+from simcore.mcp.meta import INSTRUCTIONS
 from simcore.service import ENGINE_VERSION, ROLEPLAY_RULES, GameError, GameService
 
-INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP server runs a deterministic history-simulation strategy game）。
-你扮演君主（the player is the ruler），引擎是唯一事实来源。
-推荐流程 / Typical loop:
-1. list_scenarios → new_game(scenario, seed) 得到 session_id 与开局简报（或 list_saves → load_game 继续存档）。
-2. 每季先读 briefing(session_id)：目标、公开国势、危机计分项、本季奏疏（含选项与 ops 摘要）、待决事件、上季事实。
-3. 需要时 audience 召见人物（你按返回的人设卡与事实摘要扮演），court_debate 举行廷议（立场由引擎给定），save_advice 把有用谏言存入谏言库。
-4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，ops 直接给出 StateOp（格式见 op_reference）；
-   看回执中每条 applied（可行：确认后本季即行）/ rejected / delayed（确认后延至下季结算时执行），再 confirm_edict。
-   草案不确认不施行：本季有未确认草案时 end_turn 会以 DRAFT_UNCONFIRMED 拒绝（确要放弃则 discard_drafts: true）。
-   确认诏书或处置抉择后若出现「本季新出奏疏」，可在 end_turn 前继续拟诏处理。
-5. 用 choose 处置待决事件；然后 end_turn 结算本季，读取事实、战报、危机分项与终局。
-6. 终局后（outcome 非空）不能再推进；可用 history / rewind 回到更早的节点另开分支。
-数字只能引用简报与工具返回中给出的值；「风闻」数值只有区间。"""
+if TYPE_CHECKING:
+    from mcp.server.mcpserver import MCPServer
 
-DESCRIPTIONS: dict[str, str] = {
-    "list_scenarios": "列出可玩的场景（id、标题、时代、是否通过校验）。List available scenarios. 无参数。",
-    "new_game": (
-        "新开一局：scenario 为 list_scenarios 返回的 id，seed 为随机种子（同种子可复现），difficulty 为难度档 id"
-        "（见 list_scenarios 的 difficulties；留空用场景默认）。返回 session_id 与开局简报。"
-        "Start a new game from a scenario id with a seed and optional difficulty; returns the session_id and the opening briefing."
-    ),
-    "list_saves": "列出全部存档（session_id、场景、回合）。List saved sessions (shared with the desktop app via LLM_SIM_HOME).",
-    "load_game": "读取存档并返回当前简报。Load a saved session by session_id and return its briefing.",
-    "briefing": (
-        "当季简报：历法、目标状态、公开资源（隐藏资源只给风闻区间）、危机计及分项、本季奏疏（含选项与 ops 摘要）、待决事件、上季事实，"
-        "末尾附扮演与数字规则。每季行动前先读它。"
-        "Seasonal briefing for the ruler, ending with the role-play / number rules you must follow."
-    ),
-    "op_reference": (
-        "玩家可直接下达的操作（permitted_ops：一行字段说明 + 示例）与实体 id 表（每类至多 12 行，附总数）。"
-        "其余操作（调整资源/地区/关系、旗标等）只能经奏疏选项或事件产生，客户端提交会得到 OP_NOT_PERMITTED。"
-        "过滤：op=<操作名> 看完整 JSON Schema；entity_kind=characters|offices|regions|armies|resources|factions|ledger|standing_orders|pending_choices"
-        " 看完整表；ids=[...] 只看这些 id。Player-permitted ops with examples and entity ids; filter with op / entity_kind / ids."
-    ),
-    "audience": (
-        "召对某位人物：character 为人物 id。client 模式返回人设卡 + 该人物可知的事实摘要 + 记忆 + 口吻要求，由你扮演作答；"
-        "server 模式需同时给 question，返回服务端模型的回答。死者或系狱者会被拒绝。"
-        "Audience with a character: returns a persona card and what they know (client mode) or their reply (server mode)."
-    ),
-    "court_debate": (
-        "廷议：topic 为议题，participants 为 1–6 个人物 id，memorial_id 可选（就某条本季奏疏廷议；给了它 topic 可留空），"
-        "option_id 可选（指定「所议之案」：赞成即主此案、反对即主他案；不给时引擎按奏疏所请 / 谏言推定，推定不出则诸案并陈、不以首个选项为案）。"
-        "议题对应奏疏时用奏疏中的谏言立场（谏言人主张其谏言所指的选项），否则引擎按议题点名的人物/势力/官职/地区/军队与各人的亲疏、派系利益与忠诚给出立场"
-        "（support/oppose/neutral），并列出 topic_entities；client 模式返回立场 + 人设，由你写台词；server 模式返回各人台词。"
-        "廷议结论只能存为谏言，不直接改变状态。Court debate: engine-decided, topic-dependent stances; you (client mode) write the speeches."
-    ),
-    "save_advice": "把谏言存入谏言库（不改变世界状态）：character 为进言人 id，text 为谏言原文。Save a piece of advice to the advice log.",
-    "draft_edict": (
-        "拟诏书草案（不改变状态）。sections 为 {类别: 诏令文本}（client 模式仅作记录，server 模式由模型解释）；"
-        "adopted 为 [{memorial_id, option_id}] 采纳奏疏选项；ops 为 StateOp 列表（见 op_reference）。"
-        "回执逐条给出 applied（可行：确认后本季即行；确认后记「已行」）/ rejected（原因与错误码）"
-        "/ delayed（确认后延至下季结算时执行（第 n 回合）；确认后记「已延至…」），并给出 edict_id"
-        "（edict_id 只取 edict- 开头的编号本身）。草案须 confirm_edict 才施行。"
-        "Draft an edict; returns a per-clause receipt and an edict_id for confirm_edict."
-    ),
-    "confirm_edict": (
-        "确认诏书草案，使 applied 条款本季即行（回执记「已行」）、delayed 条款排入下季结算（回执记「已延至下季结算时执行（第 n 回合）」），"
-        "并记下已采纳的奏疏；因此新出现的奏疏列在「本季新出奏疏」。"
-        "编号不存在时错误信息列出本季可确认的草案编号。Confirm a drafted edict by edict_id."
-    ),
-    "choose": "处置待决事件：choice_id 与 option_id 见 briefing 的「待决事件」；因此新出现的奏疏列在「本季新出奏疏」。Resolve a pending event choice.",
-    "end_turn": (
-        "结算本季并进入下一季：返回事实、账目汇总、战报、触发事件、新的待决事件、危机分项与终局（若有）。终局后再调用会报 GAME_OVER。"
-        "本季有拟而未确认的诏书草案时拒绝（DRAFT_UNCONFIRMED，列出编号）；确要放弃这些草案，传 discard_drafts: true。"
-        "Resolve the season and return the TurnReport (refuses with DRAFT_UNCONFIRMED while drafts are unconfirmed unless discard_drafts)."
-    ),
-    "history": "存档时间线（含全部分支）：每个节点的 id、类型、回合、说明、父节点，标出当前所在。List the session timeline.",
-    "export_log": (
-        "结构化复盘日志（只读）：按季列出采纳的奏疏选项、客户端 ops、拟诏与确认回执、延期条款、事件抉择、"
-        "召对与廷议（client 模式只记人物、方式、议题，不含台词）、"
-        "end_turn 的事实 / 事件 / 对账（含经常收支明细）/ 危机计与本季危机变化拆分、终局。from_turn / to_turn 按下诏所在季筛选。"
-        "隐藏数值只给风闻区间。Structured per-season log export (public view only)."
-    ),
-    "rewind": "回到时间线上的某个节点（entry_id；留空回到开局），之后的操作另开分支，原分支保留。Rewind to an entry id.",
-}
+ToolFn = Callable[..., Awaitable[str]]
 
 
 def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=1)
 
 
-def build_server(service: GameService | None = None, mode: str | None = None) -> MCPServer:
-    service = service or GameService()
+def resolve_mode(mode: str | None) -> str:
     mode = (mode or os.environ.get("SIM_MCP_MODE", "client")).strip().lower()
-    if mode not in {"client", "server"}:
-        mode = "client"
-    server_mode = mode == "server"
+    return mode if mode in {"client", "server"} else "client"
+
+
+def tool_error_text(exc: BaseException) -> str:
+    """工具错误一律转为「错误 [CODE]：中文说明」，不抛堆栈。"""
+    if isinstance(exc, (GameError, OpRejected)):
+        return f"错误 [{exc.code}]：{exc.message}"
+    return f"错误 [INTERNAL]：{type(exc).__name__}：{exc}"
+
+
+def build_server(service: GameService | None = None, mode: str | None = None) -> MCPServer:
+    """官方 MCP SDK 版服务（进程内测试、其他传输用）。stdio 启动走 simcore.mcp.stdio 的轻量实现。"""
+    from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
+
     server = MCPServer(name="tianbao", instructions=INSTRUCTIONS, version=ENGINE_VERSION, log_level="WARNING")
 
-    def register(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+    def wrap(fn: ToolFn) -> ToolFn:
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> str:
             try:
                 return await fn(*args, **kwargs)
-            except GameError as exc:
-                raise ToolError(f"错误 [{exc.code}]：{exc.message}") from None
-            except OpRejected as exc:
-                raise ToolError(f"错误 [{exc.code}]：{exc.message}") from None
             except ToolError:
                 raise
             except Exception as exc:  # noqa: BLE001 - 工具错误一律转为可读说明
-                raise ToolError(f"错误 [INTERNAL]：{type(exc).__name__}：{exc}") from None
+                raise ToolError(tool_error_text(exc)) from None
 
-        server.add_tool(wrapper, name=fn.__name__, description=DESCRIPTIONS[fn.__name__])
         return wrapper
+
+    for name, fn in make_tools(service, mode).items():
+        server.add_tool(wrap(fn), name=name, description=DESCRIPTIONS[name])
+    return server
+
+
+def make_tools(service: GameService | None = None, mode: str | None = None) -> dict[str, ToolFn]:
+    """全部工具函数（名称 → async 函数，返回文本；出错抛 GameError / OpRejected 等）。"""
+    service = service or GameService()
+    mode = resolve_mode(mode)
+    server_mode = mode == "server"
+    tools: dict[str, ToolFn] = {}
+
+    def register(fn: ToolFn) -> ToolFn:
+        tools[fn.__name__] = fn
+        return fn
 
     @register
     async def list_scenarios() -> str:
@@ -289,7 +239,7 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         view = service.rewind(session_id, entry_id)
         return f"已回到 {entry_id or '开局'}：{view['calendar_label']}（第{view['turn']}回合）。之后的操作将另开分支。"
 
-    return server
+    return tools
 
 
 def timing_text(clause: dict[str, Any], confirmed: bool = False) -> str:
@@ -382,6 +332,10 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
     if report.get("battles"):
         lines.append("## 战报")
         for battle in report["battles"]:
+            detail = battle_breakdown(battle)
+            if detail:
+                lines.append(f"- {battle.get('region_name', '')}：{battle_text(battle)}{detail}")
+                continue
             losses = _losses(battle.get("losses"), result["state"].get("armies", {}))
             lines.append(f"- {battle.get('region_name', '')}：{battle_text(battle)}损失 {losses}")
     shown = [row for row in report.get("events", []) if not row.get("outcome")]
@@ -436,7 +390,9 @@ def _losses(losses: Any, armies: dict[str, Any]) -> str:
 
 
 def main() -> None:
-    build_server().run("stdio")
+    from simcore.mcp.stdio import run
+
+    run()
 
 
 if __name__ == "__main__":

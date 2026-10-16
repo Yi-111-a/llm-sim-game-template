@@ -226,7 +226,11 @@ def build_reference(
             result["note"] = f"玩家不能直接提议此操作（OP_NOT_PERMITTED）：{OP_ROUTES.get(op, SCENARIO_ONLY_HINT)}"
         if op == "set_character_status":
             statuses = "、".join(f"{item}（{STATUS_NAMES.get(item, item)}）" for item in player_statuses(state))
-            result["note"] = f"君主可直接施加：{statuses}；须为本朝臣属，或身在本朝控制之地"
+            result["note"] = (
+                f"君主可直接施加：{statuses}；须为本朝臣属，或身在本朝控制之地。"
+                "敌对势力的人物、统领敌军的人物一律不能隔空处置（HOSTILE_TARGET）；"
+                "拘拿下狱（imprisoned）与赐死须人在本朝控制之地，且当地没有护卫他的敌军"
+            )
         if op in {"appoint", "set_army_commander"}:
             result["note"] = APPOINTMENT_RULE
         if op == "detach":
@@ -285,7 +289,7 @@ def build_reference(
                 APPOINTMENT_RULE,
                 "appoint 前须满足官职 requires；已达兼职上限时先 dismiss。",
                 "被拒条款返回稳定错误码：OP_NOT_PERMITTED、UNKNOWN_ENTITY、INVALID_TARGET、OFFICE_OCCUPIED、OFFICE_HELD、OFFICE_REQUIREMENT、"
-                "CHARACTER_UNAVAILABLE、OUT_OF_RANGE、INSUFFICIENT_RESOURCE、CONDITION_FAILED、GAME_OVER。",
+                "CHARACTER_UNAVAILABLE、OUT_OF_RANGE、INSUFFICIENT_RESOURCE、CONDITION_FAILED、HOSTILE_TARGET、GAME_OVER。",
             ],
         },
     }

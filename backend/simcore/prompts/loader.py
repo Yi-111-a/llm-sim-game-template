@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Template
-
 
 def render_prompt(
     name: str, values: dict[str, Any], scenario_root: str | Path | None = None
@@ -15,6 +13,8 @@ def render_prompt(
         override = (prompts_root / f"{Path(name).name}.md").resolve()
         if prompts_root in override.parents and override.is_file():
             path = override
+    from jinja2 import Template  # 延迟导入：MCP 冷启动不需要模板引擎
+
     raw = path.read_text(encoding="utf-8")
     if raw.startswith("---\n"):
         _, _, raw = raw.partition("---\n")

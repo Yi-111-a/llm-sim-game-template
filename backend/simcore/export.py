@@ -21,7 +21,7 @@ from typing import Any
 from simcore.domain.memorials import memorial_item, summarize_ops
 from simcore.domain.models import WorldState
 from simcore.domain.rules import delay_phrase
-from simcore.domain.visibility import fact_line, public_report, resource_display
+from simcore.domain.visibility import battle_breakdown, fact_line, public_report, resource_display
 
 CLAUSE_KEYS = ("status", "source", "summary", "text", "code", "reason", "delay_reason", "due_turn", "memorial_id", "option_id", "changed", "previous_status")
 
@@ -136,7 +136,7 @@ def build_export(
                 "calendar_label": after.calendar.label,
                 "facts": [fact_line(fact) for fact in public.get("facts", []) if fact.get("kind") != "outcome"],
                 "events": [{"id": row.get("id"), "title": row.get("title")} for row in public.get("events", []) if not row.get("outcome")],
-                "battles": [row.get("text", "") for row in public.get("battles", [])],
+                "battles": [(row.get("text", "") + battle_breakdown(row)) for row in public.get("battles", [])],
                 "choices_opened": [
                     {"id": row.get("id"), "title": row.get("title"), "options": [option.get("id") for option in row.get("options", [])]}
                     for row in public.get("choices_opened", []) or []

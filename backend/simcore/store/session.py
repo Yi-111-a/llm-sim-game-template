@@ -605,6 +605,7 @@ _OP_LABELS = {
     "appoint": "任命",
     "dismiss": "免职",
     "set_character_status": "人物状态",
+    "set_character_faction": "人物改属",
     "move_character": "人物行程",
     "move_army": "调动军队",
     "start_project": "兴工",

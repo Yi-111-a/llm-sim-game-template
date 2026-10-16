@@ -266,6 +266,8 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
         return f"{name('character', raw['character'])} 赴 {name('region', raw['to_region'])}{route}"
     if op == "set_army_faction":
         return f"{name('army', raw['army'])} 改隶 {name('faction', raw['faction'])}"
+    if op == "set_character_faction":
+        return f"{name('character', raw['character'])} 改属 {name('faction', raw['faction'])}"
     if op == "set_army_commander":
         if not raw.get("character"):
             return f"罢{name('army', raw['army'])}统帅"

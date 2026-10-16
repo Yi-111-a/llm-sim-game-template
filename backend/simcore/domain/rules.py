@@ -56,6 +56,41 @@ def stat_name(state: WorldState, stat: str) -> str:
     return str(names.get(stat, stat)) if isinstance(names, dict) else stat
 
 
+def parse_stat_range(raw: Any) -> tuple[float, float] | None:
+    """剧本 stats[].range：[下限, 上限]（两个数，下限 ≤ 上限）；不合格返回 None。"""
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return None
+    try:
+        low, high = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError):
+        return None
+    return (low, high) if low <= high else None
+
+
+def stat_range(state: WorldState, stat: str) -> tuple[float, float] | None:
+    """地区指标的取值范围（开局自剧本 stats[].range 拷入 rules.stat_ranges）；未定义为 None（不设限）。"""
+    ranges = state.rules.get("stat_ranges") or {}
+    return parse_stat_range(ranges.get(stat)) if isinstance(ranges, dict) else None
+
+
+def clamp_stat(state: WorldState, stat: str, value: float) -> float:
+    bounds = stat_range(state, stat)
+    return value if bounds is None else min(max(value, bounds[0]), bounds[1])
+
+
+def stat_legend(state: WorldState) -> str:
+    """「繁荣 0–100、治安 0–100……」：有范围的地区指标及其量程（简报、摘要的图例）。"""
+    ranges = state.rules.get("stat_ranges") or {}
+    if not isinstance(ranges, dict):
+        return ""
+    parts = []
+    for stat in ranges:
+        bounds = stat_range(state, stat)
+        if bounds is not None:
+            parts.append(f"{stat_name(state, stat)} {bounds[0]:g}–{bounds[1]:g}")
+    return "、".join(parts)
+
+
 def trait_name(state: WorldState, trait: str) -> str:
     names = state.rules.get("trait_names") or {}
     if isinstance(names, dict) and trait in names:
@@ -210,6 +245,24 @@ def travel_note(state: WorldState, mover: Any) -> str:
     return f"自{origin_name}赴{target_name}，{when}"
 
 
+def transit_label(state: WorldState, mover: Any) -> str:
+    """表格用的行程：「在途：A→B，约n季后到」（不在途返回空串）。在途者尚未抵达，不能写成「驻B」。"""
+    transit = getattr(mover, "in_transit", None)
+    if not transit:
+        return ""
+    origin = state.regions.get(str(transit.get("from_region") or mover.region))
+    target = state.regions.get(str(transit.get("to_region")))
+    left = int(transit.get("eta_turn", state.turn)) - state.turn
+    when = f"约{left}{turn_unit_label(state)}后到" if left > 0 else "即将抵达"
+    return f"在途：{origin.name if origin else mover.region}→{target.name if target else transit.get('to_region')}，{when}"
+
+
+def army_whereabouts(state: WorldState, army: Any) -> str:
+    """军队现在何处：在途为「在途：A→B，约n季后到」，否则「驻A」。"""
+    region = state.regions.get(str(army.region))
+    return transit_label(state, army) or f"驻{region.name if region else army.region}"
+
+
 def traveller_label(state: WorldState, mover: Any) -> str:
     """「某某（自A赴B，约n季后到）」；不在途时只给名字。"""
     note = travel_note(state, mover)
@@ -305,9 +358,16 @@ def posting_plan(state: WorldState, character: Any, station: str, dispatch: bool
 
 
 def _elsewhere_text(state: WorldState, character: Any, army: Any, kept: list[Any], released: list[Any]) -> str:
-    """此人另统、且不在身边的军队（遥领之军）照旧由其兼统：「；仍兼领安西军（不在军中，副将暂摄）」，免得回执只说一军而状态里是两军。"""
+    """此人另统、且不在身边的军队（遥领之军）照旧由其兼统：「；仍兼领安西军（不在军中，副将暂摄）」，免得回执只说一军而状态里是两军。
+
+    只列此刻确不在军中的军队：与此人同驻（在军）的军队这次并无变化——遥领新职时人不动，原军仍在其身边，
+    不能说成「不在军中」（gpt-08：兼领河西的预览误称陇右军也无主帅在军）。"""
     skip = {row.id for row in (*kept, *released)} | ({army.id} if army is not None else set())
-    names = [row.name for row in state.armies.values() if row.commander == character.id and row.id not in skip]
+    names = [
+        row.name
+        for row in state.armies.values()
+        if row.commander == character.id and row.id not in skip and row.strength > 0 and not commander_presence(state, row)["present"]
+    ]
     return f"；仍兼领{'、'.join(names)}（不在军中，副将暂摄）" if names else ""
 
 
@@ -512,6 +572,11 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
         return Rejected("UNKNOWN_ENTITY", f"军队不存在：{op.army}")
     if op.op == "set_army_faction" and op.faction not in state.factions:
         return Rejected("UNKNOWN_ENTITY", f"势力不存在：{op.faction}")
+    if op.op == "set_character_faction":
+        if op.character not in state.characters:
+            return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.character}")
+        if op.faction not in state.factions:
+            return Rejected("UNKNOWN_ENTITY", f"势力不存在：{op.faction}")
     if op.op == "set_army_commander" and op.character is not None:
         commander = state.characters.get(op.character)
         if commander is None:

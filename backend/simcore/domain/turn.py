@@ -24,6 +24,7 @@ from simcore.domain.models import (
     clone,
 )
 from simcore.domain.ops import memory_ops, parse_op
+from simcore.domain.permissions import status_target_check
 from simcore.domain.rules import coalesce_postings, turn_label
 from simcore.domain.visibility import format_number
 
@@ -69,6 +70,10 @@ def resolve_turn(
         label = clause.label or ("延期诏令" if clause.source == "edict" else clause.source)
         for op in clause.ops:
             memories = edict_memories(op, updated) if clause.source == "edict" else []
+            blocked = status_target_check(updated, op) if clause.source == "edict" else None
+            if blocked is not None:
+                report.warnings.append(f"延期条款未能执行（原延至第 {clause.due_turn} 回合结算时执行）：{blocked.message}")
+                continue
             try:
                 updated, facts = apply(op, updated, turn=target, inplace=True, source=label)
                 report.facts.extend(facts)
@@ -377,8 +382,8 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
 
 
 BOOKKEEPING_FACT_KINDS = frozenset({"ledger", "flag", "counter", "memory", "standing_order"})
-WAR_OPS = frozenset({"move_army", "adjust_army", "set_army_faction", "set_army_commander", "set_region_controller"})
-WAR_FACT_KINDS = frozenset({"battle", "army", "army_faction", "region_controller", "retreat"})
+WAR_OPS = frozenset({"move_army", "adjust_army", "set_army_faction", "set_army_commander", "set_region_controller", "set_character_faction"})
+WAR_FACT_KINDS = frozenset({"battle", "army", "army_faction", "character_faction", "region_controller", "retreat"})
 IMPORTANCE_LEVELS = {"outcome": 3, "war": 2, "battle": 2, "choice": 1, "normal": 0, "other": 0}
 
 

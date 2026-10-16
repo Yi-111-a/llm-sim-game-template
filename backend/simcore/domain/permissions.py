@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simcore.domain.battle import hostile
 from simcore.domain.models import WorldState
 from simcore.domain.ops import OP_NAMES, StateOp, parse_op
 from simcore.domain.rules import STATUS_NAMES, Rejected, mover_faction, player_character_id
@@ -46,6 +47,7 @@ OP_LABELS: dict[str, str] = {
     "appoint": "任命",
     "dismiss": "免职",
     "set_character_status": "处置人物",
+    "set_character_faction": "人物改属",
     "move_character": "人物行程",
     "move_army": "调动军队",
     "march": "率军出征",
@@ -105,6 +107,56 @@ def _number(state: WorldState, key: str, default: float) -> float:
         return default
 
 
+# 须把人拿到手的处置：拘拿下狱、赐死。人须身在本朝控制之地，且当地没有护卫他的敌军。
+SEIZE_STATUSES = frozenset({"imprisoned", "dead"})
+
+
+def _wars(state: WorldState) -> list[Any]:
+    wars = state.rules.get("wars")
+    return wars if isinstance(wars, list) else []
+
+
+def hostile_target(state: WorldState, character: Any, own: str | None, status: str) -> Rejected | None:
+    """敌对势力的人物、统领或随行敌军的人物，诏令不能隔空处置（HOSTILE_TARGET）；拘拿须人在本朝控制之地且无敌军护卫。"""
+    if own is None:
+        return None
+    wars = _wars(state)
+    if hostile(state, character.faction, own, wars):
+        faction = state.factions.get(str(character.faction))
+        return Rejected(
+            "HOSTILE_TARGET",
+            f"{character.name}属敌对势力{faction.name if faction else ''}，诏令不及其身；须先战而擒之（战后由奏疏或事件处置）",
+        )
+    region_id = character.region
+    for army in state.armies.values():
+        if army.strength <= 0 or not hostile(state, army.faction, own, wars):
+            continue
+        if army.commander == character.id:
+            return Rejected("HOSTILE_TARGET", f"{character.name}统领敌军{army.name}，诏令不及其身；须先战而擒之")
+    if status not in SEIZE_STATUSES:
+        return None
+    region = state.regions.get(region_id)
+    if region is None or region.controller not in (None, own):
+        where = region.name if region else region_id
+        return Rejected("HOSTILE_TARGET", f"{character.name}身在{where}，不在本朝控制之地，无从拘拿")
+    escorts = [
+        army.name
+        for army in state.armies.values()
+        if army.region == region_id and not army.in_transit and army.strength > 0 and hostile(state, army.faction, own, wars)
+    ]
+    if escorts:
+        return Rejected("HOSTILE_TARGET", f"{character.name}所在的{region.name}有敌军{'、'.join(escorts)}护卫，无从拘拿；须先击破之")
+    return None
+
+
+def status_target_check(state: WorldState, raw: dict[str, Any]) -> Rejected | None:
+    """延期执行的处置条款在结算时复核：其间人物若已投敌或落入敌手，条款不能执行。"""
+    character = state.characters.get(str(raw.get("character", "")))
+    if raw.get("op") != "set_character_status" or character is None:
+        return None
+    return hostile_target(state, character, mover_faction(state, None), str(raw.get("status", "")))
+
+
 def check_player_op(op_value: StateOp | dict[str, Any], state: WorldState, settings: dict[str, Any] | None = None) -> Rejected | None:
     """玩家层权限检查（不做实体校验，那由 rules.validate 负责）。不允许时返回 Rejected(OP_NOT_PERMITTED, 中文原因)。"""
     try:
@@ -142,6 +194,9 @@ def check_player_op(op_value: StateOp | dict[str, Any], state: WorldState, setti
         if character is not None:
             if character.id == player_character_id(state, settings):
                 return Rejected("OP_NOT_PERMITTED", "不能处置君主本人")
+            denied = hostile_target(state, character, own, status)
+            if denied is not None:
+                return denied
             region = state.regions.get(character.region)
             in_own_land = region is not None and not foreign(region.controller)
             if foreign(character.faction) and not in_own_land:

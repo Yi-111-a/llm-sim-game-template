@@ -24,6 +24,7 @@ from simcore.domain.models import (
     clone_data,
 )
 from simcore.domain.ops import parse_op
+from simcore.domain.rules import parse_stat_range
 from simcore.images.manifest import asset_path
 from simcore.scenario.schema import AssetManifest, ScenarioDocument
 
@@ -193,6 +194,9 @@ def validate_scenario(data_or_path: dict[str, Any] | str | Path) -> list[str]:
         if (illustration or event.get("kind") in ("scheduled", "conditional", "random")) and required_id not in entries:
             errors.append(f"事件 {event.get('id')} 缺少必需插图资产 {required_id}")
     known_regions = ids["region"]
+    for row in (scenario_data.get("stats", []) if isinstance(scenario_data, dict) else []) or []:
+        if isinstance(row, dict) and "range" in row and parse_stat_range(row.get("range")) is None:
+            errors.append(f"地区指标 {row.get('id')} 的 range 须为 [下限, 上限] 两个数且下限 ≤ 上限")
     for region in regions:
         if not isinstance(region, dict):
             errors.append("regions.yaml 含非对象地区")
@@ -531,6 +535,15 @@ def _css_variables_only(css: str) -> bool:
     )
 
 
+def _clamped_stats(stats: Any, ranges: dict[str, list[float]]) -> dict[str, float]:
+    """开局地区指标按剧本 stats[].range 截入范围。"""
+    result = dict(stats or {})
+    for key, bounds in ranges.items():
+        if key in result and isinstance(result[key], (int, float)):
+            result[key] = min(max(result[key], bounds[0]), bounds[1])
+    return result
+
+
 def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> WorldState:
     """场景开局状态。difficulty 为难度档 id（缺省用 default_difficulty）；未知 id 抛 DifficultyError。"""
     scenario = ScenarioDocument.model_validate(data["scenario"])
@@ -562,6 +575,13 @@ def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> 
     }
     if stat_names:
         rules.setdefault("stat_names", stat_names)
+    stat_ranges = {
+        str(row.get("id")): list(bounds)
+        for row in data["scenario"].get("stats", []) or []
+        if isinstance(row, dict) and row.get("id") is not None and (bounds := parse_stat_range(row.get("range"))) is not None
+    }
+    if stat_ranges:
+        rules.setdefault("stat_ranges", stat_ranges)
     if factions:
         rules.setdefault("player_faction", next(iter(factions)))
     main_faction = rules.get("player_faction")
@@ -573,7 +593,7 @@ def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> 
             y=row.get("map", {}).get("y", 0),
             polygon=row.get("map", {}).get("polygon", []),
             adjacency={edge["to"]: int(edge.get("travel_turns", 1)) for edge in row.get("adjacency", [])},
-            stats=row.get("stats", {}),
+            stats=_clamped_stats(row.get("stats", {}), stat_ranges),
             controller=row.get("controller", main_faction),
         )
         for row in data.get("regions", [])

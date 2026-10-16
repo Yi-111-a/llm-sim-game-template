@@ -1,30 +1,16 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
-import uvicorn
-from textual.app import App, ComposeResult
-from textual.widgets import Footer, Header, Static
 
-from simcore.config import load_settings
-from simcore.images.base import MockImageProvider
-from simcore.images.manifest import (
-    asset_path,
-    compose_prompt,
-    read_manifest,
-    update_asset_entry,
-    write_manifest,
-)
-from simcore.images.openai_images import OpenAIImageProvider
-from simcore.llm.base import ToolCallingUnsupported
-from simcore.llm.factory import create_provider
-from simcore.scenario.loader import build_initial_state, load_scenario, validate_scenario
-from simcore.store.session import SessionStore
+# 只在用到的命令里导入重模块（uvicorn、textual、provider、场景加载器……）：
+# `sim mcp` 的冷启动必须短于 Codex 的 MCP 启动超时，见 simcore.mcp.stdio。
+if TYPE_CHECKING:
+    from simcore.store.session import SessionStore
 
 app = typer.Typer(no_args_is_help=True, help="本地优先模拟游戏工具")
 KIND_TEMPLATES = {
@@ -57,6 +43,9 @@ def _scenarios_dir() -> Path:
 
 
 def _load_session(target: str) -> SessionStore:
+    from simcore.scenario.loader import load_scenario
+    from simcore.store.session import SessionStore
+
     path = Path(target)
     if not path.is_file():
         path = _session_path(target)
@@ -76,6 +65,8 @@ def serve(
     reload: bool = typer.Option(False, help="开发模式热重载"),
 ) -> None:
     """启动本地 API 服务（/health 可用于探活）。"""
+    import uvicorn
+
     uvicorn.run("api.app:app", host=host, port=port, reload=reload)
 
 
@@ -84,14 +75,16 @@ def mcp(
     mode: str = typer.Option("", help="client（默认，调用方模型扮演）或 server（服务端 provider 扮演）；也可用 SIM_MCP_MODE"),
 ) -> None:
     """以 stdio 启动 MCP 服务，供 Claude Code / Codex 等外部模型游玩。"""
-    from simcore.mcp.server import build_server
+    from simcore.mcp.stdio import run
 
-    build_server(mode=mode or None).run("stdio")
+    run(mode or None)
 
 
 @app.command("validate")
 def validate(target: str) -> None:
     """检查场景结构、引用与资产清单。"""
+    from simcore.scenario.loader import load_scenario, validate_scenario
+
     path = _scenario_path(target)
     errors = validate_scenario(path)
     if errors:
@@ -116,6 +109,9 @@ def new_game(
     difficulty: str | None = typer.Option(None, help="难度档 id（缺省为场景的 default_difficulty）"),
 ) -> None:
     """从场景创建新存档。"""
+    from simcore.scenario.loader import build_initial_state, load_scenario, validate_scenario
+    from simcore.store.session import SessionStore
+
     scenario = load_scenario(_scenario_path(scenario_id))
     errors = validate_scenario(scenario)
     if errors:
@@ -137,6 +133,13 @@ def gen_assets(
     seed: int | None = typer.Option(None, help="可复现的图像种子"),
 ) -> None:
     """按资产清单生成图像并写回清单。"""
+    import asyncio
+
+    from simcore.config import load_settings
+    from simcore.images.base import MockImageProvider
+    from simcore.images.manifest import asset_path, compose_prompt, read_manifest, update_asset_entry, write_manifest
+    from simcore.images.openai_images import OpenAIImageProvider
+
     scenario_root = _scenario_path(scenario_id)
     manifest = read_manifest(scenario_root)
     settings = load_settings()
@@ -188,6 +191,12 @@ def replay(target: str) -> None:
 @app.command()
 def doctor() -> None:
     """探测当前模型是否支持工具调用。"""
+    import asyncio
+
+    from simcore.config import load_settings
+    from simcore.llm.base import ToolCallingUnsupported
+    from simcore.llm.factory import create_provider
+
 
     async def probe() -> dict[str, Any]:
         provider = create_provider(load_settings(), "edict_interpreter")
@@ -223,32 +232,37 @@ def doctor() -> None:
     typer.echo(json.dumps(result, ensure_ascii=False))
 
 
-class SessionApp(App[None]):
-    def __init__(self, state: dict[str, Any]) -> None:
-        super().__init__()
-        self.state_data = state
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        state = self.state_data
-        resources = state.get("resources", {})
-        lines = [
-            f"场景：{state.get('scenario_id')}　回合：{state.get('turn')}",
-            f"日期：{state.get('calendar', {}).get('label', '')}",
-            "",
-            "国势资源",
-            *[f"  {row.get('name', key)}：{row.get('amount')}" for key, row in resources.items()],
-            "",
-            f"地区 {len(state.get('regions', {}))} · 人物 {len(state.get('characters', {}))}",
-            "完整交互界面请运行前端开发服务器。",
-        ]
-        yield Static("\n".join(lines), id="session")
-        yield Footer()
-
-
 @app.command()
 def play(target: str = typer.Argument("_template")) -> None:
     """在终端查看存档状态。"""
+    from textual.app import App, ComposeResult
+    from textual.widgets import Footer, Header, Static
+
+    from simcore.scenario.loader import build_initial_state, load_scenario
+    from simcore.store.session import SessionStore
+
+    class SessionApp(App[None]):
+        def __init__(self, state: dict[str, Any]) -> None:
+            super().__init__()
+            self.state_data = state
+
+        def compose(self) -> ComposeResult:
+            yield Header()
+            state = self.state_data
+            resources = state.get("resources", {})
+            lines = [
+                f"场景：{state.get('scenario_id')}　回合：{state.get('turn')}",
+                f"日期：{state.get('calendar', {}).get('label', '')}",
+                "",
+                "国势资源",
+                *[f"  {row.get('name', key)}：{row.get('amount')}" for key, row in resources.items()],
+                "",
+                f"地区 {len(state.get('regions', {}))} · 人物 {len(state.get('characters', {}))}",
+                "完整交互界面请运行前端开发服务器。",
+            ]
+            yield Static("\n".join(lines), id="session")
+            yield Footer()
+
     candidate = Path(target)
     session_file = candidate if candidate.is_file() else _session_path(target)
     if session_file.is_file():

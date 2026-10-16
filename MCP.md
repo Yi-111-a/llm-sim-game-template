@@ -19,6 +19,11 @@ sim mcp                                        # 等价的控制台脚本
 
 也可用 `sim mcp --mode server` 覆盖模式。服务只写 stdout 的 JSON-RPC，日志走 stderr。
 
+冷启动：`sim mcp` / `python -m cli.main mcp` 走 `simcore/mcp/stdio.py` 的轻量 stdio 实现（只用标准库），
+先应答 `initialize` / `tools/list`（工具表与 JSON Schema 在 `simcore/mcp/meta.py`，测试保证与 SDK 生成的一致），
+再在后台线程加载引擎；首个工具调用若引擎未加载完就等它。本机实测握手由约 6–80 秒（官方 SDK + 服务层全量导入，
+视杀毒扫描而定）降到约 0.7 秒。仍建议 Codex 配置 `startup_timeout_sec = 60`。排查兼容问题可设 `SIM_MCP_SDK=1` 改用官方 SDK 的 stdio 传输。
+
 ## Claude Code
 
 ```bash
@@ -47,7 +52,8 @@ codex mcp add tianbao \
 [mcp_servers.tianbao]
 command = "C:/Users/<you>/Desktop/新建文件夹/tianbao/.venv/Scripts/python.exe"
 args = ["-m", "cli.main", "mcp"]
-startup_timeout_sec = 30
+startup_timeout_sec = 60
+tool_timeout_sec = 120
 
 [mcp_servers.tianbao.env]
 SIM_SCENARIOS_DIR = "C:/Users/<you>/Desktop/新建文件夹/tianbao/scenarios"

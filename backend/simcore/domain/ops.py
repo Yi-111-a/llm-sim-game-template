@@ -53,6 +53,14 @@ class SetCharacterStatus(OpModel):
     cause: str = ""
 
 
+class SetCharacterFaction(OpModel):
+    """人物改属某势力（剧本层：如兵变首领随叛军易帜）。"""
+
+    op: Literal["set_character_faction"]
+    character: str
+    faction: str
+
+
 class MoveCharacter(OpModel):
     op: Literal["move_character"]
     character: str
@@ -195,6 +203,7 @@ StateOp: TypeAlias = Annotated[
     | Appoint
     | Dismiss
     | SetCharacterStatus
+    | SetCharacterFaction
     | MoveCharacter
     | MoveArmy
     | March
@@ -224,6 +233,7 @@ OP_NAMES: tuple[str, ...] = (
     "appoint",
     "dismiss",
     "set_character_status",
+    "set_character_faction",
     "move_character",
     "move_army",
     "march",

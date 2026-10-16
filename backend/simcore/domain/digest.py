@@ -11,7 +11,17 @@ from __future__ import annotations
 from typing import Any
 
 from simcore.domain.models import TurnReport, WorldState
-from simcore.domain.rules import STATUS_NAMES, army_station, commander_presence, current_title, held_offices, stat_name, travel_note, traveller_label
+from simcore.domain.rules import (
+    STATUS_NAMES,
+    army_station,
+    commander_presence,
+    current_title,
+    held_offices,
+    stat_name,
+    transit_label,
+    travel_note,
+    traveller_label,
+)
 from simcore.domain.visibility import fact_line, format_number, public_report, resource_display
 
 __all__ = ["STATUS_NAMES", "digest_numbers", "render_digest"]
@@ -81,7 +91,7 @@ def render_digest(
         faction = state.factions.get(army.faction) if army.faction else None
         commander = state.characters.get(army.commander) if army.commander else None
         region = state.regions.get(army.region)
-        parts = [f"{army.name} {_number(army.strength)}", f"驻{region.name if region else army.region}"]
+        parts = [f"{army.name} {_number(army.strength)}", transit_label(state, army) or f"驻{region.name if region else army.region}"]
         if faction:
             parts.append(f"属{faction.name}")
         if commander:
@@ -94,8 +104,6 @@ def render_digest(
                 parts.append(f"统帅{commander.name}离军他往（{travel_note(state, commander)}），副将暂摄")
             else:
                 parts.append(f"统帅{commander.name}不在军中，副将暂摄")
-        if army.in_transit:
-            parts.append(f"在途（{travel_note(state, army)}）")
         army_rows.append("，".join(parts))
     if army_rows:
         lines.append("【军队】" + "；".join(army_rows))

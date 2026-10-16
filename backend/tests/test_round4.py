@@ -92,6 +92,10 @@ def test_status_targets_and_foreign_entities_are_limited(mech_scenario) -> None:
     dead = check_player_op({"op": "set_character_status", "character": "plotter", "status": "dead"}, state)
     assert dead is not None and dead.code == "OP_NOT_PERMITTED" and "已故" in dead.message
     assert check_player_op({"op": "set_character_status", "character": "ruler", "status": "retired"}, state) is not None
+    # 第 8 轮：拘拿须人在本朝控制之地——安节度身在叛军所据的北镇，不能隔空拘拿；回到京畿即可
+    far = check_player_op({"op": "set_character_status", "character": "plotter", "status": "imprisoned"}, state)
+    assert far is not None and far.code == "HOSTILE_TARGET"
+    state.characters["plotter"].region = "capital"
     assert check_player_op({"op": "set_character_status", "character": "plotter", "status": "imprisoned"}, state) is None
     enemy = check_player_op({"op": "move_army", "army": "rebel_army", "to_region": "plain"}, state)
     assert enemy is not None and "不归本朝节制" in enemy.message

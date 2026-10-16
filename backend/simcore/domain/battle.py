@@ -13,6 +13,7 @@ LOSER_LOSS = 0.30
 WINNER_LOSS = 0.10
 FORTRESS_DEFENSE = 80
 FORTRESS_RATIO = 2.0
+LUCK_SPREAD = 0.15  # 天时：双方战力各乘 1±15% 的随机系数
 
 
 def hostile(state: WorldState, a: str | None, b: str | None, wars: list[Any] | None = None) -> bool:
@@ -88,8 +89,8 @@ def _fight(
     attackers = [army for army in _present(state, region_id) if army.faction == attacker]
     defenders = [army for army in _present(state, region_id) if army.faction == defender]
     defense = float(region.stats.get(defense_stat, 0)) if region.controller == defender else 0.0
-    attack_power = sum(army.strength * army.quality for army in attackers) * rng.uniform(0.85, 1.15)
-    defend_power = sum(army.strength * army.quality for army in defenders) * (1 + defense / 100) * rng.uniform(0.85, 1.15)
+    attack_power = sum(army.strength * army.quality for army in attackers) * rng.uniform(1 - LUCK_SPREAD, 1 + LUCK_SPREAD)
+    defend_power = sum(army.strength * army.quality for army in defenders) * (1 + defense / 100) * rng.uniform(1 - LUCK_SPREAD, 1 + LUCK_SPREAD)
     battle: dict[str, Any] = {
         "region": region_id,
         "region_name": region.name,
@@ -102,7 +103,18 @@ def _fight(
         "defense_bonus": defense,
         "losses": {},
         "retreats": {},
+        "retreat_names": {},
+        "routed": {},
         "captured": False,
+        # 战报因素（公开）：各军开战时兵力、素质、主帅是否在军；守方据本方地区时加城防；天时为随机幅度（只示范围）
+        "factors": {
+            "luck_spread": LUCK_SPREAD,
+            "defense_bonus": defense,
+            "winner_loss": WINNER_LOSS,
+            "loser_loss": LOSER_LOSS,
+            "attacker": [_army_factor(state, army) for army in attackers],
+            "defender": [_army_factor(state, army) for army in defenders],
+        },
     }
     attacker_name = _faction_name(state, attacker)
     defender_name = _faction_name(state, defender)
@@ -144,10 +156,12 @@ def _fight(
         battle["retreats"][army.id] = retreat
         if retreat is None:
             routed = army.strength
+            battle["routed"][army.id] = round(routed, 2)
             army.strength = 0.0
             facts.append(Fact(kind="army", text=f"{army.name}无路可退，溃散", entity=army.id, before=routed, after=0.0))
         else:
             army.region = retreat
+            battle["retreat_names"][army.id] = state.regions[retreat].name
             facts.append(Fact(kind="retreat", text=f"{army.name}退往{state.regions[retreat].name}", entity=army.id, before=region_id, after=retreat))
     winner_name = attacker_name if attacker_won else defender_name
     battle["winner"] = attacker if attacker_won else defender
@@ -164,6 +178,24 @@ def _fight(
         facts.append(Fact(kind="region_controller", text=f"{attacker_name}攻占{region.name}", entity=region_id, before=before, after=attacker))
     battle["text"] = f"{attacker_name}攻{defender_name}，{winner_name}胜" + (f"，遂克{region.name}。" if battle["captured"] else "。")
     return battle, facts
+
+
+def _army_factor(state: WorldState, army: Army) -> dict[str, Any]:
+    presence = commander_presence(state, army)
+    if presence["present"]:
+        command = "present"
+    elif army.commander and presence["commander"]:
+        command = "acting"
+    else:
+        command = "none"
+    return {
+        "army": army.id,
+        "name": army.name,
+        "strength": round(army.strength, 2),
+        "quality": army.quality,
+        "commander": presence["name"],
+        "command": command,
+    }
 
 
 def _retreat_target(state: WorldState, region_id: str, faction: str) -> str | None:

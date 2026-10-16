@@ -69,7 +69,7 @@ def test_integration_uses_shell_supplied_launch_spec(client, monkeypatch, tmp_pa
     assert table == {
         "command": exe,
         "args": ["mcp"],
-        "startup_timeout_sec": 30,
+        "startup_timeout_sec": 60,
         "tool_timeout_sec": 120,
         "default_tools_approval_mode": "approve",
     }

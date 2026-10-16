@@ -10,11 +10,13 @@ from typing import Any
 from simcore.domain.models import WorldState
 from simcore.domain.rules import (
     army_station,
+    army_whereabouts,
     commander_presence,
     held_offices,
     mover_faction,
     office_army,
     office_station,
+    transit_label,
     travel_note,
 )
 from simcore.domain.visibility import format_number
@@ -63,6 +65,10 @@ def _command_row(state: WorldState, army: Any) -> dict[str, Any]:
         "strength": army.strength,
         "station": army_station(army),
         "station_name": _region_name(state, army_station(army)),
+        "region": army.region,
+        "region_name": _region_name(state, army.region),
+        "in_transit": transit_label(state, army) or None,
+        "whereabouts": army_whereabouts(state, army),
         "status": status,
         "label": label,
     }
@@ -109,7 +115,7 @@ def command_table(state: WorldState, player: str | None = None) -> dict[str, Any
             office_rows.append(entry)
         for command in commands:
             if command["status"] == "remote":
-                alerts.append(f"{character.name}遥领{command['name']}（军驻{command['station_name']}，人在{location['display']}），副将暂摄")
+                alerts.append(f"{character.name}遥领{command['name']}（军{command['whereabouts']}，人在{location['display']}），副将暂摄")
         if len(commands) > 1:
             alerts.append(f"{character.name}兼统{'、'.join(row['name'] for row in commands)}")
         rows.append({
@@ -131,6 +137,10 @@ def command_table(state: WorldState, player: str | None = None) -> dict[str, Any
             "strength": army.strength,
             "station": army_station(army),
             "station_name": _region_name(state, army_station(army)),
+            "region": army.region,
+            "region_name": _region_name(state, army.region),
+            "in_transit": transit_label(state, army) or None,
+            "whereabouts": army_whereabouts(state, army),
             "status": "acting",
             "label": "无统帅（副将暂摄）",
         }
@@ -141,7 +151,7 @@ def command_table(state: WorldState, player: str | None = None) -> dict[str, Any
     if vacant_offices:
         alerts.append("出缺：" + "、".join(row["name"] for row in vacant_offices))
     if vacant_armies:
-        alerts.append("无统帅：" + "、".join(f"{row['name']}（驻{row['station_name']}）" for row in vacant_armies))
+        alerts.append("无统帅：" + "、".join(f"{row['name']}（{row['whereabouts']}）" for row in vacant_armies))
     return {
         "columns": ["官职", "人物", "所在", "所统", "指挥状态"],
         "rows": rows,
@@ -160,7 +170,10 @@ def command_table_lines(table: dict[str, Any]) -> list[str]:
             office["name"] + ("（**遥领**）" if office.get("status") == "remote" else "（赴任中）" if office.get("status") == "en_route" else "")
             for office in row["offices"]
         ) or "—"
-        commands = "、".join(f"{command['name']}{format_number(command['strength'])}" for command in row["commands"]) or "—"
+        commands = "、".join(
+            f"{command['name']}{format_number(command['strength'])}" + (f"（{command['in_transit']}）" if command.get("in_transit") else "")
+            for command in row["commands"]
+        ) or "—"
         status = "；".join(
             f"{command['name']} " + (f"**{command['label']}**" if command["status"] == "remote" else command["label"]) for command in row["commands"]
         ) or "—"
@@ -168,5 +181,5 @@ def command_table_lines(table: dict[str, Any]) -> list[str]:
     for office in table["vacancies"]["offices"]:
         lines.append(f"| {office['name']} | **出缺** | — | — | — |")
     for army in table["vacancies"]["armies"]:
-        lines.append(f"| — | **无统帅** | — | {army['name']}{format_number(army['strength'])}（驻{army['station_name']}） | 副将暂摄 |")
+        lines.append(f"| — | **无统帅** | — | {army['name']}{format_number(army['strength'])}（{army['whereabouts']}） | 副将暂摄 |")
     return lines
