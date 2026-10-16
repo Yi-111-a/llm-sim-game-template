@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from simcore.domain.courier import arrival_text, courier_days, memorial_dispatch_key, memorial_is_far
+from simcore.domain.courier import arrival_text, courier_days, far_target, memorial_dispatch_key, memorial_is_far
 from simcore.domain.events import matches
 from simcore.domain.models import WorldState
 from simcore.domain.ops import memory_ops, parse_op
@@ -162,7 +162,8 @@ def _public_item(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
             "label": option.get("label", option.get("id")),
             "hint": option.get("hint", ""),
             "ops": list(option.get("ops", []) or []),
-            "ops_summary": summarize_ops(option.get("ops", []) or [], state),
+            # 作用于远地的选项照驿程延期（整组一起），预览即写「令达后即日视事」
+            "ops_summary": summarize_ops(option.get("ops", []) or [], state, pending=far_target(state, list(option.get("ops", []) or [])) is not None),
         }
         for option in item.get("options", []) or []
     ]
@@ -205,10 +206,11 @@ INTERNAL_OPS = frozenset({"set_flag", "adjust_counter", "set_counter"})
 INTERNAL_SUMMARY = "记入档案（影响后续事件）"
 
 
-def summarize_ops(ops: list[dict[str, Any]], state: WorldState) -> list[str]:
+def summarize_ops(ops: list[dict[str, Any]], state: WorldState, *, pending: bool = False) -> list[str]:
     """把 ops 写成简短中文摘要，供奏疏卡片与 MCP 简报使用。
 
     旗标 / 计数等内部操作不暴露键名，合并为一句「记入档案（影响后续事件）」。
+    pending=True：这些条款尚未生效（延期 / 令未达），任命在任所者写「令达后即日视事」而非「即日视事」。
     """
     lines: list[str] = []
     pairs: set[tuple[frozenset[str], str]] = set()
@@ -219,7 +221,7 @@ def summarize_ops(ops: list[dict[str, Any]], state: WorldState) -> list[str]:
                 continue  # A→B 与 B→A 同幅变化只写一次「A↔B」
             pairs.add(pair)
         try:
-            line = summarize_op(raw, state)
+            line = summarize_op(raw, state, pending=pending)
         except (KeyError, TypeError, ValueError):
             line = str(raw.get("op", "?")) if isinstance(raw, dict) else "?"
         if line == INTERNAL_SUMMARY and line in lines:
@@ -228,7 +230,7 @@ def summarize_ops(ops: list[dict[str, Any]], state: WorldState) -> list[str]:
     return lines
 
 
-def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
+def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = False) -> str:
     op = raw.get("op")
 
     def name(kind: str, key: Any) -> str:
@@ -267,7 +269,9 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
         station = office_station(state, office_id)
         character = state.characters.get(str(raw["character"]))
         if station is not None and character is not None:
-            plan = posting_plan(state, character, station, bool(raw.get("dispatch", False)), army=state.armies.get(army_id) if army_id else None)
+            plan = posting_plan(
+                state, character, station, bool(raw.get("dispatch", False)), army=state.armies.get(army_id) if army_id else None, pending=pending
+            )
             text += f"；{plan['text']}"
         return text
     if op == "dismiss":
@@ -318,7 +322,7 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
         army = state.armies.get(str(raw["army"]))
         character = state.characters.get(str(raw.get("character")))
         if army is not None and character is not None:
-            plan = posting_plan(state, character, army_station(army), bool(raw.get("dispatch", False)), army=army)
+            plan = posting_plan(state, character, army_station(army), bool(raw.get("dispatch", False)), army=army, pending=pending)
             text += f"；{plan['text']}"
         return text
     if op == "set_army_posture":

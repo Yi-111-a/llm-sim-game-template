@@ -757,7 +757,9 @@ class GameService:
         preview = clone(state)
         for clause in receipt["clauses"]:
             op = clause.get("op")
-            clause["summary"] = summarize_ops([op], preview)[0] if isinstance(op, dict) and op else ""
+            # 延期（或未获执行）的条款尚未生效：任命在任所者写「令达后即日视事」（只有已执行的条款才写「即日视事」）
+            pending = clause.get("status") != "applied"
+            clause["summary"] = summarize_ops([op], preview, pending=pending)[0] if isinstance(op, dict) and op else ""
             if isinstance(op, dict) and op:
                 clause["summary"] += self.deadline_note(session, preview, op)
                 if clause.get("status") == "applied":
@@ -1572,7 +1574,7 @@ class GameService:
             return []
         rows: list[str] = []
         for clause in state.pending_clauses:
-            summary = "；".join(summarize_ops(clause.ops, state))
+            summary = "；".join(summarize_ops(clause.ops, state, pending=True))
             rows.append(f"延期条款「{clause.label or '延期诏令'}」：{summary}——{delay_phrase(clause.due_turn)}")
         rows.extend(f"在途：{line}" for line in GameService._traveller_lines(state))
         for project in state.projects:

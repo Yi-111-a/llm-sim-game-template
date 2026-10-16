@@ -247,6 +247,13 @@ def resolve_turn(
         for key in marks[0]
     }
 
+    # 事件（第 10 步）里启程者出发在本回合移动抵达之后：行程从本回合起算，否则简报会写「预计本回合抵达」而人仍在途
+    for entity_map in (updated.characters, updated.armies):
+        for entity in entity_map.values():
+            transit = entity.in_transit
+            if transit and transit["eta_turn"] <= target:
+                transit["eta_turn"] += target - state.turn
+
     # 12. 结局判定
     outcome = judge_outcome(updated, scenario_definition, target)
     if outcome is not None:

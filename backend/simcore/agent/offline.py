@@ -481,14 +481,15 @@ def pick_facts(
     return picked
 
 
-def _fact_phrase(section: str, item: str, own_faction: str = "", keep_numbers: bool = False) -> str:
+def _fact_phrase(section: str, item: str, own_faction: str = "", keep_numbers: bool = False, speaker: tuple[str, str] = ("", "臣")) -> str:
     """把摘要条目改写成口语：军队、地区、外域不照搬「河东军55000，驻河东，属唐廷，统帅安禄山」这类原始行。
 
     keep_numbers=True（廷议引数据）时兵数、指标保留摘要里的阿拉伯数字，否则兵数说成「五万余」、指标说成「颇佳 / 尚可」。
+    speaker=(说话人姓名, 自称)：说到自己所统之军时用自称，不以第三人称说自己（「主帅禄山未至」出自禄山之口）。
     """
     text = humanize_fact(item)
     if section == "军队":
-        return _army_phrase(text, own_faction, keep_numbers) or text.replace(" ", "")
+        return _army_phrase(text, own_faction, keep_numbers, speaker) or text.replace(" ", "")
     if section == "地区":
         return _region_phrase(text, keep_numbers)
     if section == "外域":
@@ -533,7 +534,7 @@ def cn_int(value: int) -> str:
     return "数百"
 
 
-def _army_phrase(text: str, own_faction: str = "", keep_numbers: bool = False) -> str:
+def _army_phrase(text: str, own_faction: str = "", keep_numbers: bool = False, speaker: tuple[str, str] = ("", "臣")) -> str:
     match = _ARMY_ROW.match(text)
     if not match:
         return ""
@@ -550,8 +551,12 @@ def _army_phrase(text: str, own_faction: str = "", keep_numbers: bool = False) -
         clauses.append(f"屯于{region}")
     if commander:
         who = commander.group(1)
-        if "未到任" in who or "不在军中" in who:
-            clauses.append(f"主帅{given_name(who.split('未到任')[0].split('不在军中')[0])}未至，副将暂摄")
+        absent = "未到任" in who or "不在军中" in who
+        bare = who.split("未到任")[0].split("不在军中")[0].strip("（）() ")
+        if speaker[0] and bare == speaker[0]:
+            clauses.append(f"{speaker[1]}不在军中，副将暂摄" if absent else f"皆在{speaker[1]}麾下")
+        elif absent:
+            clauses.append(f"主帅{given_name(bare)}未至，副将暂摄")
         else:
             clauses.append(f"皆在{given_name(who)}麾下")
     else:
@@ -597,8 +602,9 @@ def _fact_sentence(
     first: bool,
     own_faction: str = "",
     keep_numbers: bool = False,
+    speaker_name: str = "",
 ) -> str:
-    fact = _fact_phrase(section, item, own_faction, keep_numbers)
+    fact = _fact_phrase(section, item, own_faction, keep_numbers, (speaker_name, self_name))
     if not first:
         key = "fact_more"
     elif "风闻" in item:
@@ -683,7 +689,7 @@ def offline_minister_reply(
     picked = picked[:1] + [row for row in picked[1:] if any(name in row[1] for name in names)]
     own_faction = _own_faction_name(state)
     for index, (section, item) in enumerate(picked):
-        parts.append(_fact_sentence(rng, tpl, section, item, me, index == 0, own_faction))
+        parts.append(_fact_sentence(rng, tpl, section, item, me, index == 0, own_faction, speaker_name=character.name))
     example = _usable_example(card, rng)
     if example and not proposal and rng.random() < 0.6:
         parts.append(_sentence(example))
@@ -763,7 +769,7 @@ def offline_debate_line(
     own = [character.name] + ([own_region.name] if own_region else [])
     cited = [str(row.get("text", "")) for row in previous or []]
     for section, item in pick_facts(digest, topic_names(state, topic, character_id), own, limit=1, prefer_numbers=True, exclude=cited):
-        parts.append(_fact_sentence(rng, tpl, section, item, me, True, _own_faction_name(state), keep_numbers=True))
+        parts.append(_fact_sentence(rng, tpl, section, item, me, True, _own_faction_name(state), keep_numbers=True, speaker_name=character.name))
     example = _usable_example(card, rng)
     if example and stance == "neutral" and rng.random() < 0.5:
         parts.append(_sentence(example))

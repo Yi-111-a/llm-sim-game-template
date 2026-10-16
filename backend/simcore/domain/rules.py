@@ -1,4 +1,5 @@
 import heapq
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -321,19 +322,25 @@ def office_station(state: WorldState, office_id: str) -> str | None:
     return army_station(state.armies[army]) if army else None
 
 
-def posting_plan(state: WorldState, character: Any, station: str, dispatch: bool, *, army: Any = None) -> dict[str, Any]:
+def posting_plan(
+    state: WorldState, character: Any, station: str, dispatch: bool, *, army: Any = None, pending: bool = False
+) -> dict[str, Any]:
     """任命（任帅 / 有任所的官职）之后此人是否赴任，以及回执与事实统一使用的说明（不改状态）。
 
     返回 {kind, text, route}：kind 为 present（已在任所）/ en_route（已在赴任途中）/ dispatch（启程赴任，route 为
     (路径, 回合数)）/ remote（遥领）。text 为事实后缀（不含前导分号），一律写成「已启程赴任（…）」或「遥领，不赴任（…）」，
     统兵时附「由副将暂摄」。
+
+    pending=True 用于尚未生效的条款（延期条款、远地奏疏选项的预览、待办列表）：已在任所者写「令达后即日视事」，
+    只有此刻已执行的条款才写「即日视事」（gpt-10 #9：封常清任安西被延期约 54 日，回执却称「即日视事」）。
     """
     deputy = "，由副将暂摄" if army is not None else ""
     unit = turn_unit_label(state)
     destination = state.regions[station].name if station in state.regions else station
     transit = character.in_transit
     if transit is None and character.region == station:
-        return {"kind": "present", "text": "人在军中，即日视事" if army is not None else "人在任所，即日视事", "route": None}
+        when = "令达后即日视事" if pending else "即日视事"
+        return {"kind": "present", "text": f"人在军中，{when}" if army is not None else f"人在任所，{when}", "route": None}
     if transit and transit.get("to_region") == station:
         return {"kind": "en_route", "text": f"已在赴任途中（{travel_note(state, character)}）{deputy}", "route": None}
     if dispatch and transit is None and character.status == "alive":
@@ -447,7 +454,9 @@ def current_title(state: WorldState, character_id: str, scenario: dict[str, Any]
         return static, ""
     names = [state.offices[office].name for office in held if office in state.offices]
     title = "、".join(names) if names else "无现职"
-    return title, static if static and static != title else ""
+    # 旧衔只列已不在现职里的部分（陈希烈「左相」→ 加判度支后仍是左相，不算旧衔）
+    lapsed = [part for part in re.split(r"[、，,]", static) if part.strip() and part.strip() not in names]
+    return title, "、".join(part.strip() for part in lapsed) if static and static != title else ""
 
 
 def max_concurrent_offices(state: WorldState) -> int:

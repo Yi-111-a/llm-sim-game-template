@@ -119,7 +119,7 @@ def build_export(
                 "label": payload.get("label") or "延期诏令",
                 "due_turn": payload.get("due_turn"),
                 "timing": delay_phrase(payload.get("due_turn")),
-                "summary": summarize_ops(payload.get("ops") or [], state),
+                "summary": summarize_ops(payload.get("ops") or [], state, pending=True),
             })
         elif kind == "edict":
             record = {key: payload.get(key) for key in ("edict_id", "adopted", "clauses", "changed_clauses", "execution_rate") if key in payload}
