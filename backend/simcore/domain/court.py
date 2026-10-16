@@ -128,13 +128,16 @@ def presence(state: WorldState, character_id: str, settings: dict[str, Any] | No
 
 
 def present_list(state: WorldState, settings: dict[str, Any] | None = None) -> dict[str, Any]:
-    """GET /present：在京可廷议者与在外者（所在、行程）。玩家本人与不在世者不列。"""
+    """GET /present：在京可廷议者与在外者（所在、行程）。玩家本人、不在世者与他国之人不列。"""
     capital = capital_region(state, settings)
     player = player_character_id(state, settings)
+    own = state.rules.get("player_faction")
     present: list[dict[str, Any]] = []
     absent: list[dict[str, Any]] = []
     for character in state.characters.values():
         if character.id == player or character.status != "alive":
+            continue
+        if own and character.faction and character.faction != own:
             continue
         row = presence(state, character.id, settings)
         row["offices"] = [state.offices[office].name for office in character.offices if office in state.offices]

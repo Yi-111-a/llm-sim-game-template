@@ -105,3 +105,19 @@ def test_capital_memorials_are_presented_not_couriered(r9_state) -> None:
     assert text.endswith("奏上") and "奏到" not in text
     other = next(region for region in r9_state.regions if region != capital)
     assert arrival_text(r9_state, other).endswith(f"自{r9_state.regions[other].name}奏到")
+
+
+def test_foreign_characters_cannot_be_summoned_or_join_debate(mech_env) -> None:
+    from test_round9 import new_game
+
+    from simcore.service import GameError
+
+    service, session_id = new_game(3)
+    session = service.session(session_id)
+    session.append_op({"op": "set_character_faction", "character": "plotter", "faction": "rebels"})
+    foreign = session.head_state().characters["plotter"]
+    listed = {row["character"] for row in [*service.present(session_id)["present"], *service.present(session_id)["absent"]]}
+    assert foreign.id not in listed
+    with pytest.raises(GameError) as err:
+        service.begin_audience(session_id, foreign.id)
+    assert err.value.code == "CHARACTER_UNAVAILABLE" and "非本朝臣属" in err.value.message

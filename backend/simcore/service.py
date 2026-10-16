@@ -1106,9 +1106,15 @@ class GameService:
         return player_character_id(state or session.head_state(), self.definition(session).get("settings") or {})
 
     def _reject_player(self, session: SessionStore, state: WorldState, character_id: str) -> None:
+        """玩家本人不能召对或与议；他国、敌方之人（势力不同于玩家势力）也不能。"""
         if character_id and character_id == self.player_character(session, state):
             name = state.characters[character_id].name if character_id in state.characters else character_id
             raise GameError("PLAYER_CHARACTER", f"{name}是玩家本人，不能召对或与议")
+        character = state.characters.get(character_id)
+        own = state.rules.get("player_faction")
+        if character is not None and own and character.faction and character.faction != own:
+            faction = state.factions.get(character.faction)
+            raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}属{faction.name if faction else character.faction}，非本朝臣属，不能召对或与议")
 
     def audience_card(self, session_id: str, character_id: str) -> dict[str, Any]:
         session = self.session(session_id)
