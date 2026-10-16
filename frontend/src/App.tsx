@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-type Resource = { id: string; name: string; amount: number; unit: string };
+// 公开视图：隐藏资源没有 amount，只有 estimate 区间与 display 文本
+type Resource = { id: string; name: string; amount?: number; unit: string; hidden?: boolean; estimate?: number[]; display?: string };
 type Region = {
   id: string;
   name: string;
@@ -48,13 +49,55 @@ type TurnReport = {
   ledger_lines: Array<{ name: string; amount: number; kind: string; reason: string }>;
   events_fired: string[];
   warnings: string[];
+  reconciliation?: Array<{ resource: string; display?: string }>;
 };
 type Receipt = {
   id: string;
   confirmed: boolean;
-  clauses: Array<{ category: string; text: string; status: string; reason?: string; op?: unknown }>;
+  clauses: Array<{ category: string; text: string; summary?: string; status: string; reason?: string; delay_reason?: string; op?: unknown }>;
   state?: State;
 };
+type MemorialOption = { id: string; label: string; hint: string; ops_summary: string[] };
+type Memorial = {
+  id: string;
+  title: string;
+  summary: string;
+  arrival?: string;
+  advisors: Array<{ character: string; name: string; stance: string; line: string }>;
+  options: MemorialOption[];
+};
+type PendingChoice = { id: string; title: string; text: string; deadline_turn: number; default_option: string; options: Array<{ id: string; text: string }> };
+type Outcome = { kind: string; id: string; title: string; text: string; satisfied: string[] };
+type Crisis = { title: string; display: string; band: string; terms: Array<{ label: string; display: string }> };
+type View = {
+  turn: number;
+  calendar_label: string;
+  state: State;
+  objectives: Array<{ id: string; title: string; status: string; detail: string }>;
+  crisis: Partial<Crisis> | null;
+  memorials: Memorial[];
+  pending_choices: PendingChoice[];
+  outcome: Outcome | null;
+  agenda: { text: string } | null;
+  final_notice: { text: string } | null;
+  provider_mode: string;
+  tutorial: { steps: Array<{ step: number; title: string; text: string; target: string }> };
+};
+const stanceLabels: Record<string, string> = { support: "赞成", oppose: "反对", neutral: "持中" };
+const objectiveLabels: Record<string, string> = { on_track: "可期", at_risk: "危殆", failed: "已失", achieved: "已成", pending: "未定" };
+
+class ApiError extends Error {
+  code: string;
+  constructor(message: string, code: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function resourceText(resource: Resource): string {
+  if (resource.hidden && resource.estimate) return `约 ${resource.estimate[0]}–${resource.estimate[1]}${resource.unit}`;
+  return `${Number((resource.amount ?? 0).toFixed(1)).toLocaleString("zh-CN")}${resource.unit}`;
+}
 type Preset = {
   base_url: string;
   model: string;
@@ -92,13 +135,14 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
-    const raw = body.detail as { message?: unknown } | unknown[] | string | undefined;
+    const raw = body.detail as { message?: unknown; code?: unknown } | unknown[] | string | undefined;
     const detail = Array.isArray(raw)
       ? raw.join("；")
       : raw && typeof raw === "object" && typeof (raw as { message?: unknown }).message === "string"
         ? (raw as { message: string }).message
         : raw;
-    throw new Error(typeof detail === "string" ? detail : `请求失败 (${response.status})`);
+    const code = raw && typeof raw === "object" && !Array.isArray(raw) && typeof raw.code === "string" ? raw.code : "";
+    throw new ApiError(typeof detail === "string" ? detail : `请求失败 (${response.status})`, code);
   }
   return response.json() as Promise<T>;
 }
@@ -130,6 +174,9 @@ function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyEntry, setHistoryEntry] = useState("");
   const [probeStatus, setProbeStatus] = useState("");
+  const [view, setView] = useState<View | null>(null);
+  const [adopted, setAdopted] = useState<Record<string, string>>({});
+  const [draftBlocked, setDraftBlocked] = useState(false);
 
   const scenario = scenarios.find((item) => item.id === scenarioId) ?? null;
   const resources = useMemo(() => Object.values(state?.resources ?? {}), [state]);
@@ -142,6 +189,17 @@ function App() {
       setSessions(await api<SessionRow[]>("/api/sessions"));
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "无法读取存档");
+    }
+  }, []);
+
+  // /view 是前端主数据：奏疏、待决事件、目标、危机计、朝会日程、新手引导、终局
+  const refreshView = useCallback(async (id: string) => {
+    try {
+      const next = await api<View>(`/api/sessions/${id}/view`);
+      setView(next);
+      setState(next.state);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "无法读取局势");
     }
   }, []);
 
@@ -194,6 +252,8 @@ function App() {
       });
       setSessionId(created.id);
       setState(created.state);
+      setAdopted({});
+      await refreshView(created.id);
       setReceipt(null);
       setReport(null);
       setMemorial("");
@@ -213,6 +273,8 @@ function App() {
       setSessionId(id);
       setState(loaded);
       setScenarioId(loaded.scenario_id);
+      setAdopted({});
+      await refreshView(id);
       setReceipt(null);
       setReport(null);
       setMemorial("");
@@ -232,7 +294,10 @@ function App() {
     try {
       const draft = await api<Receipt>(`/api/sessions/${sessionId}/edicts/draft`, {
         method: "POST",
-        body: JSON.stringify({ sections: edictText }),
+        body: JSON.stringify({
+          sections: edictText,
+          adopted: Object.entries(adopted).map(([memorial_id, option_id]) => ({ memorial_id, option_id })),
+        }),
       });
       setReceipt(draft);
     } catch (error) {
@@ -252,7 +317,9 @@ function App() {
         { method: "POST" },
       );
       setReceipt(confirmed);
-      if (confirmed.state) setState(confirmed.state);
+      setAdopted({});
+      setDraftBlocked(false);
+      await refreshView(sessionId);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "确认诏令失败");
     } finally {
@@ -260,26 +327,53 @@ function App() {
     }
   };
 
-  const advanceTurn = async () => {
+  // 本季有拟而未确认的草案时后端返回 409 DRAFT_UNCONFIRMED：先确认，或明确放弃后再推进
+  const advanceTurn = async (discardDrafts = false) => {
     if (!sessionId) return;
     setBusy(true);
     setStatus("");
     try {
       const result = await api<{ state: State; report: TurnReport; memorial: string }>(
         `/api/sessions/${sessionId}/turn`,
-        { method: "POST" },
+        { method: "POST", body: JSON.stringify({ discard_drafts: discardDrafts }) },
       );
       setState(result.state);
       setReport(result.report);
       setMemorial(result.memorial);
       setReceipt(null);
+      setAdopted({});
+      setDraftBlocked(false);
+      await refreshView(sessionId);
       await refreshSessions();
     } catch (error) {
+      if (error instanceof ApiError && error.code === "DRAFT_UNCONFIRMED") setDraftBlocked(true);
       setStatus(error instanceof Error ? error.message : "推进回合失败");
     } finally {
       setBusy(false);
       void refreshUsage();
     }
+  };
+
+  const choose = async (choiceId: string, optionId: string) => {
+    if (!sessionId) return;
+    setBusy(true);
+    try {
+      await api(`/api/sessions/${sessionId}/choices/${choiceId}`, { method: "POST", body: JSON.stringify({ option_id: optionId }) });
+      await refreshView(sessionId);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "处置失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleAdopt = (memorialId: string, optionId: string) => {
+    setAdopted((previous) => {
+      const next = { ...previous };
+      if (next[memorialId] === optionId) delete next[memorialId];
+      else next[memorialId] = optionId;
+      return next;
+    });
   };
 
   const sendChat = async () => {
@@ -297,7 +391,11 @@ function App() {
           body: JSON.stringify({ text: outgoing }),
         },
       );
-      if (!response.ok || !response.body) throw new Error("对话连接失败");
+      if (!response.ok || !response.body) {
+        // 朝会日程已满（409 AGENDA_EXHAUSTED）等错误在流开始前返回
+        const body = (await response.json().catch(() => ({}))) as { detail?: { message?: string } };
+        throw new Error(body.detail?.message ?? "对话连接失败");
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -312,11 +410,13 @@ function App() {
           const event = block.match(/^event: (.+)$/m)?.[1];
           const data = block.match(/^data: (.+)$/m)?.[1];
           if (event === "message" && data) answer += (JSON.parse(data) as { text: string }).text;
+          if (event === "error" && data) answer += `（${(JSON.parse(data) as { message: string }).message}）`;
           if (event === "done") finished = true;
         }
         if (chunk.done) finished = true;
       }
       setChatLog((previous) => [...previous, `人物：${answer || "（未收到回复）"}`]);
+      void refreshView(sessionId);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "对话失败");
     } finally {
@@ -335,6 +435,8 @@ function App() {
       });
       setSessionId(fork.id);
       setState(fork.state);
+      setAdopted({});
+      await refreshView(fork.id);
       await refreshSessions();
       setStatus("已从所选记录分出新存档");
     } catch (error) {
@@ -430,11 +532,19 @@ function App() {
           <span>{scenario?.title ?? "选择场景"}</span>
           <span>第 {state?.turn ?? 0} 回合</span>
           <span>{state?.calendar.label ?? "尚未开局"}</span>
-          {resources.slice(0, 4).map((resource) => (
-            <span className="resource-chip" key={resource.id}>
-              {resource.name} <b>{Math.round(resource.amount).toLocaleString("zh-CN")}{resource.unit}</b>
-            </span>
-          ))}
+          <span className="resource-strip" data-testid="desk.resources">
+            {resources.map((resource) => (
+              <span className={resource.hidden ? "resource-chip hidden" : "resource-chip"} key={resource.id} title={resource.display}>
+                {resource.name} <b>{resourceText(resource)}</b>
+              </span>
+            ))}
+            {view?.crisis?.title && (
+              <span className="resource-chip crisis" title={(view.crisis.terms ?? []).map((term) => `${term.label} ${term.display}`).join("；")}>
+                {view.crisis.title} <b>{view.crisis.display} · {view.crisis.band}</b>
+              </span>
+            )}
+            {view?.agenda && <span className="resource-chip">{view.agenda.text}</span>}
+          </span>
         </div>
         <div className="top-actions">
           <span className="usage-chip">{usage.total_tokens.toLocaleString("zh-CN")} tokens · ¥{usage.estimated_cost.toFixed(3)}</span>
@@ -538,8 +648,74 @@ function App() {
           </aside>
 
           <section className="main-column">
+            {view && view.tutorial.steps.length > 0 && (
+              <section className="card tutorial-card" data-testid="tutorial.panel">
+                {view.tutorial.steps.map((step) => <p key={step.step}><b>{step.step}. {step.title}</b> {step.text}</p>)}
+              </section>
+            )}
+            {view?.final_notice && <p className="warning">{view.final_notice.text}</p>}
+            {view?.outcome && (
+              <section className="card outcome-card" data-testid="ending.panel">
+                <p className="eyebrow">{view.outcome.kind === "fail" ? "FAIL" : "ENDING"}</p>
+                <h2>{view.outcome.title}</h2>
+                <p>{view.outcome.text}</p>
+                {view.outcome.satisfied.length > 0 && <ul>{view.outcome.satisfied.map((line) => <li key={line}>{line}</li>)}</ul>}
+              </section>
+            )}
+            {view && view.objectives.length > 0 && (
+              <section className="card objectives-card">
+                {view.objectives.map((row) => (
+                  <span className={`objective ${row.status}`} key={row.id} title={row.detail}>{row.title} · {objectiveLabels[row.status] ?? row.status}</span>
+                ))}
+              </section>
+            )}
+            {view && view.memorials.length > 0 && (
+              <section className="card memorial-list-card" data-testid="memorial.list">
+                <div className="panel-heading"><h2>本季奏疏</h2><span className="muted">批答即加入诏书草案</span></div>
+                {view.memorials.map((item) => (
+                  <article className="memorial-item" key={item.id} data-testid={`memorial.item.${item.id}`}>
+                    <h3>{item.title}{item.arrival && <small>（{item.arrival}）</small>}</h3>
+                    <p>{item.summary}</p>
+                    {item.advisors.map((advisor) => <p className="advisor" key={advisor.character}>{advisor.name}（{stanceLabels[advisor.stance] ?? advisor.stance}）：{advisor.line}</p>)}
+                    <div className="option-row">
+                      {item.options.map((option) => (
+                        <button
+                          key={option.id}
+                          className={adopted[item.id] === option.id ? "option-button selected" : "option-button"}
+                          data-testid={`memorial.option.${item.id}.${option.id}`}
+                          title={option.ops_summary.join("；")}
+                          onClick={() => toggleAdopt(item.id, option.id)}
+                        >
+                          {option.label}{option.hint && <small>{option.hint}</small>}
+                        </button>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </section>
+            )}
+            {view && view.pending_choices.length > 0 && (
+              <section className="card choice-card" data-testid="choice.list">
+                <div className="panel-heading"><h2>待决事件</h2><span className="muted">逾期按默认处置</span></div>
+                {view.pending_choices.map((choice) => (
+                  <article className="memorial-item" key={choice.id}>
+                    <h3>{choice.title}</h3>
+                    <p>{choice.text}</p>
+                    <div className="option-row">
+                      {choice.options.map((option) => (
+                        <button key={option.id} className="option-button" disabled={busy} onClick={() => void choose(choice.id, option.id)}>
+                          {option.text}{option.id === choice.default_option && <small>默认</small>}
+                        </button>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </section>
+            )}
             <section className="card edict-card" style={{ backgroundImage: `linear-gradient(rgba(248,244,234,.94), rgba(248,244,234,.97)), url("${iconAsset("ui.edict.parchment")}")` }}>
               <div className="panel-heading"><div><p className="eyebrow">IMPERIAL EDICT</p><h2>诏令拟定</h2></div><span className="muted">先预览，再确认生效</span></div>
+              {view?.provider_mode === "offline" && <p className="muted">未接模型：御笔只记入史册，不生效力；请批答奏疏（或在设置中接入模型）。</p>}
+              {Object.keys(adopted).length > 0 && <p className="muted">已批答 {Object.keys(adopted).length} 条奏疏，将随本诏一并预览。</p>}
               <div className="edict-fields">
                 {(scenario?.categories ?? []).map((category) => (
                   <label key={category.id}>
@@ -549,9 +725,10 @@ function App() {
                 ))}
               </div>
               <div className="button-row align-right">
-                <button disabled={busy} onClick={() => void draftEdict()}>生成预览</button>
-                <button className="primary-button" disabled={!receipt || receipt.confirmed || busy} onClick={() => void confirmEdict()}>确认诏令</button>
-                <button className="advance-button" disabled={busy} onClick={() => void advanceTurn()}>推进一回合 →</button>
+                <button data-testid="edict.preview" disabled={busy || Boolean(view?.outcome)} onClick={() => void draftEdict()}>生成预览</button>
+                <button data-testid="edict.confirm" className="primary-button" disabled={!receipt || receipt.confirmed || busy} onClick={() => void confirmEdict()}>确认诏令</button>
+                {draftBlocked && <button onClick={() => void advanceTurn(true)}>放弃草案并推进</button>}
+                <button data-testid="desk.advance" className="advance-button" disabled={busy || Boolean(view?.outcome)} onClick={() => void advanceTurn()}>推进一回合 →</button>
               </div>
               {receipt && (
                 <div className="receipt">
@@ -559,7 +736,7 @@ function App() {
                   {receipt.clauses.map((clause, index) => (
                     <div className="receipt-row" key={`${clause.category}-${index}`}>
                       <span className={`pill ${clause.status}`}>{clause.status}</span>
-                      <div><b>{clause.category}</b><p>{clause.text}</p>{clause.reason && <small>{clause.reason}</small>}</div>
+                      <div><b>{clause.category}</b><p>{clause.summary || clause.text}</p>{(clause.reason || clause.delay_reason) && <small>{clause.reason || clause.delay_reason}</small>}</div>
                     </div>
                   ))}
                 </div>
@@ -571,6 +748,7 @@ function App() {
                 <div className="panel-heading"><h2>起居纪事</h2><span className="muted">仅记录已确认事实</span></div>
                 {memorial ? <p className="memorial-text">{memorial}</p> : <p className="empty-state">推进回合后，将在此显示纪事。</p>}
                 {report && <div className="fact-list">{report.facts.map((fact, index) => <p key={`${fact.kind}-${index}`}>{fact.text}</p>)}</div>}
+                {report?.reconciliation && <div className="fact-list">{report.reconciliation.map((row) => row.display && <p key={row.resource}>{row.display}</p>)}</div>}
                 {report?.warnings.map((warning) => <p className="warning" key={warning}>{warning}</p>)}
               </section>
               <section className="card ledger-card">

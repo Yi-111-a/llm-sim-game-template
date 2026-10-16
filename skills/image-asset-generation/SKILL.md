@@ -1,6 +1,6 @@
 ---
 name: image-asset-generation
-description: 为角色、地区、事件和 UI 槽位编写图像提示词、生成文件并更新 manifest。
+description: 为角色、地区、事件、结局与 UI 槽位编写图像提示词、生成文件并更新 manifest；图片一律不含文字，风格由 style.md 统一。
 ---
 
 # 图片资产生成
@@ -31,12 +31,20 @@ description: 为角色、地区、事件和 UI 槽位编写图像提示词、生
 
 ## 步骤
 
-1. 先确定 manifest ID、`used_by`、唯一相对路径、`kind`、尺寸与格式；不要让 UI 猜文件名。
+1. 先确定 manifest ID、`used_by`、唯一相对路径、`kind`、尺寸与格式；不要让 UI 猜文件名。剧本若用自己的命名方案（`asset_requirements`，如 `portrait.{id}.default`），按它登记。
 2. 编写具体、可视化的正面提示词；背景、构图和文字限制也写清楚。
 3. 更新 `assets.yaml` 的 `entries`，初始 `status: missing`，不伪造 `sha256` 或模型名。
 4. 运行 `sim validate <scenario>`；使用 Mock 检查离线流程。
 5. 可通过 `sim gen-assets <scenario> --only missing` 生成图像。命令按 manifest 路径落盘，并更新 `sha256`、`model`、`seed`、`status`。
 6. 从前端引用 manifest ID，并通过 `/api/assets/{scenario}/{asset_id}` 查看生成文件或 SVG 占位。
+
+## 经验（《天宝》美术两轮、约 120 张）
+
+- **图片里不要有任何文字**（含伪文字、印章字、匾额字）：界面文字一律由 DOM 渲染，字体覆盖可控；负面提示词写明「无文字、无水印、无落款」。
+- 先写 `style.md` 定下统一的光线、纸本肌理与色调，再批量生成；同一批次固定种子便于重做单张。
+- 事件插图画「可见的行动与场景」，不画抽象概念；结局插图可多结局共用一张（同题不同段的结局）。
+- 时代细节（服饰、甲胄、建筑）在 prompt 中写具体，避免现代物件；人物肖像与人设的年龄、身份一致。
+- 生成后人工审看再把 `status` 改为 `approved`；未审的保持 `generated`。
 
 ## 输出契约
 

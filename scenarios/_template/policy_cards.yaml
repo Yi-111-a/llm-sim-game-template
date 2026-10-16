@@ -1,0 +1,52 @@
+# 政令卡（可选文件）：奏疏之外「朝廷日常能做的事」。玩家选卡、填参数，展开为诏令条款（回执 source: card）。
+# 字段：id, category（军务 | 内政 | 人事 | 外交 | 财计）, title, summary, params, ops, cost_hint, requires?（条件 DSL）, cooldown?（季）。
+# - ops 只能用玩家层操作（appoint、march、detach、set_army_posture、start_project……），引擎校验；卡片不直接改国势数值。
+# - "{参数}" 整值替换（保留类型，须加引号）；字符串中的 {参数.name} 换成显示名。
+# - params[].filter 按当前状态过滤可选值（见 docs/SCENARIO_GUIDE.md）；不在世者、君主本人一律不列。
+# - start_project 的竣工效果每项 0 < delta ≤ 10，且增益合计 × 10 ≤ 总花费（引擎上限，防止「刷」指标）。
+- id: card_march
+  category: 军务
+  title: 出征
+  summary: 命一军率统帅开赴某地，以进击之势接战。
+  params:
+    - {name: army, kind: army, label: 军队, filter: {idle: true, min_strength: 2000}}
+    - {name: to, kind: region, label: 目的地}
+  ops:
+    - {op: march, army: "{army}", to_region: "{to}", with_commander: true}
+    - {op: set_army_posture, army: "{army}", posture: attack}
+  cost_hint: 不另费钱粮（军粮照支）。在途不能再调；统帅野心大者或拒命延宕。
+
+- id: card_hold
+  category: 军务
+  title: 坚守
+  summary: 命一军就地固守，不得浪战。
+  params:
+    - {name: army, kind: army, label: 军队}
+  ops:
+    - {op: set_army_posture, army: "{army}", posture: hold}
+  cost_hint: 不费钱粮。守方战力 +20%，胜亦不追击。
+
+- id: card_appoint
+  category: 人事
+  title: 拜官
+  summary: 以一位在京之人任一出缺之职。
+  params:
+    - {name: who, kind: character, label: 人选, filter: {present: true, can_hold_office: true}}
+    - {name: office, kind: office, label: 官职, filter: {vacant: true}}
+  ops:
+    - {op: appoint, character: "{who}", office: "{office}"}
+    - {op: remember, character: "{who}", fact: "蒙陛下拜为{office.name}"}
+  cost_hint: 无。每两季限用一次。
+  cooldown: 2
+
+- id: card_fortify
+  category: 内政
+  title: 修城
+  summary: 拨银修缮一地城防，两季竣工。
+  params:
+    - {name: region, kind: region, label: 地区, filter: {controller: own}}
+  ops:
+    - {op: start_project, name: 修城, region: "{region}", cost_per_turn: {treasury: 15}, turns: 2, on_complete: [{op: adjust_region, region: "{region}", stat: defense, delta: 3}]}
+  cost_hint: 国库每季 −15，共两季；竣工后该地防务 +3。国库不足则停工。
+  requires: {kind: resource, id: treasury, operator: gte, value: 30}
+  cooldown: 2

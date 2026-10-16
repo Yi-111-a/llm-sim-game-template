@@ -44,21 +44,29 @@ npm run dev
 
 ## 4. 创建新场景
 
-从 `scenarios/_template` 复制目录并修改 `scenario.yaml`、人物、地区、事件与 `assets.yaml`。新场景需要设置 `manifest_version`、`version`、`requires_engine` 和历法。图片可先保留 `missing` 状态，运行时使用 SVG 占位。
+从 `scenarios/_template` 复制目录。模板只有 5 人、4 地、8 季，但每种机制（奏疏、事件抉择、结局与失败、难度、危机计、政令卡、朝会日程、驿程、将领自主、新手引导……）都有一个可运行的示范，注释说明了每个字段。逐文件的写法见 [docs/SCENARIO_GUIDE.md](docs/SCENARIO_GUIDE.md)。
 
 ```bash
+cp -r scenarios/_template scenarios/my_game      # 再改 scenario.yaml 的 id、title
 cd backend
-sim validate ../scenarios/my-scenario
-sim gen-assets my-scenario --only missing
-pytest -q
+sim validate ../scenarios/my_game                 # 结构与引用
+python ../scripts/content_lint.py my_game         # 文字与状态是否相符
+python ../scripts/simulate.py my_game --seeds 200 # 种子模拟：各策略的结局分布
+sim gen-assets my_game --only missing             # 可选：生成图片（缺图时用 SVG 占位）
 ```
 
-更多操作流程见 `skills/create-llm-sim-game/SKILL.md`。
+## 5. 让 Claude Code / Codex 来玩
 
-## 5. 检查
+```bash
+claude mcp add llm-sim -e SIM_SCENARIOS_DIR=<仓库>/scenarios -- <venv python> -m cli.main mcp
+```
+
+Codex 的配置（`startup_timeout_sec`、`default_tools_approval_mode`）与无人值守试玩见 [MCP.md](MCP.md)。
+
+## 6. 检查
 
 ```bash
 scripts/check.sh
 ```
 
-该脚本运行 Ruff、mypy、pytest、TypeScript 和 Vite 构建；也可按 [CI 工作流](.github/workflows/ci.yml)逐项检查。
+该脚本运行 Ruff、mypy、pytest、场景校验、内容检查、种子模拟、TypeScript 和 Vite 构建；也可按 [CI 工作流](.github/workflows/ci.yml)逐项检查。

@@ -1,11 +1,20 @@
+# 空白模板场景《新朝开局》：复制本目录为 scenarios/<你的 id>，按注释改写。
+#
+# 本模板刻意保持很小（5 人、4 地、8 季），但引擎的每一种机制都有一个最小、可运行的示范：
+# 奏疏（谏言人 / 所议之案 / 变体 / requires）、事件抉择、结局与失败、时限与加时、难度档、危机计、隐藏数值与情报、
+# 养兵与初始账目、政令卡、朝会日程、京城在场、驿程、将领自主、新手引导。
+# 逐文件的写作说明见 docs/SCENARIO_GUIDE.md。改完后：
+#   cd backend && sim validate ../scenarios/<id>
+#   python ../scripts/content_lint.py ../scenarios/<id>
+#   python ../scripts/simulate.py ../scenarios/<id> --seeds 100
 id: _template
 manifest_version: 1
-version: "0.1.0"
-requires_engine: ">=0.1.0"
+version: "0.3.0"
+requires_engine: ">=0.3.0"
 title: 新朝开局
 era: 架空古代
 start_date: "1627-01-01"
-turn_unit: season
+turn_unit: season          # month | season | year：行程「约 n 季」、驿程换算都按它
 currency: 银
 calendar:
   eras:
@@ -14,34 +23,206 @@ calendar:
   turn_format: "{era}{year}年{season}"
   number_system: chinese
   pre_game_turns: 0
+
+# ---- 资源 ----
+# hidden: true 的资源对玩家只显示「约 a–b」的风闻区间；半宽 = estimate_width ×（1 + 积弊/100），
+# 旗标 intel:<资源 id> 为真时减半（缺省只减半一次，见 settings.intel_min_width）。
 resources:
   - {id: treasury, name: 国库, initial: 100, min: 0, unit: 万两}
   - {id: grain, name: 粮储, initial: 80, min: 0, unit: 万石}
   - {id: authority, name: 权威, initial: 55, min: 0, max: 100, unit: 点}
   - {id: morale, name: 民心, initial: 60, min: 0, max: 100, unit: 点}
   - {id: corruption, name: 贪腐, initial: 25, min: 0, max: 100, unit: 点}
+  - {id: raider_will, name: 北狄战意, initial: 50, min: 0, max: 100, unit: 点, hidden: true, estimate_width: 6}
+  - {id: border_alarm, name: 边警, initial: 30, min: 0, max: 100, unit: 点}
+
+# 地区指标与量程：开局值与一切 adjust_region 都截入 range。
 stats:
   - {id: prosperity, name: 繁荣, range: [0, 100]}
   - {id: order, name: 治安, range: [0, 100]}
+  - {id: defense, name: 防务, range: [0, 100]}
+  - {id: tax, name: 税基, range: [0, 100]}
+
+# 官职。army：此职所统军队（任命即兼统，免职即罢）；seat：任所。二者都不写的是京官。
 offices:
   - {id: sovereign, name: 君主}
-  - {id: governor, name: 地方长官, requires: {ability: 2}}
+  - {id: chancellor, name: 宰相, requires: {ability: 5}}
+  - {id: censor, name: 御史, requires: {ability: 4}}
+  - {id: frontier_marshal, name: 北境总兵, requires: {ability: 5}, army: northern_guard, seat: frontier}
+
 edict_categories:
   - {id: finance, name: 财政, hint: 税赋、拨款与账目}
   - {id: relief, name: 救济, hint: 粮食与民生}
   - {id: personnel, name: 人事, hint: 任免官员}
+  - {id: military, name: 军务, hint: 调兵、驻守与出征}
+
 formulas:
+  # 收入：每个键 {resource, formula, per_region（缺省 true）, controlled_only, label}；地区公式可用该地区全部 stats。
   income:
-    tax: {resource: treasury, formula: "tax * 0.02"}
+    tax: {resource: treasury, formula: "tax * 0.02", controlled_only: true, label: 诸地税银}
+    grain: {resource: grain, formula: "prosperity * 0.05", controlled_only: true, label: 诸地粮赋}
+  # 养兵：按本方各军「现有」兵额逐季计费（增兵即增此项）。
+  upkeep:
+    - {resource: grain, per: 10000, amount: 2, label: 军粮}
+  # 漂移：每季结算第 9 步。变量为全部资源 id 与 turn；可用 min / max / clamp。
   drift:
-    morale: "0"
+    border_alarm: "0.5 + 0.1*(raider_will-50) - 0.05*(authority-55)"
+    raider_will: "0.5"
+    authority: "-0.2"
+    morale: "-0.04*max(0, corruption-30)"
+  # 诏令延期（有司稽迟）概率 = base_delay + 积弊×corruption_factor − 权威×authority_factor（再乘难度 delay_scale）
   execution:
     authority_resource: authority
     corruption_resource: corruption
     base_delay: 0.02
     authority_factor: 0.0002
     corruption_factor: 0.0005
+
+# 开局即有的经常账目（剧本定额缺省不可撤销）。
+ledger:
+  - {id: capital_stipend, name: 京官俸米, category: grain, amount: -1.5, reason: 京官俸禄}
+
+# 危机计：terms 与 drift.border_alarm 的分项一一对应（引用隐藏资源的分项只显示区间）。
+crisis:
+  resource: border_alarm
+  title: 边警
+  bands:
+    - {max: 37, name: 安靖}
+    - {max: 59, name: 烽燧}
+    - {max: 100, name: 告急}
+  terms:
+    - {id: base, label: 边地常警, expr: "0.5"}
+    - {id: will, label: 北狄战意, expr: "0.1*(raider_will-50)"}
+    - {id: authority, label: 朝廷威望, expr: "-0.05*(authority-55)"}
+
+# 难度档：drift_scale 乘漂移、gravity_scale 乘事件概率（"*" 为全部）、start 改开局资源、delay_scale 乘延期概率。
+difficulties:
+  - id: easy
+    label: 宽和
+    description: 北狄战意增长较慢，府库稍丰，诏令少有稽迟。
+    drift_scale: {raider_will: 0.5, border_alarm: 0.8}
+    start: {treasury: 120}
+    delay_scale: 0.5
+  - id: normal
+    label: 常例
+    description: 模板的标准设定。
+  - id: hard
+    label: 多事
+    description: 北狄战意增长更快，事件更频，府库开局即紧。
+    drift_scale: {raider_will: 1.3, border_alarm: 1.15}
+    gravity_scale: {"*": 1.2}
+    start: {treasury: 80}
+    delay_scale: 1.5
+default_difficulty: normal
+
+counters:
+  - id: broke_streak          # 国库告罄的连续季数（失败结局用）
+    mode: streak
+    conditions: {kind: resource, id: treasury, operator: lte, value: 0}
+  - id: alarm_seasons         # 边警「告急」的累计季数
+    mode: count
+    conditions: {kind: resource, id: border_alarm, operator: gte, value: 60}
+
+wars:
+  - {a: court, b: raiders}
+
+# AI 行军：条件成立时，该势力不在途、未与敌相持的军队沿 route 每季前进一格。
+ai_routes:
+  - faction: raiders
+    route: [steppe, frontier, pass, capital]
+    hold_if_outnumbered: true
+    conditions:
+      all:
+        - {kind: flag, key: raid_started, operator: eq, value: true}
+        - {kind: flag, key: raid_repelled, operator: absent}
+
+objectives:
+  - id: border
+    title: 北境安靖
+    detail: 终局时边警 < 38，且北境不失。
+    conditions: {kind: resource, id: border_alarm, operator: lt, value: 38}
+    fail_conditions: {kind: region_controller, region: frontier, faction: raiders}
+  - id: purse
+    title: 府库不竭
+    detail: 国库为正；连续两季告罄即败。
+    conditions: {kind: resource, id: treasury, operator: gt, value: 0}
+    fail_conditions: {kind: counter, key: broke_streak, operator: gte, value: 2}
+  - id: authority
+    title: 朝纲在握
+    detail: 终局时权威 ≥ 52。
+    conditions: {kind: resource, id: authority, operator: gte, value: 52}
+
+# 廷议议题：keywords 命中玩家所拟议题时，按 bloc（或人物 id）给默认立场。
+debate_topics:
+  - {id: frontier, keywords: [北境, 边饷, 北狄], stances: {wen: oppose, wu: support}}
+
+# 时限：到 last_turn 仍无结局命中则用 fallback_ending；overtime_flag 为真时延至 overtime_last_turn。
+game_length: {last_turn: 8, overtime_flag: raid_started, overtime_last_turn: 10, fallback_ending: uneasy_peace}
+
+# 结局：每季结算末尾按 priority 从小到大判定，命中第一个即终局。kind: fail 为失败。
+# 结局正文只写条件确实保证的事（「北狄远遁」须有相应条件），【达成条件】一句便于玩家复盘。
+endings:
+  - id: fail_capital
+    kind: fail
+    priority: 1
+    title: 京城失守
+    conditions: {kind: region_controller, region: capital, faction: raiders}
+    text: 北狄铁骑直抵城下，京城不守。【达成条件】京城为北狄所据。
+  - id: fail_bankrupt
+    kind: fail
+    priority: 2
+    title: 府库枯竭
+    conditions: {kind: counter, key: broke_streak, operator: gte, value: 2}
+    text: 国库连续两季告罄，百官无俸，边军无饷，新朝威信扫地。【达成条件】国库连续两季为零。
+  - id: border_secured
+    kind: ending
+    priority: 10
+    title: 北境安靖
+    conditions:
+      all:
+        - {kind: turn, operator: gte, value: 8}
+        - {kind: resource, id: border_alarm, operator: lt, value: 38}
+        - {kind: resource, id: authority, operator: gte, value: 52}
+        - {kind: region_controller, region: frontier, faction: court}
+    text: 新朝初年，边地烽燧渐稀，朝廷号令通行，新君之位遂固。【达成条件】终局时边警 < 38、权威 ≥ 52，北境仍归朝廷。
+  - id: uneasy_peace
+    kind: ending
+    priority: 99
+    title: 隐忧未除
+    conditions: {kind: turn, operator: gte, value: 999}   # 只作 fallback_ending
+    text: 时限已至，新朝未倾，然边警、府库或朝纲尚有隐忧。（开放结局。）【达成条件】至期限仍未满足其他结局。
+
 settings:
   afterlife_chat: false
   history_gravity_default: 0.5
-  player_office: sovereign   # 玩家本人 = 此官职的在任者（也可写 player_character: <人物 id>）；不出现在召对名单
+  player_office: sovereign     # 玩家本人 = 此官职的在任者（也可写 player_character: <人物 id>）；不出现在召对名单
+  player_faction: court
+  ruler_title: 陛下
+  max_concurrent_offices: 2
+  hidden_traits: [ambition]    # 这些人物特质不出现在公开视图与召对摘要中
+  bloc_names: {wen: 文臣, wu: 武臣}
+  # 第 9 轮：朝会日程（每季召对 / 廷议次数）、京城（廷议在场与驿程的基准）、驿程阈值、将领自主
+  capital_region: capital
+  agenda: {audience_per_season: 2, debate_per_season: 1}
+  courier: {late_threshold_days: 60}
+  autonomy:
+    formula: "min(0.6, 0.06 * max(0, 6 - loyalty) + 0.04 * max(0, ambition - 6))"
+    levels: [0.08, 0.2]
+  # 玩家层操作：列表 = 整体替换白名单；{allow, deny, statuses} = 追加 / 移除 / 指定可用处置。此处与缺省相同，仅示语法。
+  player_ops: {statuses: [imprisoned, exiled, retired]}
+  # 结局条件与复盘里的旗标、计数器显示名（缺省会显示键名）
+  flag_labels:
+    raid_started: 北狄寇边
+    raid_repelled: 寇边已退
+  counter_labels:
+    broke_streak: 国库告罄连续季数
+    alarm_seasons: 边警告急季数
+
+# 新手引导：target 为前端 data-testid（`<画面>.<元素>`）；同一季 step 从 1 连续编号。也可写在单独的 tutorial.yaml。
+tutorial:
+  - {turn: 0, step: 1, title: 看国势, target: desk.resources,
+     text: 顶栏列出国库、粮储与权威。北狄战意是隐藏数值，只给风闻区间；遣斥候可使区间收窄。}
+  - {turn: 0, step: 2, title: 批答奏疏, target: memorial.list,
+     text: 每条奏疏选一项批答，即加入诏书草案。谏言人各有立场，选项下的提示写明代价。}
+  - {turn: 0, step: 3, title: 颁诏与推进, target: desk.advance,
+     text: 先预览回执、确认诏书，再推进一季。拟而未确认的草案会阻止推进。}

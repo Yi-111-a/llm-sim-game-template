@@ -1,12 +1,24 @@
+# 资产清单：界面与实体只通过 manifest id 引用图片；缺文件时 /api/assets/{scenario}/{id} 即时返回 SVG 占位图。
+# 必需槽位由 scenario.yaml 的 asset_requirements 决定（缺省：character.{id}.portrait、region.{id}.card、5 个 ui.*）；
+# scheduled / conditional / random 事件另需 event.<id>.illustration（或事件 illustration 字段指定的 id）。
+# 生成：cd backend && sim gen-assets _template --only missing（Mock 图像提供方可离线跑通流程）。
 manifest_version: 1
 entries:
   - {id: character.ruler.portrait, kind: portrait, used_by: "character:ruler:portrait", path: assets/characters/ruler/portrait.webp, size: [768, 1024], format: webp, prompt: "年轻君主半身像，神情沉静，宫廷朝服，背景克制", status: missing}
   - {id: character.minister.portrait, kind: portrait, used_by: "character:minister:portrait", path: assets/characters/minister/portrait.webp, size: [768, 1024], format: webp, prompt: "谨慎文官肖像，持卷册，朴素书房", status: missing}
   - {id: character.general.portrait, kind: portrait, used_by: "character:general:portrait", path: assets/characters/general/portrait.webp, size: [768, 1024], format: webp, prompt: "边将肖像，甲衣与风尘，北地关隘背景", status: missing}
+  - {id: character.scholar.portrait, kind: portrait, used_by: "character:scholar:portrait", path: assets/characters/scholar/portrait.webp, size: [768, 1024], format: webp, prompt: "年轻词臣肖像，青衫，目光坚定，书卷背景", status: missing}
+  - {id: character.raider_chief.portrait, kind: portrait, used_by: "character:raider_chief:portrait", path: assets/characters/raider_chief/portrait.webp, size: [768, 1024], format: webp, prompt: "草原部落首领肖像，皮裘与弓，风沙旷野", status: missing}
   - {id: region.capital.card, kind: region_card, used_by: "region:capital:card", path: assets/regions/capital.webp, size: [1024, 576], format: webp, prompt: "古代都城远景，城墙与屋脊，俯视构图", status: missing}
+  - {id: region.pass.card, kind: region_card, used_by: "region:pass:card", path: assets/regions/pass.webp, size: [1024, 576], format: webp, prompt: "险峻关隘，城楼扼守山口，云雾缭绕", status: missing}
   - {id: region.frontier.card, kind: region_card, used_by: "region:frontier:card", path: assets/regions/frontier.webp, size: [1024, 576], format: webp, prompt: "北方边境山隘与烽火台，旷野留白", status: missing}
+  - {id: region.steppe.card, kind: region_card, used_by: "region:steppe:card", path: assets/regions/steppe.webp, size: [1024, 576], format: webp, prompt: "辽阔草原与毡帐，远山与马群", status: missing}
   - {id: event.poor_harvest.illustration, kind: event, used_by: "event:poor_harvest:memorial", path: assets/events/poor_harvest.webp, size: [1344, 768], format: webp, prompt: "旱地与低垂谷穗，远处村落，含蓄纪实", status: missing}
   - {id: event.market_recovery.illustration, kind: event, used_by: "event:market_recovery:memorial", path: assets/events/market_recovery.webp, size: [1344, 768], format: webp, prompt: "集市恢复往来，商旅在街巷间穿行，平和日常", status: missing}
+  - {id: event.envoy.illustration, kind: event, used_by: "event:envoy:choice", path: assets/events/envoy.webp, size: [1344, 768], format: webp, prompt: "草原使者立于殿前，献上马匹与皮毛，群臣侧目", status: missing}
+  - {id: event.raid_begins.illustration, kind: event, used_by: "event:raid_begins:memorial", path: assets/events/raid_begins.webp, size: [1344, 768], format: webp, prompt: "骑兵越过边墙，烽火台燃起狼烟", status: missing}
+  - {id: event.raid_repelled.illustration, kind: event, used_by: "event:raid_repelled:memorial", path: assets/events/raid_repelled.webp, size: [1344, 768], format: webp, prompt: "守军列阵于关下，远处骑兵退去，尘土飞扬", status: missing}
+  - {id: event.steppe_rumor.illustration, kind: event, used_by: "event:steppe_rumor:memorial", path: assets/events/steppe_rumor.webp, size: [1344, 768], format: webp, prompt: "草原夜晚，诸部首领围火会盟", status: missing}
   - {id: ui.topbar.background, kind: ui_background, used_by: "ui:topbar:background", path: assets/ui/topbar.webp, size: [1920, 320], format: webp, prompt: "古代政务游戏顶部装饰横幅，低对比山水纹样，留白", status: missing}
   - {id: ui.edict.parchment, kind: ui_background, used_by: "ui:edict:paper", path: assets/ui/edict.webp, size: [1024, 768], format: webp, prompt: "淡色古纸纤维纹理，低对比，无文字", status: missing}
   - {id: ui.court.backdrop, kind: ui_background, used_by: "ui:court:backdrop", path: assets/ui/court.webp, size: [1600, 900], format: webp, prompt: "宫廷议事空间远景，柔和光线，中央留白", status: missing}

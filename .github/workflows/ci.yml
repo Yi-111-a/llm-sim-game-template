@@ -19,11 +19,13 @@ jobs:
         working-directory: backend
         run: |
           python -m pip install -e ".[dev]"
-          ruff check .
+          ruff check . ../scripts
           mypy simcore api cli
           pytest -q
           sim validate ../scenarios/_template
           sim validate ../scenarios/chongzhen_1627
+          python ../scripts/content_lint.py ../scenarios/_template --strict
+          python ../scripts/simulate.py ../scenarios/_template --seeds 20
 
   frontend:
     runs-on: ubuntu-latest

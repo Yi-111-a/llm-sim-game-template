@@ -1,3 +1,3 @@
 """引擎版本号（轻量模块：MCP 冷启动时不必导入整个服务层）。"""
 
-ENGINE_VERSION = "0.2.0"
+ENGINE_VERSION = "0.3.0"

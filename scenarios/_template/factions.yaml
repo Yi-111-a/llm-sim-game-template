@@ -1,3 +1,8 @@
+# 势力。第一个势力是缺省的玩家势力（也可在 settings.player_faction 指定）。
+# relations < 0 或同在 scenario.yaml 的 wars 中即为敌对：同区军队交战，敌方人物不可拘拿。
 - id: court
   name: 朝廷
-  relations: {}
+  relations: {raiders: -40}
+- id: raiders
+  name: 北狄
+  relations: {court: -40}

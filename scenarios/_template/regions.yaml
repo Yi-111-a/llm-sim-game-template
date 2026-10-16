@@ -1,12 +1,37 @@
+# 地区。adjacency 的 travel_turns 为行程回合数（寻路按总行程最短）；stats 的键须在 scenario.yaml 的 stats 中声明。
+# courier_days：驿程日数。超过 settings.courier.late_threshold_days 的地区，奏疏与军报晚一季到、诏令晚一季达。
+# controller 缺省为玩家势力。map 坐标供前端舆图使用（0–100 × 0–60 的示意坐标）。
 - id: capital
   name: 京城
-  map: {x: 50, y: 30, polygon: [[42, 22], [58, 22], [61, 34], [50, 42], [39, 34]]}
+  courier_days: 3
+  map: {x: 50, y: 40, polygon: [[42, 32], [58, 32], [61, 44], [50, 52], [39, 44]]}
   adjacency:
-    - {to: frontier, travel_turns: 2}
-  stats: {prosperity: 65, order: 70, tax: 12}
+    - {to: pass, travel_turns: 1}
+  stats: {prosperity: 65, order: 70, defense: 60, tax: 12}
+
+- id: pass
+  name: 雁口关
+  courier_days: 15
+  map: {x: 62, y: 26, polygon: [[57, 21], [67, 20], [69, 30], [60, 32]]}
+  adjacency:
+    - {to: capital, travel_turns: 1}
+    - {to: frontier, travel_turns: 1}
+  stats: {prosperity: 10, order: 60, defense: 85, tax: 0}
+
 - id: frontier
   name: 北境
-  map: {x: 76, y: 23, polygon: [[68, 16], [83, 12], [89, 24], [78, 32], [68, 28]]}
+  courier_days: 40
+  map: {x: 76, y: 16, polygon: [[68, 9], [83, 6], [89, 17], [78, 24], [68, 21]]}
   adjacency:
-    - {to: capital, travel_turns: 2}
-  stats: {prosperity: 35, order: 50, tax: 4}
+    - {to: pass, travel_turns: 1}
+    - {to: steppe, travel_turns: 1}
+  stats: {prosperity: 35, order: 50, defense: 40, tax: 4}
+
+- id: steppe
+  name: 漠北
+  controller: raiders
+  courier_days: 75
+  map: {x: 88, y: 5, polygon: [[84, 1], [97, 1], [97, 10], [88, 12]]}
+  adjacency:
+    - {to: frontier, travel_turns: 1}
+  stats: {prosperity: 30, order: 40, defense: 20, tax: 3}

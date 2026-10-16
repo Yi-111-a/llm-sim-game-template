@@ -136,7 +136,7 @@ def handle(engine: Engine, message: Any) -> dict[str, Any] | None:
             {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "tianbao", "version": ENGINE_VERSION},
+                "serverInfo": {"name": os.environ.get("SIM_MCP_NAME", "llm-sim"), "version": ENGINE_VERSION},
                 "instructions": INSTRUCTIONS,
             },
         )

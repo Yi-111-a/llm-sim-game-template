@@ -14,11 +14,13 @@ fi
 (
   cd "$ROOT/backend"
   "$PYTHON" -m pip install -e ".[dev]"
-  ruff check .
+  ruff check . ../scripts
   mypy simcore api cli
   pytest -q
   "$SIM" validate ../scenarios/_template
   "$SIM" validate ../scenarios/chongzhen_1627
+  "$PYTHON" ../scripts/content_lint.py ../scenarios/_template --strict
+  "$PYTHON" ../scripts/simulate.py ../scenarios/_template --seeds 20
 )
 
 (

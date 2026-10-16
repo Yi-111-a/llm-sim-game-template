@@ -63,7 +63,7 @@ sequenceDiagram
 - `simcore/domain/visibility.py`：`public_view(state, seed)` 把 `hidden` 资源换成 `{estimate: [lo, hi]}`（半宽 = estimate_width ×（1 + corruption/100），flag `intel:<id>` 减半，中心带同回合稳定的种子噪声），并移除 `settings.hidden_traits` 中的人物心态；`public_report` 抹去报告里隐藏资源的数值，引用隐藏资源的危机分项只给区间。
 - `simcore/service.py`：REST API 与 MCP 共用的 `GameService`（存档、视图、诏书草案、抉择、回合、廷议、谏言、时间线）。对外只返回公开视图；错误统一为 `GameError(code, message)`，API 映射为 `{"detail": {"code", "message"}}`。
 - 完整状态仅 `GET /api/sessions/{id}/state?debug=1` 且设置 `SIM_DEBUG=1` 时可得。
-- MCP 接入见 [MCP.md](MCP.md)。
+- MCP 接入见 [MCP.md](MCP.md)；剧本侧的每个字段如何影响上述流程，见 [docs/SCENARIO_GUIDE.md](docs/SCENARIO_GUIDE.md)。
 
 ## 诏令流水线
 

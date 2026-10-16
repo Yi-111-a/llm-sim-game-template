@@ -1,7 +1,7 @@
 id: chongzhen_1627
 manifest_version: 1
-version: "0.1.0"
-requires_engine: ">=0.1.0"
+version: "0.2.0"
+requires_engine: ">=0.2.0"
 title: 崇祯初政
 era: 明末
 start_date: "1627-12-01"
@@ -49,6 +49,29 @@ formulas:
     base_delay: 0.07
     authority_factor: 0.0005
     corruption_factor: 0.001
+# 引擎 0.2+ 的终局机制（最小接入）：至第 16 回合以开放结局收束；京师失守或府库连续两季告罄即失败。
+counters:
+  - {id: broke_streak, mode: streak, conditions: {kind: resource, id: treasury, operator: lte, value: 0}}
+game_length: {last_turn: 16, fallback_ending: chronicle_closes}
+endings:
+  - id: fail_capital
+    kind: fail
+    priority: 1
+    title: 京师失守
+    conditions: {kind: region_controller, region: beizili, faction: later_jin}
+    text: 后金兵入北直隶，京师不守。此为本示例的失败结局。【达成条件】北直隶为后金所据。
+  - id: fail_bankrupt
+    kind: fail
+    priority: 2
+    title: 府库枯竭
+    conditions: {kind: counter, key: broke_streak, operator: gte, value: 2}
+    text: 国库连续两季告罄，九边欠饷，百官无俸。【达成条件】国库连续两季为零。
+  - id: chronicle_closes
+    kind: ending
+    priority: 99
+    title: 史笔暂歇
+    conditions: {kind: turn, operator: gte, value: 999}   # 只作 fallback_ending
+    text: 崇祯初政四载，内忧外患俱在，后事尚待书写。（开放结局。）【达成条件】至第 16 回合仍未失败。
 settings:
   afterlife_chat: false
   history_gravity_default: 0.55

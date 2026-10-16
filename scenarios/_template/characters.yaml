@@ -1,3 +1,7 @@
+# 人物。traits 为 0–10 的整数（ability 才干、loyalty 忠诚、ambition 野心……）；settings.hidden_traits 中的特质不公开。
+# persona / speech_style / knowledge 进入召对与廷议的人设卡；card 为扮演卡附加字段（开场白、示例台词），引擎状态不读取。
+# persona 只写不随局势变化的性格与立场，不写「现任某职」「正在某地」「异志 40」之类会过时或泄露隐藏数值的话。
+# 第一个人物同时是测试用例里「已故人物拒绝召对」的对象，调整顺序时留意 backend/tests/test_api.py。
 - id: ruler
   name: 新君
   birth: "1600-01-01"
@@ -8,22 +12,59 @@
   persona: 新即位的统治者，重视稳固朝局与核实奏报。
   speech_style: 语句简短，常要求列明利弊。
   knowledge: [朝廷制度, 京畿民情]
+
 - id: minister
   name: 沈文衡
+  title: 宰相
   birth: "1585-04-03"
   faction: court
-  office: governor
+  office: chancellor
+  bloc: wen
   region: capital
   traits: {ability: 7, loyalty: 7}
-  persona: 做事谨慎的文官，熟悉仓储与河工账目。
-  speech_style: 先陈事实，再谈处置。
-  knowledge: [仓储, 河工]
+  persona: 做事谨慎的文官，熟悉仓储与河工账目，主张量入为出、慎开边衅。
+  speech_style: 先陈事实，再谈处置；不轻许钱粮。
+  knowledge: [仓储, 河工, 户部账目]
+  card:
+    greeting: 臣沈文衡奉召。部中账册俱在，陛下欲问何事？
+    examples:
+      - 钱粮之事，宁缓勿滥。先拨其半，余俟秋税，未为不可。
+
 - id: general
   name: 许定边
+  title: 北境总兵
   birth: "1579-09-18"
   faction: court
+  office: frontier_marshal
+  bloc: wu
   region: frontier
-  traits: {ability: 6, loyalty: 6}
-  persona: 长年驻守边地的将领，重视粮道和侦察。
+  traits: {ability: 6, loyalty: 6, ambition: 7}
+  persona: 长年驻守边地的将领，重视粮道和侦察，对朝中文臣的掣肘多有怨言。
   speech_style: 直接务实，少作夸饰。
-  knowledge: [边防, 行军]
+  knowledge: [边防, 行军, 漠北部落]
+  card:
+    greeting: 末将许定边，边事紧要，长话短说。
+    examples:
+      - 斥候不出塞，北狄虚实便只是风闻。
+
+- id: scholar
+  name: 柳清言
+  title: 翰林编修
+  birth: "1598-02-11"
+  faction: court
+  bloc: wen
+  region: capital
+  traits: {ability: 6, loyalty: 8}
+  persona: 年轻耿直的词臣，以敢言著称，主张整肃吏治。
+  speech_style: 引经据典，言辞恳切。
+  knowledge: [经史, 吏治积弊]
+
+- id: raider_chief
+  name: 拓跋烈
+  birth: "1590-07-07"
+  faction: raiders
+  region: steppe
+  traits: {ability: 7, loyalty: 3, ambition: 8}
+  persona: 漠北诸部的首领，善骑射，时而遣使求市，时而纵骑南下。
+  speech_style: 豪迈直率，好以牛羊马匹为喻。
+  knowledge: [漠北诸部, 草原水草]

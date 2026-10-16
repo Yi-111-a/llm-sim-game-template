@@ -167,3 +167,23 @@ button:hover:not(:disabled) { border-color: #7b7767; background: #eae3d3; }
   .character-list { grid-template-columns: 1fr; }
   .receipt-row { grid-template-columns: 72px 1fr; }
 }
+
+/* 0.3：奏疏、待决事件、目标、终局与新手引导 */
+.resource-strip { display: contents; }
+.resource-chip.hidden b { font-style: italic; }
+.resource-chip.crisis b { color: #ffc9a8; }
+.tutorial-card { background: #fff8e1; }
+.tutorial-card p { margin: 4px 0; }
+.outcome-card { border: 2px solid #8a5a2b; }
+.objectives-card { display: flex; flex-wrap: wrap; gap: 8px; }
+.objective { padding: 4px 10px; border-radius: 999px; background: #eef2ee; font-size: 13px; }
+.objective.at_risk, .objective.failed { background: #f8e1dc; }
+.objective.achieved { background: #dcefdc; }
+.memorial-item { border-top: 1px solid rgba(0, 0, 0, .08); padding: 10px 0; }
+.memorial-item h3 { margin: 0 0 4px; font-size: 16px; }
+.memorial-item h3 small { font-weight: normal; color: #6b6b6b; margin-left: 6px; }
+.memorial-item .advisor { margin: 2px 0; color: #4b4b4b; font-size: 13px; }
+.option-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.option-button { display: flex; flex-direction: column; align-items: flex-start; text-align: left; max-width: 320px; }
+.option-button small { color: #6b6b6b; font-size: 12px; }
+.option-button.selected { outline: 2px solid #1f4d43; background: #e3efe9; }

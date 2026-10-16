@@ -1,0 +1,251 @@
+# 奏疏（memorials）：每季呈上的决策条目，是剧情的主线。
+# - 可见：写 turn（可见回合 [turn, turn + expires_after]）和 / 或 conditions；批答后写入旗标 memorial:<id> = 选项 id，不再出现。
+# - 带 region 的条目显示「某月某日自某地奏到」；驿程超过阈值的地区晚一季奏到（此时可见条件写在 turn 上更稳妥）。
+# - advisors：谏言人。option 为其所主张的选项；requires: {office, region, alive} 约束其在场（已故 / 系狱 / 流放者自动剔除）。
+# - proposal：「所议之案」，廷议的赞成 / 反对针对它；不写时引擎推定，并列多案的奏疏应写明。
+# - 选项 ops 为剧本层操作（可改任何数值）；hint 写给玩家看的代价；memory 写入人物记忆。
+# - 文字里的每一个状态断言（「某官某人」「某人在某地」「某职出缺」）都要有对应的条件守卫。
+# - 同一议题按局势写的几个变体，用 variant_of 声明，并在 conditions 中彼此排斥（见 m_harvest_*）。
+
+# ---- T0 ----
+- id: m_frontier_pay
+  turn: 0
+  expires_after: 1
+  title: 北境请饷
+  summary: 北境总兵许定边奏：边军冬衣未备，请拨银二十万两。若驳回，边军怨望，北狄或乘虚而入。
+  region: frontier
+  # 文中称「北境总兵许定边」：以条件守卫，换帅之后本条不再出现
+  conditions: {kind: office_holder, office: frontier_marshal, character: general}
+  proposal: grant
+  advisors:
+    - {character: general, stance: support, option: grant, line: 边军衣甲破敝，冬衣不备，一冬难熬。, requires: {office: frontier_marshal}}
+    - {character: minister, stance: oppose, option: half, line: 国用方紧，宜先拨其半，余俟秋税。, requires: {office: chancellor}}
+  keywords: [北境, 边饷]
+  options:
+    - id: grant
+      label: 照准，拨银二十万两
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: -20, reason: 北境冬衣}
+        - {op: adjust_resource, resource: border_alarm, delta: -3, reason: 边军得饷}
+      memory: {character: general, text: 开岁之初，陛下准拨北境冬衣银二十万两}
+      hint: 国库 −20，边警 −3
+    - id: half
+      label: 先拨其半
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: -10, reason: 北境冬衣（半数）}
+        - {op: adjust_resource, resource: border_alarm, delta: -1, reason: 边军得饷（半数）}
+      hint: 国库 −10，边警 −1
+    - id: deny
+      label: 驳回
+      ops:
+        - {op: adjust_resource, resource: authority, delta: 1, reason: 驳回请饷}
+      memory: {character: general, text: 开岁之初，请饷被驳}
+      hint: 权威 +1；边军怨望，第三季起北狄或乘虚寇边
+
+- id: m_scouts
+  turn: 0
+  expires_after: 2
+  title: 遣斥候探漠北
+  summary: 北狄虚实不明，兵部请遣斥候出塞。
+  advisors:
+    - {character: general, stance: support, option: scout, line: 斥候不出塞，北狄虚实便只是风闻。, requires: {office: frontier_marshal}}
+  proposal: scout
+  options:
+    - id: scout
+      label: 遣斥候出塞
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: -5, reason: 斥候出塞}
+        - {op: set_flag, key: "intel:raider_will", value: true}
+      hint: 国库 −5；北狄战意的风闻区间收窄一半（只减半一次，不叠加）
+    - id: skip
+      label: 不必多事
+      ops: []
+      hint: 无
+
+- id: m_censor_vacant
+  turn: 0
+  expires_after: 2
+  title: 御史出缺
+  summary: 御史台无长官，宰相沈文衡荐翰林编修柳清言。
+  # 「出缺」与「沈文衡荐」都要有状态守卫
+  conditions:
+    all:
+      - {kind: office_holder, office: censor, character: null}
+      - {kind: office_holder, office: chancellor, character: minister}
+      - {kind: character_status, character: scholar, value: alive}
+  advisors:
+    - {character: minister, stance: support, option: appoint, line: 清言耿介，可肃台纲。, requires: {office: chancellor}}
+  proposal: appoint
+  options:
+    - id: appoint
+      label: 以柳清言为御史
+      ops:
+        - {op: appoint, character: scholar, office: censor}
+        - {op: adjust_resource, resource: corruption, delta: -3, reason: 台纲得人}
+      memory: {character: scholar, text: 开岁之初，蒙陛下擢为御史}
+      hint: 柳清言任御史；贪腐 −3
+    - id: defer
+      label: 暂缓，另择其人
+      ops: []
+      hint: 御史仍缺；可另用政令卡「拜官」任命
+
+# ---- T1：同题变体（按北境繁荣二选一，彼此排斥）----
+- id: m_harvest_good
+  turn: 1
+  expires_after: 1
+  title: 秋粮入仓
+  summary: 北境今岁收成尚可，户部请平粜储粮。
+  conditions:
+    all:
+      - {kind: region_stat, region: frontier, stat: prosperity, operator: gte, value: 35}
+      - {not: {kind: flag, key: "memorial:m_harvest_poor", operator: exists}}
+  advisors:
+    - {character: minister, stance: support, option: store, line: 丰年储粮，以备荒歉。, requires: {office: chancellor}}
+  proposal: store
+  options:
+    - id: store
+      label: 平粜储粮
+      ops:
+        - {op: adjust_resource, resource: grain, delta: 5, reason: 平粜储粮}
+        - {op: adjust_resource, resource: treasury, delta: -5, reason: 平粜收粮}
+      hint: 粮储 +5，国库 −5
+    - id: levy
+      label: 加征秋税
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: 8, reason: 加征秋税}
+        - {op: adjust_resource, resource: morale, delta: -3, reason: 加征}
+      hint: 国库 +8，民心 −3
+
+- id: m_harvest_poor
+  variant_of: m_harvest_good
+  turn: 1
+  expires_after: 1
+  title: 北境歉收
+  summary: 北境今岁歉收，地方请开仓赈济。
+  conditions:
+    all:
+      - {kind: region_stat, region: frontier, stat: prosperity, operator: lt, value: 35}
+      - {not: {kind: flag, key: "memorial:m_harvest_good", operator: exists}}
+  advisors:
+    - {character: scholar, stance: support, option: relief, line: 民为邦本，饥馑不可坐视。}
+  proposal: relief
+  options:
+    - id: relief
+      label: 开仓赈济
+      ops:
+        - {op: adjust_resource, resource: grain, delta: -6, reason: 北境赈济}
+        - {op: adjust_resource, resource: morale, delta: 3, reason: 赈济}
+      hint: 粮储 −6，民心 +3
+    - id: as_usual
+      label: 照常征收
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: 4, reason: 照常征收}
+        - {op: adjust_resource, resource: morale, delta: -4, reason: 歉年照征}
+      hint: 国库 +4，民心 −4
+
+# ---- 按局势出现：寇边之后 ----
+- id: m_raid_response
+  title: 北狄寇边，请发援兵
+  summary: 北狄骑兵犯境，北境告急，请朝廷定策。
+  region: frontier
+  conditions:
+    all:
+      - {kind: flag, key: raid_started, value: true}
+      - {kind: flag, key: raid_repelled, operator: absent}
+  advisors:
+    # 第一人称说自己在前线：用 requires.region 保证其人确在北境
+    - {character: general, stance: support, option: reinforce, line: 臣在北境，独力难支，请速发禁军。, requires: {office: frontier_marshal, region: frontier}}
+    - {character: minister, stance: oppose, option: hold, line: 雁口关险固，令边军坚守足矣，禁军不可轻动。, requires: {office: chancellor}}
+  proposal: reinforce
+  keywords: [北狄, 北境]
+  options:
+    - id: reinforce
+      label: 禁军整军出征北境
+      ops:
+        - {op: march, army: capital_guard, to_region: frontier}
+        - {op: set_army_posture, army: capital_guard, posture: attack}
+      hint: 禁军全军开赴北境、取进击之势（行程见回执）；京城空虚
+    - id: hold
+      label: 令北境守军坚守
+      ops:
+        - {op: set_army_posture, army: northern_guard, posture: hold}
+      hint: 北境守军取坚守之势：守方战力 +20%，不追击
+    - id: buy_off
+      label: 以银帛求和
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: -25, reason: 银帛求和}
+        - {op: adjust_resource, resource: raider_will, delta: -10, reason: 得银帛而退}
+        - {op: adjust_resource, resource: authority, delta: -3, reason: 输币求和}
+        - {op: set_flag, key: raid_repelled, value: true}
+      hint: 国库 −25，权威 −3；北狄战意（风闻）↓，寇边即止
+
+# ---- 中后期：保证每季都有可批之事 ----
+- id: m_impeach
+  title: 御史劾仓吏
+  summary: 御史柳清言劾户部仓吏侵盗粮米，请严加究治。
+  # 文中称「御史柳清言」：守卫其确任御史
+  conditions:
+    all:
+      - {kind: turn, operator: gte, value: 3}
+      - {kind: office_holder, office: censor, character: scholar}
+  advisors:
+    - {character: scholar, stance: support, option: strict, line: 仓粮者，边军之命也。侵盗不究，何以励廉？, requires: {office: censor}}
+    - {character: minister, stance: oppose, option: lenient, line: 严究恐株连过广，宜诛首恶而宥胁从。, requires: {office: chancellor}}
+  proposal: strict
+  options:
+    - id: strict
+      label: 严加究治
+      ops:
+        - {op: adjust_resource, resource: corruption, delta: -5, reason: 究治仓吏}
+        - {op: adjust_resource, resource: morale, delta: -1, reason: 株连颇广}
+      hint: 贪腐 −5，民心 −1
+    - id: lenient
+      label: 诛首恶，宥胁从
+      ops:
+        - {op: adjust_resource, resource: corruption, delta: -2, reason: 究治首恶}
+      hint: 贪腐 −2
+    - id: shelve
+      label: 留中不发
+      ops:
+        - {op: adjust_resource, resource: corruption, delta: 2, reason: 劾章留中}
+      memory: {character: scholar, text: 劾仓吏之章留中不发}
+      hint: 贪腐 +2
+
+- id: m_pass_repair
+  turn: 4
+  expires_after: 2
+  title: 修缮雁口关
+  summary: 雁口关城垣年久失修，工部请拨银修缮。
+  region: pass
+  advisors:
+    - {character: general, stance: support, option: repair, line: 关城一固，北狄便难长驱。}
+  proposal: repair
+  options:
+    - id: repair
+      label: 拨银修缮（两季竣工）
+      ops:
+        - {op: start_project, name: 修缮雁口关, region: pass, cost_per_turn: {treasury: 10}, turns: 2, on_complete: [{op: adjust_region, region: pass, stat: defense, delta: 5}]}
+      hint: 国库每季 −10，共两季；竣工后雁口关防务 +5
+    - id: later
+      label: 俟诸来年
+      ops: []
+      hint: 无
+
+- id: m_year_end
+  turn: 7
+  title: 岁末犒军
+  summary: 岁末将至，兵部请犒赏边军。
+  advisors:
+    - {character: minister, stance: neutral, option: modest, line: 犒军宜有，然不可逾常例。, requires: {office: chancellor}}
+  options:
+    - id: reward
+      label: 厚犒边军
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: -15, reason: 岁末犒军}
+        - {op: adjust_resource, resource: border_alarm, delta: -1, reason: 军心安定}
+      hint: 国库 −15，边警 −1
+    - id: modest
+      label: 依常例犒赏
+      ops:
+        - {op: adjust_resource, resource: treasury, delta: -5, reason: 岁末犒军（常例）}
+      hint: 国库 −5

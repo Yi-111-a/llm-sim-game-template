@@ -54,7 +54,7 @@ def test_stdio_answers_initialize_and_tools_list_before_loading_the_engine(mech_
     engine.warm_up = lambda: None  # type: ignore[method-assign]
     init = handle(engine, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}})
     assert init["result"]["protocolVersion"] == "2025-06-18"
-    assert init["result"]["serverInfo"]["name"] == "tianbao" and init["result"]["capabilities"]["tools"] == {"listChanged": False}
+    assert init["result"]["serverInfo"]["name"] == "llm-sim" and init["result"]["capabilities"]["tools"] == {"listChanged": False}
     assert handle(engine, {"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
     listed = handle(engine, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     assert len(listed["result"]["tools"]) == len(TOOL_PARAMS)
@@ -107,7 +107,7 @@ def test_real_process_answers_initialize_fast(mech_env) -> None:
         proc.stdin.flush()
         reply = json.loads(proc.stdout.readline())
         elapsed = time.perf_counter() - started
-        assert reply["result"]["serverInfo"]["name"] == "tianbao"
+        assert reply["result"]["serverInfo"]["name"] == "llm-sim"
         # 宽松上限（CI / 杀毒扫描）；改前在本机要 6–80 秒
         assert elapsed < 20, elapsed
     finally:

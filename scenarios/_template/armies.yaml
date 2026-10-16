@@ -1,5 +1,22 @@
+# 军队。commander 为统帅人物 id（可空：副将暂摄）；quality 为兵质系数（缺省 1.0）。
+# 战力 = 兵力 × 素质 ×（守方另乘 1 + 防务/100）× 军令系数 × 天时（±15%）。
 - id: northern_guard
   name: 北境守军
   faction: court
   region: frontier
   strength: 8000
+  commander: general
+
+- id: capital_guard
+  name: 禁军
+  faction: court
+  region: capital
+  strength: 6000
+
+- id: raider_host
+  name: 北狄骑兵
+  faction: raiders
+  region: steppe
+  strength: 9000
+  quality: 1.1
+  commander: raider_chief

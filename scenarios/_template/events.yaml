@@ -1,6 +1,14 @@
+# 事件。每季结算第 10 步判定：`when.turn` / `conditions` 满足后以 gravity（× 难度 gravity_scale）的概率触发。
+# kind: scheduled | conditional | random（三者都要求有插图资产 event.<id>.illustration，或写 illustration 指定）。
+# once 为缺省；repeatable: true 时用 cooldown 控制间隔。带 choices 的事件触发后生成待决抉择，逾期执行 default_choice。
+# region 写远地（驿程超过阈值）时，状态即时改变，但军报（事件条目与事实）晚一季送达。
+#
+# 次序约定：奏疏所问之事，相关事件一律在其后（由奏疏旗标 memorial:<id> 驱动），不得先于奏疏发生。
+# 例：raid_begins 读取 T0 奏疏 m_frontier_pay 的批答结果，最早 T3 才可能发生。
 - id: poor_harvest
   title: 收成告急
   kind: conditional
+  text: 北境秋收歉薄，仓廪告急。
   conditions:
     kind: region_stat
     region: frontier
@@ -12,9 +20,11 @@
     - {op: adjust_resource, resource: grain, delta: -4, reason: 北境歉收}
     - {op: set_flag, key: poor_harvest_seen, value: true}
   illustration: event.poor_harvest.illustration
+
 - id: market_recovery
   title: 商旅渐复
   kind: scheduled
+  text: 歉收之后，京城商旅往来渐复。
   when: {turn: 3}
   conditions:
     kind: flag
@@ -24,3 +34,88 @@
   effects:
     - {op: adjust_region, region: capital, stat: prosperity, delta: 2}
   illustration: event.market_recovery.illustration
+
+# 事件抉择：触发即生成待决事件（玩家用 choose 处置），choice_deadline 季内未选则执行 default_choice。
+# 选项可带 conditions（不满足时不可选）与 memory（写入人物记忆）。
+- id: envoy
+  title: 北狄遣使
+  kind: scheduled
+  text: 拓跋烈遣使至京，请开边市，言辞倨傲。
+  when: {turn: 2}
+  conditions: {kind: flag, key: raid_started, operator: absent}
+  gravity: 1
+  choices:
+    - id: receive
+      text: 厚礼相待，许开边市
+      effects:
+        - {op: adjust_resource, resource: treasury, delta: -15, reason: 厚赐北狄使者}
+        - {op: adjust_resource, resource: raider_will, delta: -6, reason: 许开边市}
+        - {op: adjust_resource, resource: authority, delta: -2, reason: 示弱于外}
+      memory: {character: raider_chief, text: 新纪元初，南朝厚礼相待，许开边市}
+    - id: rebuff
+      text: 严词拒之，遣使归
+      effects:
+        - {op: adjust_resource, resource: authority, delta: 2, reason: 拒北狄之请}
+        - {op: adjust_resource, resource: raider_will, delta: 4, reason: 使者受辱而归}
+      memory: {character: raider_chief, text: 新纪元初，南朝拒开边市，使者受辱而归}
+    - id: hostage
+      text: 扣留使者，以为人质
+      conditions: {kind: resource, id: authority, operator: gte, value: 60}
+      effects:
+        - {op: adjust_resource, resource: authority, delta: 3, reason: 扣留北狄使者}
+        - {op: adjust_resource, resource: raider_will, delta: 8, reason: 使者被扣}
+  default_choice: rebuff
+  choice_deadline: 1
+  illustration: event.envoy.illustration
+
+# 由奏疏驱动的事件：T0 驳回边饷（memorial:m_frontier_pay = deny）或边警过高时，北狄寇边。
+- id: raid_begins
+  title: 北狄寇边
+  kind: conditional
+  text: 北狄骑兵越境南下，北境告急。
+  region: frontier
+  conditions:
+    all:
+      - {kind: flag, key: raid_started, operator: absent}
+      - {kind: turn, operator: gte, value: 3}
+      - any:
+          - {kind: resource, id: border_alarm, operator: gte, value: 40}
+          - {kind: flag, key: "memorial:m_frontier_pay", value: deny}
+  gravity: 0.6
+  effects:
+    - {op: set_flag, key: raid_started, value: true}
+    - {op: adjust_resource, resource: border_alarm, delta: 8, reason: 北狄寇边}
+    - {op: adjust_region, region: frontier, stat: order, delta: -5}
+    - {op: adjust_region, region: frontier, stat: prosperity, delta: -8}
+    - {op: adjust_resource, resource: morale, delta: -3, reason: 北境被兵}
+  illustration: event.raid_begins.illustration
+
+- id: raid_repelled
+  title: 寇边已退
+  kind: conditional
+  text: 北狄骑兵受挫折损，退回漠北。
+  conditions:
+    all:
+      - {kind: flag, key: raid_started, value: true}
+      - {kind: flag, key: raid_repelled, operator: absent}
+      - {kind: army_strength, faction: raiders, operator: lte, value: 7000}
+  gravity: 1
+  effects:
+    - {op: set_flag, key: raid_repelled, value: true}
+    - {op: adjust_resource, resource: border_alarm, delta: -6, reason: 寇边已退}
+    - {op: adjust_resource, resource: authority, delta: 2, reason: 边功}
+  illustration: event.raid_repelled.illustration
+
+# 远地事件：漠北驿程 75 日（超过 60 日阈值），状态当季即变，军报晚一季才到。
+- id: steppe_rumor
+  title: 漠北会盟
+  kind: random
+  text: 漠北诸部会盟，传言将合兵南下。
+  region: steppe
+  repeatable: true
+  cooldown: 3
+  conditions: {kind: turn, operator: gte, value: 2}
+  gravity: 0.3
+  effects:
+    - {op: adjust_resource, resource: raider_will, delta: 3, reason: 漠北会盟}
+  illustration: event.steppe_rumor.illustration

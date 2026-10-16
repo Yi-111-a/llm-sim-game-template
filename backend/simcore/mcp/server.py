@@ -49,7 +49,7 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
     from mcp.server.mcpserver import MCPServer
     from mcp.server.mcpserver.exceptions import ToolError
 
-    server = MCPServer(name="tianbao", instructions=INSTRUCTIONS, version=ENGINE_VERSION, log_level="WARNING")
+    server = MCPServer(name=os.environ.get("SIM_MCP_NAME", "llm-sim"), instructions=INSTRUCTIONS, version=ENGINE_VERSION, log_level="WARNING")
 
     def wrap(fn: ToolFn) -> ToolFn:
         @functools.wraps(fn)
