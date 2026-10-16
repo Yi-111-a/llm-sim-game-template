@@ -470,7 +470,7 @@ settings:
     - id: receive
       text: 厚礼相待，许开边市
       effects: [{op: adjust_resource, resource: raider_will, delta: -6, reason: 许开边市}]
-      memory: {character: raider_chief, text: 新纪元初，南朝厚礼相待，许开边市}
+      memory: {character: raider_chief, text: "{when}，南朝厚礼相待，许开边市"}   # {when} 填入实际发生的那一季；写在 {…} 里须加引号
     - id: hostage
       text: 扣留使者，以为人质
       conditions: {kind: resource, id: authority, operator: gte, value: 60}   # 不满足时不可选

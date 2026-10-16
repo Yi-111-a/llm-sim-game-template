@@ -283,9 +283,11 @@ def apply(
         _record_intel_source(updated, op.key, op.value, cause)
         facts.append(Fact(kind="flag", text=f"旗标改变：{op.key}", before=before, after=op.value, key=op.key, internal=True))
     elif isinstance(op, Remember):
-        updated.characters[op.character].memories.append(op.fact)
+        # 记忆里写 {when}：填入此事实际发生的那一季（奏疏可在数季之内批答、条款可延期，写死年月常常不对）
+        fact_text = op.fact.replace("{when}", updated.calendar.label or "") if "{when}" in op.fact else op.fact
+        updated.characters[op.character].memories.append(fact_text)
         name = updated.characters[op.character].name
-        facts.append(Fact(kind="memory", text=f"{name}记下：{op.fact}", entity=op.character, after=op.fact, internal=True))
+        facts.append(Fact(kind="memory", text=f"{name}记下：{fact_text}", entity=op.character, after=fact_text, internal=True))
     elif isinstance(op, AdjustArmy):
         army = updated.armies[op.army]
         before = army.strength

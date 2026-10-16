@@ -307,3 +307,10 @@ def test_adjusting_a_far_region_waits_for_the_courier(mech_env) -> None:
     assert far_target(state, [{"op": "adjust_region", "region": far, "stat": "prosperity", "delta": 3}])[0] == far
     near = next(region for region in state.regions if not is_far(state, region))
     assert far_target(state, [{"op": "adjust_region", "region": near, "stat": "prosperity", "delta": 3}]) is None
+
+
+def test_memory_when_placeholder_is_the_season_it_happens(r9_state) -> None:
+    state = r9_state.model_copy(deep=True)
+    state.calendar.label = "宣和三年秋"
+    state, _ = apply({"op": "remember", "character": "general", "fact": "{when}，奉命出镇"}, state)
+    assert state.characters["general"].memories[-1] == "宣和三年秋，奉命出镇"
