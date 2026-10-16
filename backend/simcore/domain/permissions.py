@@ -28,6 +28,7 @@ PLAYER_OPS_DEFAULT: tuple[str, ...] = (
     "march",
     "detach",
     "set_army_commander",
+    "set_army_posture",
     "start_project",
     "add_standing_order",
     "cancel_standing_order",
@@ -62,6 +63,7 @@ OP_LABELS: dict[str, str] = {
     "adjust_army": "调整兵力",
     "set_army_faction": "军队改隶",
     "set_army_commander": "军队易帅",
+    "set_army_posture": "军令姿态",
     "adjust_trait": "调整心态",
     "adjust_counter": "调整计数",
     "set_counter": "设定计数",
@@ -82,7 +84,11 @@ def _config(state: WorldState) -> Any:
 
 def player_ops(state: WorldState) -> list[str]:
     """本局玩家可直接提议的操作名（按 OP_NAMES 顺序）。"""
-    config = _config(state)
+    return allowed_player_ops(_config(state))
+
+
+def allowed_player_ops(config: Any) -> list[str]:
+    """由 settings.player_ops 配置得出玩家层白名单（validate_scenario 检查政令卡时也用它）。"""
     if isinstance(config, list):
         allowed = {str(item) for item in config}
     else:
@@ -177,7 +183,7 @@ def check_player_op(op_value: StateOp | dict[str, Any], state: WorldState, setti
         character = state.characters.get(str(getattr(op, "character", "")))
         if character is not None and foreign(character.faction):
             return Rejected("OP_NOT_PERMITTED", f"{character.name}不是本朝臣属，政令不及其身")
-    if name in {"move_army", "march", "set_army_commander", "detach"}:
+    if name in {"move_army", "march", "set_army_commander", "detach", "set_army_posture"}:
         army = state.armies.get(str(getattr(op, "army", "")))
         if army is not None and foreign(army.faction):
             return Rejected("OP_NOT_PERMITTED", f"{army.name}不归本朝节制，不能调遣、分兵或易帅")

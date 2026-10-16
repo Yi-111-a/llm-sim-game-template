@@ -30,6 +30,7 @@ from simcore.domain.ops import (
     Remember,
     SetArmyCommander,
     SetArmyFaction,
+    SetArmyPosture,
     SetCharacterFaction,
     SetCharacterStatus,
     SetCounter,
@@ -300,6 +301,22 @@ def apply(
         army.faction = op.faction
         faction_name = updated.factions[op.faction].name
         facts.append(Fact(kind="army_faction", text=f"{army.name}改隶{faction_name}", entity=op.army, before=before, after=op.faction))
+    elif isinstance(op, SetArmyPosture):
+        from simcore.domain.military import posture_label
+
+        army = updated.armies[op.army]
+        before = army.posture
+        army.posture = op.posture
+        where = updated.regions[army.region].name if army.region in updated.regions else army.region
+        facts.append(
+            Fact(
+                kind="army_posture",
+                text=f"{army.name}（{where}）改取{posture_label(op.posture)}之势{suffix}",
+                entity=op.army,
+                before=before,
+                after=op.posture,
+            )
+        )
     elif isinstance(op, SetArmyCommander):
         army = updated.armies[op.army]
         before = army.commander

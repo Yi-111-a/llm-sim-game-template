@@ -1,0 +1,3 @@
+- {id: court, name: 朝廷, relations: {rebels: -50}}
+- {id: rebels, name: 叛军, relations: {court: -50}}
+- {id: tribe, name: 部落, relations: {}}

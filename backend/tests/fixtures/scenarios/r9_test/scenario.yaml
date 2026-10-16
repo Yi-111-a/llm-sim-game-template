@@ -1,0 +1,89 @@
+id: r9_test
+manifest_version: 1
+version: "0.1.0"
+requires_engine: ">=0.2.0"
+title: 第九轮测试
+era: 测试
+start_date: "0751-01-01"
+turn_unit: season
+currency: 贯
+calendar:
+  eras:
+    - {from_turn: 1, name: 天宝, start_year: 10, turn_format: "{era}{year}载{season}"}
+    - {from_turn: 7, name: 至德, start_year: 1}
+  seasons: [春, 夏, 秋, 冬]
+  turn_format: "{era}{year}年{season}"
+  number_system: chinese
+  pre_game_turns: 1
+resources:
+  - {id: treasury, name: 国库, initial: 1000, min: 0, unit: 万贯}
+  - {id: grain, name: 粮储, initial: 500, min: 0, unit: 万石}
+  - {id: authority, name: 君威, initial: 60, min: 0, max: 100, unit: 点}
+  - {id: corruption, name: 积弊, initial: 40, min: 0, max: 100, unit: 点}
+  - {id: ambition, name: 异志, initial: 40, min: 0, max: 100, unit: 点, hidden: true, estimate_width: 8}
+  - {id: risk, name: 危机, initial: 30, min: 0, max: 100, unit: 点}
+stats:
+  - {id: prosperity, name: 繁荣, range: [0, 100]}
+  - {id: defense, name: 防务, range: [0, 100]}
+  - {id: tax, name: 税基, range: [0, 100]}
+offices:
+  - {id: sovereign, name: 皇帝}
+  - {id: chancellor, name: 宰相, requires: {ability: 5}}
+  - {id: marshal, name: 元帅, requires: {ability: 5}}
+  - {id: censor, name: 御史}
+edict_categories:
+  - {id: military, name: 军务, hint: 兵事}
+  - {id: interior, name: 内政, hint: 财赋}
+formulas:
+  income:
+    tax: {resource: treasury, formula: "tax * 1"}
+    canal: {resource: grain, formula: "10", per_region: false, label: 漕运}
+  drift:
+    risk: "0.1*(ambition-40) + 0.05*(corruption-40)"
+    ambition: "0.5"
+  execution:
+    base_delay: 0
+settings:
+  afterlife_chat: false
+  max_concurrent_offices: 2
+  player_faction: court
+  player_character: ruler
+  hidden_traits: [ambition]
+  capital_region: capital
+  agenda: {audience_per_season: 2, debate_per_season: 1}
+  courier: {late_threshold_days: 60}
+  autonomy:
+    formula: "clamp(0.08 * (ambition - loyalty) + 0.1 * is_march, 0, 1)"
+    levels: [0.1, 0.3]
+crisis:
+  resource: risk
+  title: 危机计
+  bands:
+    - {max: 39, name: 承平}
+    - {max: 59, name: 风闻}
+    - {max: 100, name: 危急}
+  terms:
+    - {id: amb, label: 异志, expr: "0.1*(ambition-40)"}
+    - {id: cor, label: 积弊, expr: "0.05*(corruption-40)"}
+counters:
+  - {id: broke, mode: streak, conditions: {kind: resource, id: treasury, operator: lte, value: 0}}
+  - {id: high_risk, mode: count, conditions: {kind: resource, id: risk, operator: gte, value: 50}}
+endings:
+  - {id: fail_broke, kind: fail, title: 帑竭, text: 国库连续两季告罄。, priority: 1, conditions: {kind: counter, key: broke, operator: gte, value: 2}}
+  - {id: fail_capital, kind: fail, title: 京城不守, priority: 2, conditions: {kind: region_controller, region: capital, faction: rebels}}
+  - {id: peace, kind: ending, title: 海晏河清, priority: 10, conditions: {all: [{kind: turn, operator: gte, value: 6}, {kind: resource, id: risk, operator: lt, value: 25}]}}
+  - {id: open_storm, kind: ending, title: 山雨欲来, text: 时限已至。}
+game_length: {last_turn: 8, overtime_flag: uprising, overtime_last_turn: 10, fallback_ending: open_storm}
+wars:
+  - [court, rebels]
+ai_routes:
+  - {faction: rebels, route: [north, plain, pass, capital], hold_if_outnumbered: true, conditions: {kind: flag, key: uprising}}
+objectives:
+  - {id: calm, title: 弭兵, detail: 危机计低于 60, conditions: {kind: resource, id: risk, operator: lt, value: 60}, fail_conditions: {kind: flag, key: uprising}}
+  - {id: purse, title: 足食, detail: 国库为正, conditions: {kind: resource, id: treasury, operator: gt, value: 0}}
+debate_topics:
+  - {id: border, keywords: [边镇], stances: {xiang: support, army: oppose}}
+tutorial:
+  - {turn: 0, step: 2, title: 批答奏疏, text: 先看本季奏疏，择一批答。, target: memorial.open}
+  - {turn: 0, step: 1, title: 看国势, text: 先看资源栏与危机计。, target: desk.resources}
+  - {turn: 1, step: 1, title: 下诏, text: 用政令卡拟诏。, target: edict.cards}

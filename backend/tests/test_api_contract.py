@@ -94,9 +94,9 @@ def test_draft_confirm_with_memorial_client_ops_and_text(client) -> None:
     assert_utf8_json(draft)
     receipt = draft.json()
     assert [clause["source"] for clause in receipt["clauses"]] == ["memorial", "memorial", "client", "client", "text"]
-    assert [clause["status"] for clause in receipt["clauses"]] == ["applied", "applied", "applied", "rejected", "rejected"]
+    assert [clause["status"] for clause in receipt["clauses"]] == ["applied", "applied", "applied", "rejected", "narrative_only"]
     assert receipt["clauses"][3]["code"] == "UNKNOWN_ENTITY"
-    assert receipt["clauses"][4]["code"] == "OP_NOT_PERMITTED"  # 文本解释出的 adjust_resource 是玩家层操作
+    assert receipt["clauses"][4]["code"] == "OFFLINE_TEXT"  # 未接模型：御笔只记入史册（§7.4）
     confirmed = client.post(f"/api/sessions/{session_id}/edicts/{receipt['id']}/confirm")
     assert confirmed.status_code == 200
     state = confirmed.json()["state"]

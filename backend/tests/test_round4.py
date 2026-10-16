@@ -138,8 +138,11 @@ def test_projects_standing_orders_and_ledgers_cannot_mint_value(mech_scenario) -
 def test_llm_interpreted_text_is_player_tier() -> None:
     scenario = load_scenario("../scenarios/_template")
     state = build_initial_state(scenario)
-    receipt = asyncio.run(interpret_edict({"finance": "国库增加 10"}, scenario, state, MockProvider(scenario), seed=1))
+    receipt = asyncio.run(interpret_edict({"finance": "国库增加 10"}, scenario, state, MockProvider(scenario, offline=False), seed=1))
     assert receipt["clauses"][0]["code"] == "OP_NOT_PERMITTED" and receipt["clauses"][0]["source"] == "text"
+    # 未接模型（离线 mock）：文本一律 narrative_only，不解释（§7.4）
+    offline = asyncio.run(interpret_edict({"finance": "国库增加 10"}, scenario, state, MockProvider(scenario), seed=1))
+    assert offline["clauses"][0]["status"] == "narrative_only" and "御笔只记入史册" in offline["clauses"][0]["reason"]
 
 
 def test_player_ops_settings_are_validated(mech_scenario) -> None:

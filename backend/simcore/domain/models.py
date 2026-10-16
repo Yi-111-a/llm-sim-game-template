@@ -1,12 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Literal, TypeVar
+from typing import Any, ClassVar, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 
 class DomainModel(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class OmitNoneModel(DomainModel):
+    """可选的新字段（OMIT_NONE 所列）为 None 时不写入序列化结果：旧存档的状态哈希与快照不因新增字段而改变。"""
+
+    OMIT_NONE: ClassVar[tuple[str, ...]] = ()
+
+    @model_serializer(mode="wrap")
+    def _omit_none(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        for key in self.OMIT_NONE:
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data  # type: ignore[no-any-return]
 
 
 _ATOMIC: frozenset[type] = frozenset({str, int, float, bool, type(None)})
@@ -81,7 +95,9 @@ class Faction(DomainModel):
     relations: dict[str, float] = Field(default_factory=dict)
 
 
-class Region(DomainModel):
+class Region(OmitNoneModel):
+    OMIT_NONE = ("courier_days",)
+
     id: str
     name: str
     x: float = 0
@@ -90,6 +106,8 @@ class Region(DomainModel):
     adjacency: dict[str, int] = Field(default_factory=dict)
     stats: dict[str, float] = Field(default_factory=dict)
     controller: str | None = None
+    # 驿程日数（剧本可写；未写时按到京城的行程季数估算，见 domain.courier）
+    courier_days: int | None = None
 
 
 class Character(DomainModel):
@@ -118,7 +136,9 @@ class Character(DomainModel):
         return data
 
 
-class Army(DomainModel):
+class Army(OmitNoneModel):
+    OMIT_NONE = ("posture",)
+
     id: str
     name: str
     faction: str | None = None
@@ -128,6 +148,8 @@ class Army(DomainModel):
     commander: str | None = None
     loyal_to: str | None = None
     quality: float = 1.0
+    # 军令姿态：hold 坚守 / attack 进击 / scorch 坚壁清野；None 为常态（见 domain.military）
+    posture: Literal["hold", "attack", "scorch"] | None = None
 
 
 class LedgerEntry(DomainModel):
@@ -220,12 +242,14 @@ class WorldState(DomainModel):
 INTERNAL_FACT_KINDS = frozenset({"flag", "counter", "memory", "effect_skipped"})
 
 
-class Fact(DomainModel):
+class Fact(OmitNoneModel):
     """回合事实。text 必须自足（带人物/地区/军队等显示名，不含内部 id）。
 
     internal=True 的事实（旗标、计数、人物记忆等引擎簿记）只留在日志里的 TurnReport 供调试，
     不进入简报、纪事、叙事输入与前端的事实列表。key 为涉及的指标/心态/旗标键（供隐藏规则判断）。
     """
+
+    OMIT_NONE = ("arrived_late", "origin_turn")
 
     kind: str
     text: str
@@ -235,6 +259,8 @@ class Fact(DomainModel):
     key: str | None = None
     internal: bool = False
     cause: str | None = None  # 原因：op 的 reason，或来源（奏疏/事件/抉择/工程/常设令的标题）
+    arrived_late: bool | None = None  # 远地军报晚一季送达（见 domain.courier）
+    origin_turn: int | None = None  # 晚到军报的原发生回合
 
 
 def is_internal_fact(fact: Fact | dict[str, Any]) -> bool:

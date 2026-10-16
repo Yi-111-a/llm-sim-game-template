@@ -7,11 +7,14 @@ from typing import Any
 from simcore.domain.apply import apply, edict_memories
 from simcore.domain.battle import advance_ai_routes, resolve_battles
 from simcore.domain.calendar import format_calendar, start_season_index
+from simcore.domain.courier import defer_event_report, event_is_far, record_memorial_dispatches, release_late_reports
+from simcore.domain.court import reset_agenda
 from simcore.domain.crisis import crisis_report, evaluate_terms, formula_values
 from simcore.domain.describe import describe_satisfied, stamp
 from simcore.domain.difficulty import drift_factor, gravity_factor
 from simcore.domain.events import matches
 from simcore.domain.formulas import evaluate
+from simcore.domain.military import posture_attrition, scorch_effects
 from simcore.domain.models import (
     ChoiceOption,
     Fact,
@@ -54,6 +57,8 @@ def resolve_turn(
     marks: list[dict[str, float]] = [_amounts(updated)]
     # 各段结算前后的事实序号：危机变化与经常收支明细按段归类事实（默认处置 / 延期 / 常设令与工程 / 事件）。
     fact_marks: list[int] = [0]
+    # 远地奏疏：上季已可见者记下发出之季（下季送达，见 domain.courier）
+    record_memorial_dispatches(scenario, state, updated)
 
     # 1. 到期的待决事件执行默认项
     for choice in list(updated.pending_choices):
@@ -68,9 +73,12 @@ def resolve_turn(
     updated.pending_clauses = [row for row in updated.pending_clauses if row.due_turn > target]
     for clause in pending:
         label = clause.label or ("延期诏令" if clause.source == "edict" else clause.source)
+        if clause.source == "autonomy":
+            # 将领自主（拒命 / 改作他令 / 擅自出战）：结算时写成事实（见 domain.military）
+            report.facts.append(Fact(kind="autonomy", text=label, cause=label))
         for op in clause.ops:
-            memories = edict_memories(op, updated) if clause.source == "edict" else []
-            blocked = status_target_check(updated, op) if clause.source == "edict" else None
+            memories = edict_memories(op, updated) if clause.source in {"edict", "autonomy"} else []
+            blocked = status_target_check(updated, op) if clause.source in {"edict", "autonomy"} else None
             if blocked is not None:
                 report.warnings.append(f"延期条款未能执行（原延至第 {clause.due_turn} 回合结算时执行）：{blocked.message}")
                 continue
@@ -170,8 +178,10 @@ def resolve_turn(
                 destination = updated.regions[entity.region].name if entity.region in updated.regions else entity.region
                 report.facts.append(Fact(kind="arrival", text=f"{entity.name}抵达{destination}", entity=entity.id, before=before, after=entity.region))
 
-    # 8. 战斗（种子 RNG 的派生流，不扰动事件掷骰序列）与 AI 行军
+    # 8. 军令姿态（坚壁清野：本地区指标下降、敌军补给受损）→ 战斗（种子 RNG 的派生流，不扰动事件掷骰序列）与 AI 行军
     wars = scenario_definition.get("wars") or []
+    report.facts.extend(scorch_effects(updated, wars))
+    report.facts.extend(posture_attrition(updated, wars))
     battle_rng = random.Random(f"battle:{rng.getstate()[1][:8]}:{target}")
     battles, battle_facts = resolve_battles(updated, battle_rng, wars, arrived)
     report.battles.extend(battles)
@@ -276,6 +286,12 @@ def resolve_turn(
         report.crisis = crisis_report(crisis, updated)
         if crisis_id in updated.resources:
             report.crisis["change"] = _crisis_change(report, crisis_id, fact_marks, marks, crisis_drift)
+    # 远地军报：上季存下的事件条目与事实此时送达（带 arrived_late / origin_turn）；朝会日程计数清零
+    late_events, late_facts = release_late_reports(updated, target)
+    report.facts.extend(late_facts)
+    if late_events:
+        report.events = sort_events([*report.events, *late_events])
+    reset_agenda(updated)
     from simcore.store.session import state_hash
 
     if os.environ.get("SIM_CHECK_INVARIANTS"):
@@ -342,19 +358,28 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         for fact in effect_facts:
             if fact.kind in BOOKKEEPING_FACT_KINDS:
                 fact.internal = True
-    report.facts.extend(effect_facts)
     updated.flags[fired_key] = True
     updated.flag_turns[fired_key] = target
     report.events_fired.append(event_id)
-    report.facts.append(Fact(kind="event", text=event_title, entity=event_id, internal=internal))
-    report.events.append({
+    event_fact = Fact(kind="event", text=event_title, entity=event_id, internal=internal)
+    entry = {
         "id": event_id,
         "title": event_title,
         "text": str(event.get("text") or ""),
         "illustration": event.get("illustration") or None,
         "importance": event_importance(event, effect_facts),
         "internal": internal,
-    })
+    }
+    if not internal and event_is_far(event, updated):
+        # 远地事件：状态即时改变，军报（事件条目与可见事实）晚一季送达（见 domain.courier）
+        entry["region"] = str(event.get("region"))
+        visible = [fact for fact in effect_facts if not fact.internal]
+        report.facts.extend(fact for fact in effect_facts if fact.internal)
+        defer_event_report(updated, entry, [*visible, event_fact], target)
+    else:
+        report.facts.extend(effect_facts)
+        report.facts.append(event_fact)
+        report.events.append(entry)
     if raw_choices:
         options = [
             ChoiceOption(

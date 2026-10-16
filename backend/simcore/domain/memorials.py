@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from simcore.domain.courier import arrival_text, courier_days, memorial_dispatch_key, memorial_is_far
 from simcore.domain.events import matches
 from simcore.domain.models import WorldState
 from simcore.domain.ops import memory_ops, parse_op
@@ -34,8 +35,8 @@ def memorial_flag(memorial_id: str) -> str:
     return f"memorial:{memorial_id}"
 
 
-def is_visible(item: dict[str, Any], state: WorldState) -> bool:
-    """当季可见：未处理，且 turn 窗口与 conditions 均满足。
+def base_visible(item: dict[str, Any], state: WorldState, turn: int | None = None) -> bool:
+    """不计驿程的可见性：未处理，且 turn 窗口（按 turn，缺省当前回合）与 conditions 均满足。
 
     - 写 turn：可见回合为 [turn, turn + expires_after]（expires_after 缺省 0）。
     - 写 conditions：条件满足时可见；与 turn 同写时二者都须满足。
@@ -43,15 +44,56 @@ def is_visible(item: dict[str, Any], state: WorldState) -> bool:
     """
     if state.flags.get(memorial_flag(str(item.get("id")))) is not None:
         return False
-    turn = item.get("turn")
-    if turn is not None:
-        start = int(turn)
+    at = state.turn if turn is None else turn
+    window = item.get("turn")
+    if window is not None:
+        start = int(window)
         end = start + int(item.get("expires_after", 0) or 0)
-        if not start <= state.turn <= end:
+        if not start <= at <= end:
             return False
     if "conditions" in item and not matches(item.get("conditions"), state):
         return False
     return True
+
+
+def is_visible(item: dict[str, Any], state: WorldState) -> bool:
+    """当季可见。远地（驿程超过阈值，见 domain.courier）的奏疏晚一季送达：turn 窗口后移一季；
+    写了 conditions 的须在上季结算时已记下发出（内部旗标），且此刻条件仍成立。"""
+    if not memorial_is_far(item, state):
+        return base_visible(item, state)
+    if state.flags.get(memorial_flag(str(item.get("id")))) is not None:
+        return False
+    window = item.get("turn")
+    if window is not None:
+        start = int(window) + 1
+        end = start + int(item.get("expires_after", 0) or 0)
+        if not start <= state.turn <= end:
+            return False
+    if "conditions" in item:
+        dispatched = state.flags.get(memorial_dispatch_key(str(item.get("id"))))
+        if dispatched is None or int(dispatched) >= state.turn:
+            return False
+        if not matches(item.get("conditions"), state):
+            return False
+    return True
+
+
+def courier_info(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
+    """奏到信息：{courier_days, arrival「某月某日自某地奏到」, arrived_late, origin_turn}；条目不带地区时为空。"""
+    region = str(item.get("region") or "")
+    if region not in state.regions:
+        return {}
+    late = memorial_is_far(item, state)
+    origin: int | None = None
+    if late:
+        dispatched = state.flags.get(memorial_dispatch_key(str(item.get("id"))))
+        origin = int(dispatched) if dispatched is not None else state.turn - 1
+    return {
+        "courier_days": courier_days(state, region),
+        "arrival": arrival_text(state, region, late=late),
+        "arrived_late": late,
+        "origin_turn": origin,
+    }
 
 
 def visible_memorials(scenario: dict[str, Any], state: WorldState) -> list[dict[str, Any]]:
@@ -134,6 +176,7 @@ def _public_item(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
         "advisors": advisors,
         "options": options,
         "illustration": item.get("illustration"),
+        **courier_info(item, state),
     }
 
 
@@ -278,6 +321,10 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
             plan = posting_plan(state, character, army_station(army), bool(raw.get("dispatch", False)), army=army)
             text += f"；{plan['text']}"
         return text
+    if op == "set_army_posture":
+        from simcore.domain.military import posture_label
+
+        return f"{name('army', raw['army'])} 改取{posture_label(str(raw.get('posture')))}之势"
     if op == "adjust_trait":
         if str(raw["trait"]) in {str(item) for item in state.rules.get("hidden_traits", []) or []}:
             return f"{name('character', raw['character'])} 心态有变（不明）"

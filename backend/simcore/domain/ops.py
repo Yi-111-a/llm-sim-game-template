@@ -165,6 +165,15 @@ class SetArmyCommander(OpModel):
     dispatch: bool = False
 
 
+class SetArmyPosture(OpModel):
+    """军令姿态：hold 坚守 / attack 进击 / scorch 坚壁清野（影响战斗与驻地，见 domain.military）。"""
+
+    op: Literal["set_army_posture"]
+    army: str
+    posture: Literal["hold", "attack", "scorch"]
+    reason: str = ""
+
+
 class AdjustTrait(OpModel):
     op: Literal["adjust_trait"]
     character: str
@@ -218,6 +227,7 @@ StateOp: TypeAlias = Annotated[
     | AdjustArmy
     | SetArmyFaction
     | SetArmyCommander
+    | SetArmyPosture
     | AdjustTrait
     | AdjustCounter
     | SetCounter
@@ -248,6 +258,7 @@ OP_NAMES: tuple[str, ...] = (
     "adjust_army",
     "set_army_faction",
     "set_army_commander",
+    "set_army_posture",
     "adjust_trait",
     "adjust_counter",
     "set_counter",

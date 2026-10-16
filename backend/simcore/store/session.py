@@ -618,6 +618,7 @@ _OP_LABELS = {
     "adjust_army": "兵力调整",
     "set_army_faction": "军队改隶",
     "set_army_commander": "军队易帅",
+    "set_army_posture": "军令姿态",
     "adjust_trait": "心态调整",
     "adjust_counter": "计数调整",
     "set_counter": "计数设定",

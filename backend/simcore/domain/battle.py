@@ -49,7 +49,15 @@ def resolve_battles(
             if pair is None:
                 break
             defender, attacker = pair
-            battle, battle_facts = _fight(state, region_id, attacker, defender, rng, defense_stat)
+            from simcore.domain.military import all_holding
+
+            attackers = [army for army in present if army.faction == attacker]
+            if all_holding(attackers):
+                # 攻方诸军皆取坚守之势：按兵不动，不主动交战（军令，见 domain.military）
+                names = "、".join(army.name for army in attackers)
+                facts.append(Fact(kind="standoff", text=f"{names}奉令坚守，未与{_faction_name(state, defender)}交战于{region.name}", entity=region_id))
+                break
+            battle, battle_facts = _fight(state, region_id, attacker, defender, rng, defense_stat, wars)
             battles.append(battle)
             facts.extend(battle_facts)
             if battle["result"] == "stalemate":
@@ -84,13 +92,23 @@ def _fight(
     defender: str,
     rng: random.Random,
     defense_stat: str,
+    wars: list[Any] | None = None,
 ) -> tuple[dict[str, Any], list[Fact]]:
+    from simcore.domain.military import loser_loss, power_modifier
+
     region = state.regions[region_id]
     attackers = [army for army in _present(state, region_id) if army.faction == attacker]
     defenders = [army for army in _present(state, region_id) if army.faction == defender]
     defense = float(region.stats.get(defense_stat, 0)) if region.controller == defender else 0.0
-    attack_power = sum(army.strength * army.quality for army in attackers) * rng.uniform(1 - LUCK_SPREAD, 1 + LUCK_SPREAD)
-    defend_power = sum(army.strength * army.quality for army in defenders) * (1 + defense / 100) * rng.uniform(1 - LUCK_SPREAD, 1 + LUCK_SPREAD)
+    # 军令系数（坚守 / 进击 / 坚壁清野，见 domain.military）；无姿态时为 1，战力公式与旧版一致
+    modifiers = {army.id: power_modifier(state, army, "attacker", region_id, wars) for army in attackers}
+    modifiers.update({army.id: power_modifier(state, army, "defender", region_id, wars) for army in defenders})
+    attack_power = sum(army.strength * army.quality * modifiers[army.id][0] for army in attackers) * rng.uniform(1 - LUCK_SPREAD, 1 + LUCK_SPREAD)
+    defend_power = (
+        sum(army.strength * army.quality * modifiers[army.id][0] for army in defenders)
+        * (1 + defense / 100)
+        * rng.uniform(1 - LUCK_SPREAD, 1 + LUCK_SPREAD)
+    )
     battle: dict[str, Any] = {
         "region": region_id,
         "region_name": region.name,
@@ -112,8 +130,8 @@ def _fight(
             "defense_bonus": defense,
             "winner_loss": WINNER_LOSS,
             "loser_loss": LOSER_LOSS,
-            "attacker": [_army_factor(state, army) for army in attackers],
-            "defender": [_army_factor(state, army) for army in defenders],
+            "attacker": [_army_factor(state, army, modifiers[army.id][1]) for army in attackers],
+            "defender": [_army_factor(state, army, modifiers[army.id][1]) for army in defenders],
         },
     }
     attacker_name = _faction_name(state, attacker)
@@ -146,8 +164,9 @@ def _fight(
         before = army.strength
         army.strength = max(0.0, army.strength - loss)
         facts.append(Fact(kind="army", text=f"{army.name}战损", entity=army.id, before=before, after=army.strength))
+    winner_role = "attacker" if attacker_won else "defender"
     for army in losers:
-        loss = round(army.strength * LOSER_LOSS, 2)
+        loss = round(army.strength * loser_loss(state, LOSER_LOSS, army, winners, winner_role), 2)
         battle["losses"][army.id] = loss
         before = army.strength
         army.strength = max(0.0, army.strength - loss)
@@ -180,7 +199,7 @@ def _fight(
     return battle, facts
 
 
-def _army_factor(state: WorldState, army: Army) -> dict[str, Any]:
+def _army_factor(state: WorldState, army: Army, notes: list[str] | None = None) -> dict[str, Any]:
     presence = commander_presence(state, army)
     if presence["present"]:
         command = "present"
@@ -195,6 +214,8 @@ def _army_factor(state: WorldState, army: Army) -> dict[str, Any]:
         "quality": army.quality,
         "commander": presence["name"],
         "command": command,
+        **({"posture": army.posture} if army.posture else {}),
+        **({"modifiers": list(notes)} if notes else {}),
     }
 
 

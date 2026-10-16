@@ -1,0 +1,42 @@
+- id: card_march
+  category: 军务
+  title: 出征
+  summary: 命一军率统帅出征某地。
+  params:
+    - {name: army, kind: army, label: 军队, filter: {idle: true}}
+    - {name: to, kind: region, label: 目的地}
+  ops:
+    - {op: march, army: "{army}", to_region: "{to}"}
+  cost_hint: 行军期间军饷照支
+- id: card_hold
+  category: 军务
+  title: 坚守
+  summary: 命一军坚守驻地。
+  params:
+    - {name: army, kind: army, label: 军队}
+  ops:
+    - {op: set_army_posture, army: "{army}", posture: hold}
+  cost_hint: 不出战
+- id: card_appoint
+  category: 人事
+  title: 拜官
+  summary: 以一人任一出缺之职。
+  params:
+    - {name: who, kind: character, label: 人选, filter: {present: true, can_hold_office: true}}
+    - {name: office, kind: office, label: 官职, filter: {vacant: true}}
+  ops:
+    - {op: appoint, character: "{who}", office: "{office}"}
+    - {op: remember, character: "{who}", fact: "拜{office.name}"}
+  cost_hint: 无
+  cooldown: 2
+- id: card_wall
+  category: 内政
+  title: 修城
+  summary: 拨款修城。
+  params:
+    - {name: region, kind: region, label: 地区, filter: {controller: own}}
+    - {name: cost, kind: amount, label: 每季花费, min: 20, max: 100}
+  ops:
+    - {op: start_project, name: 修城, region: "{region}", cost_per_turn: {treasury: "{cost}"}, turns: 2, on_complete: [{op: adjust_region, region: "{region}", stat: defense, delta: 3}]}
+  cost_hint: 国库每季按所拨
+  requires: {kind: resource, id: treasury, operator: gte, value: 100}

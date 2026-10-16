@@ -71,9 +71,10 @@ SIM_MCP_MODE = "client"
 | `briefing` | `session_id` | 历法、目标、公开资源（隐藏资源只给区间）、危机计及分项、奏疏（含选项与 ops 摘要）、待决事件、上季事实，末尾附扮演与数字规则 |
 | `op_reference` | `session_id` | 全部 StateOp 的 JSON Schema 与当前实体 id 表 |
 | `audience` | `session_id, character, question?` | client：人设卡 + 该人物可知的 StateDigest + 记忆 + 口吻要求；server：带 question 时返回回答。死者、系狱者拒绝 |
-| `court_debate` | `session_id, topic, participants` | 引擎给定的立场 + 人设（client），或各人台词（server） |
+| `court_debate` | `session_id, topic, participants, memorial_id?, option_id?, written?` | 引擎给定的立场 + 人设（client），或各人台词（server）；participants 须在京（`NOT_PRESENT`），written 递书面议状、下季入谏言库 |
+| `policy_cards` | `session_id` | 政令卡：类别、可用状态、代价提示、各参数按局势过滤的可选值 |
 | `save_advice` | `session_id, character, text` | 存入谏言库，不改变状态 |
-| `draft_edict` | `session_id, sections?, adopted?, ops?` | 回执逐条 applied / rejected（原因与错误码）/ delayed / narrative_only，返回 `edict_id` |
+| `draft_edict` | `session_id, sections?, adopted?, ops?, cards?` | 回执逐条 applied / rejected（原因与错误码）/ delayed（驿程 / 有司稽迟 / 将领自主）/ narrative_only，返回 `edict_id`；cards 为 `[{card_id, params}]` |
 | `confirm_edict` | `session_id, edict_id` | 生效并记下已采纳奏疏 |
 | `choose` | `session_id, choice_id, option_id` | 处置待决事件 |
 | `end_turn` | `session_id` | 事实、账目合计、战报、事件、新待决事件、危机分项、纪事、终局 |

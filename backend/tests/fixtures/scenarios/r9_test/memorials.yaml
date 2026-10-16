@@ -1,0 +1,32 @@
+- id: m_tax
+  turn: 0
+  expires_after: 1
+  title: 请减赋
+  summary: 户部请减京畿赋税。
+  region: capital
+  advisors:
+    - {character: chancellor, stance: oppose, line: 国用不足。}
+    - {character: eunuch, stance: support, line: 民力宜惜。}
+  options:
+    - {id: approve, label: 准减赋, hint: "国库 −50", ops: [{op: adjust_resource, resource: treasury, delta: -50, reason: 减赋}, {op: set_flag, key: tax_cut, value: true}]}
+    - {id: deny, label: 驳回, ops: []}
+- id: m_border
+  conditions: {kind: flag, key: petition_seen}
+  title: 边镇奏报
+  summary: 边镇奏请增兵。
+  options:
+    - {id: reinforce, label: 增兵, ops: [{op: adjust_army, army: pass_army, delta: 5000, reason: 增兵}]}
+- id: m_west
+  turn: 0
+  title: 西陲奏报
+  summary: 西帅奏报边情。
+  region: west
+  options:
+    - {id: noted, label: 知道了, ops: []}
+- id: m_west_alarm
+  conditions: {kind: flag, key: west_alarm}
+  title: 西陲告急
+  summary: 西陲告急。
+  region: west
+  options:
+    - {id: noted, label: 知道了, ops: []}

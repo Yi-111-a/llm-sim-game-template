@@ -1,0 +1,138 @@
+manifest_version: 1
+entries:
+- id: character.ruler.portrait
+  kind: portrait
+  used_by: ruler
+  path: assets/ruler.webp
+  size:
+  - 768
+  - 1024
+  format: webp
+- id: character.chancellor.portrait
+  kind: portrait
+  used_by: chancellor
+  path: assets/chancellor.webp
+  size:
+  - 768
+  - 1024
+  format: webp
+- id: character.general.portrait
+  kind: portrait
+  used_by: general
+  path: assets/general.webp
+  size:
+  - 768
+  - 1024
+  format: webp
+- id: character.plotter.portrait
+  kind: portrait
+  used_by: plotter
+  path: assets/plotter.webp
+  size:
+  - 768
+  - 1024
+  format: webp
+- id: character.eunuch.portrait
+  kind: portrait
+  used_by: eunuch
+  path: assets/eunuch.webp
+  size:
+  - 768
+  - 1024
+  format: webp
+- id: region.capital.card
+  kind: region_card
+  used_by: capital
+  path: assets/capital.webp
+  size:
+  - 1024
+  - 576
+  format: webp
+- id: region.pass.card
+  kind: region_card
+  used_by: pass
+  path: assets/pass.webp
+  size:
+  - 1024
+  - 576
+  format: webp
+- id: region.plain.card
+  kind: region_card
+  used_by: plain
+  path: assets/plain.webp
+  size:
+  - 1024
+  - 576
+  format: webp
+- id: region.north.card
+  kind: region_card
+  used_by: north
+  path: assets/north.webp
+  size:
+  - 1024
+  - 576
+  format: webp
+- id: ui.topbar.background
+  kind: ui_background
+  used_by: ui
+  path: assets/ui.topbar.background.webp
+  size:
+  - 1024
+  - 1024
+  format: webp
+- id: ui.edict.parchment
+  kind: ui_background
+  used_by: ui
+  path: assets/ui.edict.parchment.webp
+  size:
+  - 1024
+  - 1024
+  format: webp
+- id: ui.court.backdrop
+  kind: ui_background
+  used_by: ui
+  path: assets/ui.court.backdrop.webp
+  size:
+  - 1024
+  - 1024
+  format: webp
+- id: ui.map.base
+  kind: ui_background
+  used_by: ui
+  path: assets/ui.map.base.webp
+  size:
+  - 1024
+  - 1024
+  format: webp
+- id: ui.memorial.banner
+  kind: ui_background
+  used_by: ui
+  path: assets/ui.memorial.banner.webp
+  size:
+  - 1024
+  - 1024
+  format: webp
+- id: character.westlord.portrait
+  kind: portrait
+  used_by: westlord
+  path: assets/westlord.webp
+  size:
+  - 768
+  - 1024
+  format: webp
+- id: region.west.card
+  kind: region
+  used_by: west
+  path: assets/west.webp
+  size:
+  - 768
+  - 512
+  format: webp
+- id: region.east.card
+  kind: region
+  used_by: east
+  path: assets/east.webp
+  size:
+  - 768
+  - 512
+  format: webp

@@ -10,9 +10,12 @@ from typing import Any
 from simcore.agent.loop import guarded_chat
 from simcore.agent.offline import chronicle_numbers, is_offline, offline_chronicle, offline_minister_reply
 from simcore.agent.tools import PLAYER_TIER, AgentTools
+from simcore.domain.cards import CardError, expand_card
+from simcore.domain.courier import courier_delay_reason, far_target
 from simcore.domain.difficulty import delay_factor
 from simcore.domain.digest import digest_numbers, render_digest
 from simcore.domain.memorials import MemorialError, adopted_ops
+from simcore.domain.military import autonomy_preview
 from simcore.domain.models import TurnReport, WorldState
 from simcore.domain.rules import audience_mode
 from simcore.domain.visibility import format_number, resource_display
@@ -55,6 +58,9 @@ TOOL_SCHEMA = [
 ]
 
 
+OFFLINE_TEXT_REASON = "未接模型：御笔只记入史册，不生效力；请用奏疏批答或政令卡"
+
+
 async def interpret_edict(
     sections: dict[str, str],
     scenario: dict[str, Any],
@@ -64,11 +70,15 @@ async def interpret_edict(
     abort_event: asyncio.Event | None = None,
     adopted: list[dict[str, str]] | None = None,
     client_ops: list[dict[str, Any]] | None = None,
+    cards: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """生成诏书草案回执（不改变状态）。
 
     处理顺序：采纳的奏疏选项（source=memorial）→ 客户端模型直接给出的 ops（source=client）
-    → 各类别诏令文本经 LLM 解释（source=text）。所有条款按顺序累积预演，并按同一种子 RNG 判定延期：
+    → 政令卡展开（source=card，玩家层）→ 各类别诏令文本经 LLM 解释（source=text）。
+    作用于远地（驿程超过阈值）的条款整组延至下季（delay_kind=courier，「驿程遥远，令达于下季」），与有司稽迟
+    （delay_kind=bureaucratic）分开显示；军令条款附将领自主风险等级（autonomy_risk）。
+    provider 为离线 mock 时，文本一律 narrative_only（「未接模型：御笔只记入史册……」）。所有条款按顺序累积预演，并按同一种子 RNG 判定延期：
     每个奏疏选项、每条客户端 op、每段诏令文本各掷一次（同组条款带相同 group，整组一起执行或一起延期）。
     provider 为 None（MCP client 模式）时，文本只记为 narrative_only。
     """
@@ -89,6 +99,7 @@ async def interpret_edict(
         nonlocal group_counter
         group_counter += 1
         delayed = any(item["status"] == "applied" for item in receipt) and rng.random() < delay["probability"]
+        far = far_target(state, [item["op"] for item in receipt if item["status"] == "applied" and isinstance(item.get("op"), dict)])
         for item in receipt:
             status = item["status"]
             row = {
@@ -99,8 +110,19 @@ async def interpret_edict(
                 "reason": item.get("reason", ""),
                 "code": item.get("code"),
             }
-            if status == "applied" and delayed:
-                row.update({"status": "delayed", "delay_reason": delay["reason"], "due_turn": state.turn + 1})
+            if status == "applied" and isinstance(item.get("op"), dict):
+                risk = autonomy_preview(state, item["op"])
+                if risk is not None:
+                    row.update({"autonomy_risk": risk["level"], "autonomy_note": risk["text"]})
+            if status == "applied" and far is not None:
+                row.update({
+                    "status": "delayed",
+                    "delay_kind": "courier",
+                    "delay_reason": courier_delay_reason(state, far[0], far[1]),
+                    "due_turn": state.turn + 1,
+                })
+            elif status == "applied" and delayed:
+                row.update({"status": "delayed", "delay_kind": "bureaucratic", "delay_reason": delay["reason"], "due_turn": state.turn + 1})
             clauses.append(row)
 
     memorial_items = {str(row.get("id")): row for row in scenario.get("memorials") or [] if isinstance(row, dict)}
@@ -132,6 +154,29 @@ async def interpret_edict(
         add_clauses(tools.propose_ops(operations), base)
     for client_op in client_ops or []:
         add_clauses(tools.propose_ops([client_op], tier=PLAYER_TIER), {"category": "client", "text": "", "source": "client", "label": "诏令"})
+    used_cards: list[str] = []
+    for entry in cards or []:
+        entry = entry if isinstance(entry, dict) else {}
+        card_id = str(entry.get("card_id") or entry.get("id") or "")
+        base = {"category": "card", "text": f"政令卡 {card_id}", "source": "card", "card_id": card_id, "label": "政令卡"}
+        try:
+            card, card_ops, summary = expand_card(tools.state, scenario, card_id, entry.get("params") if isinstance(entry.get("params"), dict) else {})
+        except CardError as exc:
+            clauses.append({**base, "status": "rejected", "op": None, "reason": exc.message, "code": exc.code})
+            continue
+        title = str(card.get("title", card_id))
+        base.update({
+            "category": str(card.get("category", "card")),
+            "text": f"{title}：{summary}" if summary else title,
+            "card_title": title,
+            "label": f"政令卡「{title}」",
+            "cost_hint": str(card.get("cost_hint", "")),
+        })
+        if int(card.get("cooldown") or 0) and card_id in used_cards:
+            clauses.append({**base, "status": "rejected", "op": None, "reason": f"「{title}」有冷却，一道诏书只能用一次", "code": "CARD_COOLDOWN"})
+            continue
+        used_cards.append(card_id)
+        add_clauses(tools.propose_ops(card_ops, tier=PLAYER_TIER), base)
 
     for index, (category, text) in enumerate(sections.items()):
         if index >= 12:
@@ -151,7 +196,18 @@ async def interpret_edict(
                 "text": text,
                 "status": "narrative_only",
                 "ops": [],
-                "reason": "客户端模式下诏令文本不经解释，仅作记录；请以 ops 提交可执行条款。",
+                "reason": "客户端模式下诏令文本不经解释，仅作记录；请以 ops 或政令卡（cards）提交可执行条款。",
+                "source": "text",
+            })
+            continue
+        if is_offline(provider):
+            clauses.append({
+                "category": category,
+                "text": text,
+                "status": "narrative_only",
+                "ops": [],
+                "reason": OFFLINE_TEXT_REASON,
+                "code": "OFFLINE_TEXT",
                 "source": "text",
             })
             continue

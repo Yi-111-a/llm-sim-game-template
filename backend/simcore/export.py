@@ -23,7 +23,24 @@ from simcore.domain.models import WorldState
 from simcore.domain.rules import delay_phrase
 from simcore.domain.visibility import battle_breakdown, fact_line, public_report, resource_display
 
-CLAUSE_KEYS = ("status", "source", "summary", "text", "code", "reason", "delay_reason", "due_turn", "memorial_id", "option_id", "changed", "previous_status")
+CLAUSE_KEYS = (
+    "status",
+    "source",
+    "summary",
+    "text",
+    "code",
+    "reason",
+    "delay_reason",
+    "delay_kind",
+    "due_turn",
+    "memorial_id",
+    "option_id",
+    "card_id",
+    "card_title",
+    "autonomy_risk",
+    "changed",
+    "previous_status",
+)
 
 
 def compact_clauses(clauses: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -34,7 +51,7 @@ def compact_clauses(clauses: list[dict[str, Any]]) -> list[dict[str, Any]]:
         row.update({key: clause[key] for key in CLAUSE_KEYS if clause.get(key) not in (None, "", False)})
         if clause.get("status") == "delayed":
             row["timing"] = delay_phrase(clause.get("due_turn"))
-        if clause.get("source") in {"client", "text"} and clause.get("op"):
+        if clause.get("source") in {"client", "text", "card"} and clause.get("op"):
             row["op"] = clause["op"]
         rows.append(row)
     return rows

@@ -14,6 +14,7 @@ from simcore.service import GameService
 
 EXPECTED_TOOLS = {
     "list_scenarios",
+    "policy_cards",
     "export_log",
     "new_game",
     "list_saves",
@@ -160,7 +161,7 @@ def test_server_mode_uses_configured_provider(mech_env) -> None:
             error, debate = await call(client, "court_debate", session_id=session_id, topic="边镇增兵议", participants=["chancellor", "general"])
             assert not error and "李相（support）：" in debate and "郭将军（oppose）：" in debate
             error, draft = await call(client, "draft_edict", session_id=session_id, sections={"interior": "国库增加 10"})
-            assert not error and "[rejected 被拒] [OP_NOT_PERMITTED] (text) 国库 +10" in draft
+            assert not error and "[narrative_only 仅记录] (text) 国库增加 10；原因：未接模型" in draft
             error, report = await call(client, "end_turn", session_id=session_id)
             assert not error and "## 纪事" in report
 

@@ -40,7 +40,7 @@ def test_edict_preview_has_applied_and_rejected_clauses_without_mutating_state()
             {"finance": "国库增加 10", "appointment": "任命不存在的人为大将军"},
             scenario,
             state,
-            MockProvider(scenario),
+            MockProvider(scenario, offline=False),
             seed=7,
         )
     )
@@ -59,7 +59,7 @@ def test_delayed_clause_is_queued_and_executes_on_next_turn(tmp_path: Path) -> N
             {"finance": "国库增加 10"},
             scenario,
             state,
-            MockProvider(scenario),
+            MockProvider(scenario, offline=False),
             seed=3,
         )
     )
@@ -83,7 +83,7 @@ def test_json_mode_fallback_parses_ops_with_mock_provider() -> None:
             {"finance": "国库增加 10"},
             scenario,
             state,
-            MockProvider(scenario, tool_calling=False),
+            MockProvider(scenario, tool_calling=False, offline=False),
             seed=9,
         )
     )
@@ -187,8 +187,9 @@ def test_api_create_draft_confirm_turn_and_read_state(monkeypatch, tmp_path) -> 
     assert draft.status_code == 200
     receipt = draft.json()
     assert receipt["confirmed"] is False
-    # 诏令文本经模型解释出的 adjust_resource 属玩家层，缺省不许：OP_NOT_PERMITTED，国库只有经常收入
-    assert receipt["clauses"][0]["status"] == "rejected" and receipt["clauses"][0]["code"] == "OP_NOT_PERMITTED"
+    # 未接模型（离线 mock）：御笔只记入史册，narrative_only（第 9 轮 §7.4）；国库只有经常收入
+    assert receipt["clauses"][0]["status"] == "narrative_only" and receipt["clauses"][0]["code"] == "OFFLINE_TEXT"
+    assert "未接模型" in receipt["clauses"][0]["reason"]
     assert created.json()["state"]["resources"]["treasury"]["amount"] == 100
 
     confirmed = client.post(

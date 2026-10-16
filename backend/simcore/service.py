@@ -20,12 +20,24 @@ from simcore.agent.roles import AUDIENCE_VOICE, chat_availability, interpret_edi
 from simcore.agent.tools import PLAYER_TIER, SCENARIO_TIER, AgentTools
 from simcore.config import load_settings
 from simcore.domain.apply import OpRejected, apply, edict_memories
+from simcore.domain.cards import card_flag, cards_view
 from simcore.domain.command import command_table, command_table_lines
+from simcore.domain.court import (
+    agenda_counts,
+    agenda_key,
+    agenda_refusal,
+    agenda_view,
+    not_present_message,
+    presence,
+    present_list,
+    remote_reply_mode,
+)
 from simcore.domain.describe import describe_condition
 from simcore.domain.difficulty import DifficultyError, current_difficulty, public_difficulties
 from simcore.domain.digest import render_digest
 from simcore.domain.events import matches
 from simcore.domain.memorials import MemorialError, is_visible, memorial_flag, summarize_ops, visible_memorials
+from simcore.domain.military import MILITARY_ORDERS, armies_overview, roll_autonomy
 from simcore.domain.models import TurnReport, WorldState, clone
 from simcore.domain.reference import ReferenceError, build_reference
 from simcore.domain.rules import (
@@ -57,7 +69,7 @@ from simcore.domain.visibility import (
 )
 from simcore.export import build_export, compact_clauses
 from simcore.llm.base import LLMProvider
-from simcore.scenario.loader import build_initial_state, load_scenario, validate_scenario
+from simcore.scenario.loader import build_initial_state, load_scenario, tutorial_steps, validate_scenario
 from simcore.store.session import SessionStore, state_hash
 from simcore.version import ENGINE_VERSION as ENGINE_VERSION  # 兼容旧的导入位置
 
@@ -85,6 +97,8 @@ ERROR_STATUS = {
     "CHARACTER_UNAVAILABLE": 409,
     "PLAYER_CHARACTER": 422,
     "DEBUG_DISABLED": 403,
+    "AGENDA_EXHAUSTED": 409,
+    "NOT_PRESENT": 409,
     "PROVIDER_ERROR": 502,
     "TIMEOUT": 504,
     "INTERNAL": 500,
@@ -97,6 +111,9 @@ ROLEPLAY_RULES = """## 扮演与数字规则（必须遵守）
 4. 只叙述已执行的事实（end_turn 返回的事实与纪事）；未发生的事不得写成已发生。
 5. 扮演人物时，以 audience 返回的人设卡与该人物可知的事实摘要为限；死者、系狱者不能应答。
 6. 廷议的立场由引擎给定（court_debate），你只能据此写台词，不得改变立场；廷议结论只能作为谏言（save_advice），不能直接变成操作。"""
+
+ENVOY_SENT = "使者已发，回奏于下季送达"
+WRITTEN_SOURCE = "书面议状"
 
 
 def _role_label(state: WorldState, character: Any) -> str:
@@ -368,7 +385,170 @@ class GameService:
             "command_table": command_table(state, self.player_character(session, state)),
             # 下一次结算即终局时的提示（game_length 时限），否则 None
             "final_notice": final_season_notice(state, self.definition(session)),
+            # 第 9 轮：朝会日程、回奏、书面议状、诏令解释模式（offline|llm）、新手引导
+            "agenda": agenda_view(state, self.settings(session)),
+            "replies": self.replies(session, state),
+            "written_opinions": [row for row in session.advice() if row.get("source") == WRITTEN_SOURCE and row.get("turn") == state.turn],
+            "provider_mode": self.provider_mode(session),
+            "tutorial": self.tutorial(session, state),
         }
+
+    # ---- 第 9 轮：朝会日程、回奏、在场、政令卡、军令、新手引导 ---------------------------------
+
+    def settings(self, session: SessionStore) -> dict[str, Any]:
+        settings = self.definition(session).get("settings")
+        return settings if isinstance(settings, dict) else {}
+
+    def provider_mode(self, session: SessionStore) -> str:
+        """诏令文本由谁解释：offline（离线 mock：御笔只记入史册）或 llm。"""
+        try:
+            return "offline" if is_offline(self.provider(session.scenario, "edict_interpreter")) else "llm"
+        except Exception:  # noqa: BLE001 - 设置有误时按离线提示
+            return "offline"
+
+    def tutorial(self, session: SessionStore, state: WorldState) -> dict[str, Any]:
+        """新手引导：当季步骤（剧本 tutorial，按 step 排序）；会话标记 tutorial=false 时关闭。"""
+        enabled = (session.header.get("session_flags") or {}).get("tutorial", True) is not False
+        steps = tutorial_steps(session.scenario)
+        rows = [
+            {
+                "turn": row.get("turn"),
+                "step": row.get("step", index + 1),
+                "title": row.get("title", ""),
+                "text": row.get("text", ""),
+                "target": row.get("target"),
+            }
+            for index, row in enumerate(steps)
+            if isinstance(row, dict) and row.get("turn") == state.turn
+        ]
+        rows.sort(key=lambda row: int(row["step"]) if isinstance(row["step"], (int, float)) else 0)
+        return {"enabled": enabled, "steps": rows if enabled and state.outcome is None else [], "total": len(steps)}
+
+    def set_session_flags(self, session_id: str, tutorial: bool | None = None) -> dict[str, Any]:
+        """会话标记（存档头 session_flags，不进状态哈希）：目前只有 tutorial（新手引导开关）。"""
+        session = self.session(session_id)
+        flags = dict(session.header.get("session_flags") or {})
+        if tutorial is not None:
+            flags["tutorial"] = bool(tutorial)
+        session.header["session_flags"] = flags
+        session._write()
+        self.touch(session_id)
+        return {"session_flags": flags, "tutorial": self.tutorial(session, session.head_state())}
+
+    def present(self, session_id: str) -> dict[str, Any]:
+        session = self.session(session_id)
+        return present_list(session.head_state(), self.settings(session))
+
+    def policy_cards(self, session_id: str) -> list[dict[str, Any]]:
+        session = self.session(session_id)
+        return cards_view(session.head_state(), session.scenario)
+
+    def armies(self, session_id: str) -> dict[str, Any]:
+        session = self.session(session_id)
+        state = session.head_state()
+        return {
+            "armies": armies_overview(state, cards_view(state, session.scenario)),
+            "regions": [{"id": row.id, "name": row.name, "controller": row.controller} for row in state.regions.values()],
+            "turn_unit": turn_unit_label(state),
+        }
+
+    def _count_agenda(self, session: SessionStore, kind: str) -> None:
+        """计一次召对 / 廷议（只有配置了上限才计；终局后不计）。已满时 AGENDA_EXHAUSTED。"""
+        state = session.head_state()
+        settings = self.settings(session)
+        refusal = agenda_refusal(state, kind, settings)
+        if refusal:
+            raise GameError("AGENDA_EXHAUSTED", refusal)
+        if agenda_counts(state, kind, settings) and state.outcome is None:
+            session.append_op({"op": "adjust_counter", "key": agenda_key(kind), "delta": 1}, source="朝会日程")
+
+    def begin_audience(self, session_id: str, character_id: str, question: str = "", via: str = "rest") -> dict[str, Any]:
+        """召对开始：校验（玩家本人、在世）、朝会日程（已满 AGENDA_EXHAUSTED，否则计一次）；
+        远地召对在 remote_reply=next_season 时记下问话，回奏于下季送达（deferred=True）。"""
+        session = self.session(session_id)
+        state = session.head_state()
+        character = self._character(state, character_id)
+        self._reject_player(session, state, character_id)
+        afterlife = bool(self.settings(session).get("afterlife_chat", False))
+        if chat_availability(character_id, state, afterlife) is not None:
+            raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}{'已故' if character.status == 'dead' else '系狱'}，无法召对")
+        mode = self.audience_mode(session, state, character_id)
+        deferred = mode["mode"] != "in_person" and remote_reply_mode(state, self.settings(session)) == "next_season"
+        self._count_agenda(session, "audience")
+        if deferred:
+            session.append_message(
+                "envoy",
+                question,
+                {"character": character_id, "mode": mode["mode"], "mode_label": mode["label"], "turn": state.turn, "via": via},
+            )
+        self.touch(session_id)
+        return {"mode": mode, "deferred": deferred, "agenda": agenda_view(session.head_state(), self.settings(session))}
+
+    def replies(self, session: SessionStore, state: WorldState) -> list[dict[str, Any]]:
+        """本季送达的回奏：服务端 / REST 的遣使问对在结算时生成（text）；client 模式的由调用方扮演（text 为 null，roleplay=True）。"""
+        rows: list[dict[str, Any]] = []
+        for message in session.messages():
+            meta = message.get("metadata") or {}
+            character_id = str(meta.get("character", ""))
+            name = state.characters[character_id].name if character_id in state.characters else character_id
+            base = {"character": character_id, "name": name, "mode": meta.get("mode"), "mode_label": meta.get("mode_label"), "turn": state.turn}
+            if message.get("role") == "reply" and meta.get("turn") == state.turn:
+                rows.append({
+                    **base,
+                    "question": meta.get("question", ""),
+                    "asked_turn": meta.get("asked_turn"),
+                    "text": message.get("content", ""),
+                    "roleplay": False,
+                    "via": meta.get("via"),
+                })
+            elif message.get("role") == "envoy" and meta.get("via") == "client" and meta.get("turn") == state.turn - 1:
+                rows.append({**base, "question": message.get("content", ""), "asked_turn": meta.get("turn"), "text": None, "roleplay": True, "via": "client"})
+        return rows
+
+    async def _deliver_dispatches(self, session: SessionStore, asked_turn: int, state: WorldState) -> dict[str, list[dict[str, Any]]]:
+        """结算后：上季遣使问对的回奏（非 client 的由 provider / 离线模板生成）与书面议状（记入谏言库，来源「书面议状」）。"""
+        replies: list[dict[str, Any]] = []
+        written: list[dict[str, Any]] = []
+        report = session.last_report()
+        for message in session.messages():
+            meta = message.get("metadata") or {}
+            if meta.get("turn") != asked_turn or message.get("role") not in {"envoy", "written_opinion"}:
+                continue
+            character_id = str(meta.get("character", ""))
+            if character_id not in state.characters:
+                continue
+            character = state.characters[character_id]
+            if message.get("role") == "written_opinion":
+                row = session.append_advice(character_id, str(message.get("content", "")), WRITTEN_SOURCE)
+                written.append({**row, "name": character.name})
+                continue
+            if meta.get("via") == "client":
+                continue
+            question = str(message.get("content", ""))
+            if chat_availability(character_id, state, False) is not None:
+                text = f"{character.name}已不能回奏（{'已故' if character.status == 'dead' else '系狱'}）。"
+            else:
+                try:
+                    provider = self.provider(session.scenario, "minister_chat")
+                    if is_offline(provider):
+                        text = offline_minister_text(character_id, state, question, session.scenario, session.seed, report)
+                    else:
+                        messages = minister_chat_messages(character_id, state, question, session.scenario, session.seed, report)
+                        text = (await provider.chat(messages)).content
+                except Exception:  # noqa: BLE001 - 回奏生成失败时用离线模板，不影响已结算的回合
+                    text = offline_minister_text(character_id, state, question, session.scenario, session.seed, report)
+            meta_out = {
+                "character": character_id,
+                "mode": meta.get("mode"),
+                "mode_label": meta.get("mode_label"),
+                "turn": state.turn,
+                "asked_turn": asked_turn,
+                "question": question,
+                "via": meta.get("via"),
+            }
+            session.append_message("reply", text, meta_out)
+            replies.append({**meta_out, "name": character.name, "text": text})
+        return {"replies": replies, "written_opinions": written}
 
     REVIEW_LIMIT = 24
 
@@ -545,6 +725,7 @@ class GameService:
         adopted: list[dict[str, str]] | None = None,
         ops: list[dict[str, Any]] | None = None,
         use_provider: bool = True,
+        cards: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         session = self.session(session_id)
         state = session.state
@@ -564,6 +745,7 @@ class GameService:
                 abort_event,
                 adopted=adopted,
                 client_ops=ops,
+                cards=cards,
             )
         except AgentAborted as exc:
             raise GameError("ABORTED", "诏令处理已中止") from exc
@@ -651,6 +833,21 @@ class GameService:
         receipt["state_changed"] = state_changed
         receipt["changed_clauses"] = self._revalidate_draft(session, state, receipt) if state_changed else []
         clauses: list[dict[str, Any]] = receipt["clauses"]
+        # 将领自主：有统帅之军的军令按种子随机判定拒命或擅动，命中者改为下季结算时执行（见 domain.military）
+        autonomy: list[dict[str, Any]] = []
+        for clause in clauses:
+            op = clause.get("op")
+            if clause["status"] in {"applied", "delayed"} and isinstance(op, dict) and op.get("op") in MILITARY_ORDERS:
+                roll = roll_autonomy(state, op, session.seed)
+                if roll is not None:
+                    clause.update({
+                        "status": "delayed",
+                        "delay_kind": "autonomy",
+                        "delay_reason": roll["label"],
+                        "due_turn": state.turn + 1,
+                        "autonomy": roll["result"],
+                    })
+                    autonomy.append(roll)
         runnable = [clause for clause in clauses if clause["status"] == "applied" and clause.get("op")]
         results = session.append_ops([clause["op"] for clause in runnable], [self._clause_label(clause) for clause in runnable])
         memories: list[dict[str, Any]] = []
@@ -666,16 +863,24 @@ class GameService:
             session.append_ops(memories)
         delayed: dict[Any, tuple[str, list[dict[str, Any]]]] = {}
         for index, clause in enumerate(clauses):
-            if clause["status"] == "delayed" and clause.get("op"):
+            if clause["status"] == "delayed" and clause.get("op") and clause.get("delay_kind") != "autonomy":
                 group = delayed.setdefault(clause.get("group", f"clause-{index}"), (self._clause_label(clause), []))
                 group[1].append(clause["op"])
         for label, ops in delayed.values():
             # 同组（同一奏疏选项 / 同一段诏令）的延期条款排成一个延期包，下季一并执行。
             session.append_pending(ops, state.turn + 1, label=label)
+        for roll in autonomy:
+            session.append_pending(roll["ops"], state.turn + 1, source="autonomy", label=roll["label"])
         flags = [
             {"op": "set_flag", "key": memorial_flag(str(row["memorial_id"])), "value": row["option_id"]}
             for row in receipt.get("adopted", [])
         ]
+        used_cards = dict.fromkeys(
+            str(clause["card_id"])
+            for clause in clauses
+            if clause.get("source") == "card" and clause.get("card_id") and clause["status"] in {"applied", "delayed"}
+        )
+        flags.extend({"op": "set_flag", "key": card_flag(card_id), "value": state.turn} for card_id in used_cards)
         if flags:
             session.append_ops(flags)
         receipt["confirmed"] = True
@@ -766,7 +971,7 @@ class GameService:
                     "code": "MEMORIAL_UNAVAILABLE",
                 })
             elif previous in {"applied", "delayed"} and clause.get("op"):
-                tier = PLAYER_TIER if clause.get("source") in {"client", "text"} else SCENARIO_TIER
+                tier = PLAYER_TIER if clause.get("source") in {"client", "text", "card"} else SCENARIO_TIER
                 result = tools.propose_ops([clause["op"]], tier=tier)[0]
                 if result["status"] == "rejected":
                     clause.update({"status": "rejected", "reason": result.get("reason", ""), "code": result.get("code")})
@@ -817,6 +1022,7 @@ class GameService:
                 receipt["discarded"] = True
                 session.save_draft(receipt)
         context = self.season_context(session)
+        asked_turn = session.head_state().turn
         try:
             state, report, _ = session.append_turn()
         except GameOver as exc:
@@ -839,8 +1045,11 @@ class GameService:
         else:
             memorial = "；".join(facts) or "本回合暂无可记录的确定变化。"
         session.append_message("narrator", memorial, {"turn": state.turn})
+        delivered = await self._deliver_dispatches(session, asked_turn, state)
         self.touch(session_id)
         return {
+            "replies": delivered["replies"],
+            "written_opinions": delivered["written_opinions"],
             "state": public_view(state, session.seed),
             "report": public,
             "memorial": memorial,
@@ -929,7 +1138,7 @@ class GameService:
         return audience_mode(state, character_id, self.definition(session).get("settings") or {})
 
     async def chat(self, session_id: str, character_id: str, text: str) -> dict[str, Any]:
-        """非流式召对（MCP server 模式用）。"""
+        """非流式召对（MCP server 模式用；朝会日程由调用方先以 begin_audience 计数）。"""
         session = self.session(session_id)
         self.audience_card(session_id, character_id)
         provider = self.provider(session.scenario, "minister_chat")
@@ -958,16 +1167,28 @@ class GameService:
         afterlife = bool(self.definition(session).get("settings", {}).get("afterlife_chat", False))
         return session, chat_availability(character_id, state, afterlife)
 
-    def _debate_participants(self, session: SessionStore, state: WorldState, participants: list[str]) -> list[str]:
+    def _debate_participants(
+        self, session: SessionStore, state: WorldState, participants: list[str], written: list[str] | None = None
+    ) -> tuple[list[str], list[str]]:
+        """当场与议者（须在京且不在途，否则 NOT_PRESENT）与递书面议状者（须不在京）。"""
         unique = list(dict.fromkeys(participants))
-        if not 1 <= len(unique) <= 6:
-            raise GameError("INVALID_REQUEST", "廷议参与者须为 1 到 6 人")
-        for character_id in unique:
+        remote = [row for row in dict.fromkeys(written or []) if row not in unique]
+        if len(unique) > 6 or len(remote) > 6 or not (unique or remote):
+            raise GameError("INVALID_REQUEST", "廷议参与者须为 1 到 6 人（书面议状另计，至多 6 人）")
+        settings = self.settings(session)
+        for character_id in [*unique, *remote]:
             character = self._character(state, character_id)
             self._reject_player(session, state, character_id)
             if character.status != "alive":
                 raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}不在朝，不能与议")
-        return unique
+        for character_id in unique:
+            if not presence(state, character_id, settings)["present"]:
+                raise GameError("NOT_PRESENT", not_present_message(state, character_id, settings))
+        for character_id in remote:
+            if presence(state, character_id, settings)["present"]:
+                name = state.characters[character_id].name
+                raise GameError("INVALID_REQUEST", f"{name}在京，可列入 participants 当场与议，不必递书面议状")
+        return unique, remote
 
     def record_call(self, session_id: str, kind: str, **fields: Any) -> None:
         """client 模式召对 / 廷议的轻量记录（export_log 用；不含台词，不改日志与状态）。"""
@@ -982,8 +1203,12 @@ class GameService:
         participants: list[str],
         memorial_id: str | None,
         option_id: str | None = None,
+        written: list[str] | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
-        """廷议共用部分：议题（可由 memorial_id 补出）、立场与议题分析（topic_entities / 对应奏疏）。"""
+        """廷议共用部分：议题（可由 memorial_id 补出）、立场与议题分析（topic_entities / 对应奏疏）。
+
+        written 为不在京、递书面议状者：其立场与理由按同一规则算出，记入日志，下季结算后作为谏言（来源「书面议状」）送达，
+        不参与当场辩论。校验通过后计一次廷议（朝会日程，已满 AGENDA_EXHAUSTED）。"""
         try:
             memorial = match_memorial(session.scenario, state, topic, memorial_id or None)
         except MemorialError as exc:
@@ -992,7 +1217,7 @@ class GameService:
             topic = str(memorial.get("title", memorial_id))
         if not topic.strip():
             raise GameError("INVALID_REQUEST", "廷议议题不能为空")
-        unique = self._debate_participants(session, state, participants)
+        unique, remote = self._debate_participants(session, state, participants, written)
         options = [row for row in (memorial or {}).get("options", []) or [] if isinstance(row, dict)]
         if option_id:
             if memorial is None:
@@ -1004,15 +1229,18 @@ class GameService:
             state,
             session.scenario,
             topic,
-            unique,
+            [*unique, *remote],
             memorial_id=str(memorial["id"]) if memorial else None,
             seed=session.seed,
             proposal_option=option_id or None,
         )
+        written_stances = [row for row in stances if row["character"] in remote]
+        head_row = stances[0] if stances else {}
+        stances = [row for row in stances if row["character"] in unique]
         proposal: dict[str, Any] | None = None
         if memorial is not None and options:
             listing = "；".join(f"`{row.get('id')}`「{row.get('label', row.get('id'))}」" for row in options)
-            head = stances[0] if stances else {}
+            head = head_row
             if head.get("proposal_id"):
                 proposal = {"id": head["proposal_id"], "label": head.get("proposal_label"), "basis": head.get("proposal_basis", "")}
                 proposition = (
@@ -1035,16 +1263,47 @@ class GameService:
             } if memorial else None,
             "proposition": proposition,
             "proposal": proposal,
+            "written": [self._written_notice(state, row) for row in written_stances],
         }
+        self._count_agenda(session, "debate")
+        for row in written_stances:
+            session.append_message(
+                "written_opinion",
+                self._written_text(state, topic, row),
+                {"character": row["character"], "topic": topic, "turn": state.turn, "memorial_id": (memorial or {}).get("id")},
+            )
+        self.touch(session.path.stem)
         return topic, stances, analysis
 
+    @staticmethod
+    def _written_notice(state: WorldState, row: dict[str, Any]) -> dict[str, Any]:
+        """当场回执只说书面议状已发、下季送达；立场与理由届时才见（不提前外露）。"""
+        character = state.characters[row["character"]]
+        where = travel_note(state, character) if character.in_transit else (
+            state.regions[character.region].name if character.region in state.regions else character.region
+        )
+        return {"character": row["character"], "name": character.name, "whereabouts": where, "note": "书面议状已发，其议于下季送达（入谏言库）"}
+
+    @staticmethod
+    def _written_text(state: WorldState, topic: str, row: dict[str, Any]) -> str:
+        character = state.characters[row["character"]]
+        where = "途中" if character.in_transit else (state.regions[character.region].name if character.region in state.regions else "外镇")
+        position = f"；{row['position']}" if row.get("position") and row.get("target_option_id") else ""
+        return f"〔书面议状·自{where}驿递〕就「{topic}」{row.get('stance_label', row.get('stance'))}：{row.get('reason', '')}{position}"
+
     def debate_brief(
-        self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None, option_id: str | None = None
+        self,
+        session_id: str,
+        topic: str,
+        participants: list[str],
+        memorial_id: str | None = None,
+        option_id: str | None = None,
+        written: list[str] | None = None,
     ) -> dict[str, Any]:
         """client 模式：只给立场与人设，由调用方模型写台词。"""
         session = self.session(session_id)
         state = session.state
-        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id, option_id)
+        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id, option_id, written)
         for row in stances:
             row["persona"] = persona_card(state, row["character"], session.scenario)
         return {
@@ -1057,15 +1316,21 @@ class GameService:
         }
 
     async def debate(
-        self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None, option_id: str | None = None
+        self,
+        session_id: str,
+        topic: str,
+        participants: list[str],
+        memorial_id: str | None = None,
+        option_id: str | None = None,
+        written: list[str] | None = None,
     ) -> dict[str, Any]:
         session = self.session(session_id)
         state = session.state
-        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id, option_id)
+        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id, option_id, written)
         try:
             speeches = await debate_speeches(
                 state, session.scenario, topic, stances, self.provider(session.scenario, "court_debate"), session.seed, session.last_report()
-            )
+            ) if stances else []
         except TimeoutError as exc:
             raise GameError("TIMEOUT", "廷议生成超时") from exc
         summary = debate_summary(stances)
@@ -1124,6 +1389,10 @@ class GameService:
             )
         if state.outcome is not None:
             lines.append(f"**本局已终局：{state.outcome.title}**（{'失败' if state.outcome.kind == 'fail' else '结局'}）{state.outcome.text}")
+        agenda = view["agenda"]
+        if state.outcome is None and (agenda["audience"]["limit"] is not None or agenda["debate"]["limit"] is not None):
+            remote = "远地召对（书面奏对 / 遣使问对）不当场回话，回奏于下季送达" if agenda["remote_reply"] == "next_season" else "远地召对当场书面作答"
+            lines.append(f"朝会日程（本季）：{agenda['text']}（每季结算后重置；{remote}）")
         if view["final_notice"]:
             lines.append(f"**{view['final_notice']['text']}**")
         if view["objectives"]:
@@ -1170,6 +1439,11 @@ class GameService:
             lines.append("\n## 本季奏疏（可在 draft_edict 的 adopted 中采纳：{memorial_id, option_id}）")
             for item in view["memorials"]:
                 where = f"（{item['region_name']}）" if item.get("region_name") else ""
+                if item.get("arrival"):
+                    late = ""
+                    if item.get("arrived_late") and item.get("origin_turn") is not None:
+                        late = f"；远地晚到一季，原发于{turn_label(state, item['origin_turn'])}"
+                    where = f"（{item['arrival']}{late}）"
                 lines.append(f"### [{item['id']}] {item['title']}{where}")
                 if item.get("summary"):
                     lines.append(item["summary"])
@@ -1199,7 +1473,12 @@ class GameService:
                 lines.extend(f"- {row.get('region_name', '')}：{battle_text(row, state)}{battle_breakdown(row)}" for row in report["battles"])
             featured = [row for row in report.get("events", []) if not row.get("outcome")]
             if featured:
-                lines.append("上季时事：" + "、".join(f"「{row['title']}」" for row in featured))
+                lines.append("上季时事：" + "、".join(f"「{row['title']}」" + ("（远地军报晚到）" if row.get("arrived_late") else "") for row in featured))
+        lines.extend(self._dispatch_lines(session, state, view))
+        cards = [row for row in cards_view(state, session.scenario) if row["available"]] if state.outcome is None else []
+        if cards:
+            lines.append("\n## 政令卡（policy_cards 查看参数与可选值；draft_edict 的 cards: [{card_id, params}] 使用）")
+            lines.append("；".join(f"[{row['id']}] {row['title']}（{row['category']}）" for row in cards))
         player = self.player_character(session, state)
         people = [
             f"{row.name}（`{row.id}`{'，' + role if (role := _role_label(state, row)) else ''}"
@@ -1210,6 +1489,47 @@ class GameService:
         lines.append("\n## 可召对人物\n" + "；".join(people))
         lines.append("\n" + ROLEPLAY_RULES)
         return "\n".join(lines)
+
+    def _dispatch_lines(self, session: SessionStore, state: WorldState, view: dict[str, Any]) -> list[str]:
+        """简报「回奏」：上季遣使所问今已送达（client 模式附人设卡与事实摘要，由调用方扮演）；书面议状（已入谏言库）。"""
+        lines: list[str] = []
+        replies = view.get("replies") or []
+        if replies:
+            lines.append("\n## 回奏（上季遣使 / 书面所问，今已送达）")
+            for row in replies:
+                question = f"所问「{row['question']}」" if row.get("question") else "所问（未具问话）"
+                if not row.get("roleplay"):
+                    lines.append(f"- {row['name']}（{row.get('mode_label') or '遣使问对'}，{question}）：{row.get('text', '')}")
+                    continue
+                character_id = str(row["character"])
+                if character_id not in state.characters or state.characters[character_id].status in {"dead", "imprisoned"}:
+                    lines.append(f"- {row['name']}（{question}）：其人已不能回奏。")
+                    continue
+                card = self.audience_card(session.path.stem, character_id)
+                lines.append(f"### {row['name']}的回奏（{row.get('mode_label') or '遣使问对'}，{question}）——请按下列人设卡与事实摘要扮演此人的书面回奏")
+                lines.append(self.persona_text(card["persona"]))
+                lines.append(f"此人可知的事实摘要（StateDigest）：\n{card['digest']}")
+                lines.append(f"口吻要求：{card['voice']}（此为书面回奏，非当面应对。）")
+        written = view.get("written_opinions") or []
+        if written:
+            lines.append("\n## 书面议状（上季廷议时不在京者所递，今已送达，已入谏言库）")
+            for row in written:
+                who = state.characters[row["character"]].name if row["character"] in state.characters else row["character"]
+                lines.append(f"- {who}：{row['text']}")
+        return lines
+
+    @staticmethod
+    def persona_text(persona: dict[str, Any]) -> str:
+        """人设卡的文字版（MCP audience 与简报「回奏」共用）。"""
+        return (
+            f"# 人设卡：{persona['name']}（{persona['character']}）\n"
+            f"官职：{'、'.join(persona['offices']) or '无'}；派系：{persona['bloc'] or '无'}；头衔：{persona['title'] or '无'}"
+            + (f"（旧衔：{persona['former_title']}，已非现职）" if persona.get("former_title") else "")
+            + "\n"
+            f"人物：{persona['persona']}\n言谈：{persona['speech_style']}\n所知：{'、'.join(persona['knowledge']) or '—'}\n"
+            + (f"开场白：{persona['greeting']}\n" if persona.get("greeting") else "")
+            + (f"示例台词：{' / '.join(persona['examples'])}\n" if persona.get("examples") else "")
+        ).rstrip("\n")
 
     @staticmethod
     def _review_lines(review: dict[str, Any]) -> list[str]:

@@ -16,9 +16,11 @@ class MockProvider:
 
     offline = True
 
-    def __init__(self, scenario: dict[str, Any] | None = None, tool_calling: bool = True) -> None:
+    def __init__(self, scenario: dict[str, Any] | None = None, tool_calling: bool = True, offline: bool = True) -> None:
         self.scenario = scenario or {}
         self.tool_calling = tool_calling
+        # offline=False：按「已接模型」处理（测试诏令文本解释等在线路径；模板答话仍由本类生成）
+        self.offline = offline
 
     async def chat(
         self,

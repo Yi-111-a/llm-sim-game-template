@@ -73,6 +73,7 @@ def op_examples(state: WorldState, player: str | None = None) -> dict[str, dict[
             "new_army_name": f"{army.name}偏师" if army else "偏师",
         },
         "set_army_commander": {"op": "set_army_commander", "army": army.id if army else "<army>", "character": who},
+        "set_army_posture": {"op": "set_army_posture", "army": army.id if army else "<army>", "posture": "hold"},
         "start_project": {
             "op": "start_project",
             "name": "修城",

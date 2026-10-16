@@ -20,7 +20,7 @@ from simcore.domain.rules import delay_phrase
 from simcore.domain.visibility import battle_breakdown, battle_text, fact_line, format_number
 from simcore.mcp.meta import DESCRIPTIONS as DESCRIPTIONS
 from simcore.mcp.meta import INSTRUCTIONS
-from simcore.service import ENGINE_VERSION, ROLEPLAY_RULES, GameError, GameService
+from simcore.service import ENGINE_VERSION, ENVOY_SENT, ROLEPLAY_RULES, GameError, GameService
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
@@ -117,40 +117,58 @@ def make_tools(service: GameService | None = None, mode: str | None = None) -> d
 
     @register
     async def audience(session_id: str, character: str, question: str = "") -> str:
+        # 朝会日程：已满 AGENDA_EXHAUSTED；远地召对（next_season）只发使者，回奏于下季送达
+        started = service.begin_audience(session_id, character, question, via=mode)
+        how = started["mode"]
+        agenda = started["agenda"]["text"]
+        if started["deferred"]:
+            card = service.audience_card(session_id, character)
+            name = card["persona"]["name"]
+            service.record_call(
+                session_id, "audience", character=character, name=name, mode=how["mode"], mode_label=how["label"], deferred=True
+            )
+            follow = (
+                "下季结算时由服务端生成回奏，见下季 briefing「回奏」一节"
+                if server_mode
+                else "下季 briefing「回奏」一节给出此人的人设卡与事实摘要，届时由你扮演其书面回奏（本季不得代其作答）"
+            )
+            asked = f"，所问「{question.strip()}」" if question.strip() else ""
+            return f"# 召对方式：{how['label']}——{how['note']}\n{ENVOY_SENT}：{name}{asked}。{follow}。\n朝会日程（本季）：{agenda}"
         card = service.audience_card(session_id, character)
-        mode = card["mode"]
         if server_mode and question.strip():
             reply = await service.chat(session_id, character, question)
-            label = "" if mode["mode"] == "in_person" else f"（{mode['label']}）"
-            return f"{card['persona']['name']}{label}：{reply['content']}"
+            label = "" if how["mode"] == "in_person" else f"（{how['label']}）"
+            return f"{card['persona']['name']}{label}：{reply['content']}\n（朝会日程：{agenda}）"
         persona = card["persona"]
-        service.record_call(session_id, "audience", character=character, name=persona["name"], mode=mode["mode"], mode_label=mode["label"])
+        service.record_call(session_id, "audience", character=character, name=persona["name"], mode=how["mode"], mode_label=how["label"])
         return (
-            f"# 召对方式：{mode['label']}——{mode['note']}\n"
-            f"# 人设卡：{persona['name']}（{persona['character']}）\n"
-            f"官职：{'、'.join(persona['offices']) or '无'}；派系：{persona['bloc'] or '无'}；头衔：{persona['title'] or '无'}"
-            + (f"（旧衔：{persona['former_title']}，已非现职）" if persona.get("former_title") else "")
-            + "\n"
-            f"人物：{persona['persona']}\n言谈：{persona['speech_style']}\n所知：{'、'.join(persona['knowledge']) or '—'}\n"
-            + (f"开场白：{persona['greeting']}\n" if persona.get("greeting") else "")
-            + (f"示例台词：{' / '.join(persona['examples'])}\n" if persona.get("examples") else "")
-            + "\n"
+            f"# 召对方式：{how['label']}——{how['note']}（朝会日程：{agenda}）\n"
+            + service.persona_text(persona)
+            + "\n\n"
             f"# 此人可知的事实摘要（StateDigest；【记忆】为此人记得的事）\n{card['digest']}\n\n"
             f"# 口吻要求\n{card['voice']}\n\n{ROLEPLAY_RULES}"
         )
 
     @register
-    async def court_debate(session_id: str, participants: list[str], topic: str = "", memorial_id: str = "", option_id: str = "") -> str:
+    async def court_debate(
+        session_id: str,
+        participants: list[str],
+        topic: str = "",
+        memorial_id: str = "",
+        option_id: str = "",
+        written: list[str] | None = None,
+    ) -> str:
         if server_mode:
-            result = await service.debate(session_id, topic, participants, memorial_id or None, option_id or None)
+            result = await service.debate(session_id, topic, participants, memorial_id or None, option_id or None, written or [])
             lines = [f"# 廷议：{result['topic']}", *_debate_context(result)]
             lines.extend(
                 f"- {row['name']}（{row['stance']}{'；' + row['position'] if row.get('target_option_id') else ''}）：{row['text']}"
                 for row in result["speeches"]
             )
             lines.append(result["summary"])
+            lines.extend(_written_lines(result.get("written")))
             return "\n".join(lines)
-        brief = service.debate_brief(session_id, topic, participants, memorial_id or None, option_id or None)
+        brief = service.debate_brief(session_id, topic, participants, memorial_id or None, option_id or None, written or [])
         service.record_call(
             session_id,
             "debate",
@@ -170,7 +188,34 @@ def make_tools(service: GameService | None = None, mode: str | None = None) -> d
                 f"- {row['name']}（{row['character']}）：{row['stance_label']}（{row['stance']}）——{row['reason']}。{target}"
                 f"官职：{'、'.join(persona['offices']) or '无'}；人物：{persona['persona']}；言谈：{persona['speech_style']}"
             )
+        if not brief["stances"]:
+            lines.append("- （无人在京当场与议）")
         lines.extend(["", "## 事实摘要", brief["digest"], "", brief["summary"]])
+        lines.extend(_written_lines(brief.get("written")))
+        return "\n".join(lines)
+
+    @register
+    async def policy_cards(session_id: str) -> str:
+        rows = service.policy_cards(session_id)
+        if not rows:
+            return "本剧本没有政令卡。"
+        lines = ["# 政令卡（draft_edict 的 cards: [{card_id, params: {参数名: 可选值 id 或数}}]；展开为玩家层条款，照常校验）"]
+        for row in rows:
+            state = "可用" if row["available"] else f"不可用：{row['unavailable_reason']}"
+            lines.append(f"## [{row['id']}] {row['title']}（{row['category']}；{state}）")
+            if row.get("summary"):
+                lines.append(row["summary"])
+            if row.get("cost_hint"):
+                lines.append(f"代价：{row['cost_hint']}")
+            for param in row["params"]:
+                if param.get("kind") == "amount":
+                    lines.append(f"- 参数 `{param['name']}`「{param['label']}」：数，{param.get('min')}～{param.get('max')}")
+                else:
+                    options = "；".join(
+                        f"`{item['id']}` {item['name']}" + (f"（{item['note']}）" if item.get("note") else "") for item in param.get("options", [])[:20]
+                    )
+                    more = f"……（共 {len(param['options'])} 项）" if len(param.get("options", [])) > 20 else ""
+                    lines.append(f"- 参数 `{param['name']}`「{param['label']}」：{options or '（无可选值）'}{more}")
         return "\n".join(lines)
 
     @register
@@ -184,8 +229,9 @@ def make_tools(service: GameService | None = None, mode: str | None = None) -> d
         sections: dict[str, str] | None = None,
         adopted: list[dict[str, str]] | None = None,
         ops: list[dict[str, Any]] | None = None,
+        cards: list[dict[str, Any]] | None = None,
     ) -> str:
-        receipt = await service.draft_edict(session_id, sections or {}, adopted or [], ops or [], use_provider=server_mode)
+        receipt = await service.draft_edict(session_id, sections or {}, adopted or [], ops or [], use_provider=server_mode, cards=cards or [])
         lines = [
             f"诏书草案 edict_id={receipt['id']}",
             f"（未生效：须调用 confirm_edict，edict_id 填 {receipt['id']}；未确认的草案会使 end_turn 被拒）",
@@ -259,6 +305,15 @@ STATUS_TAGS = {
 }
 
 
+def _written_lines(rows: Any) -> list[str]:
+    if not rows:
+        return []
+    return ["## 书面议状（不在京者，不参与当场辩论）", *(f"- {row['name']}（{row['whereabouts']}）：{row['note']}" for row in rows)]
+
+
+DELAY_KIND_LABELS = {"courier": "驿程", "bureaucratic": "有司稽迟", "autonomy": "将领自主"}
+
+
 def _new_memorial_lines(rows: Any) -> list[str]:
     if not rows:
         return []
@@ -275,7 +330,12 @@ def _clause_lines(clauses: list[dict[str, Any]], confirmed: bool = False) -> lis
         what = clause.get("summary") or clause.get("text") or ""
         reason = f"；原因：{clause.get('reason')}" if clause.get("reason") else ""
         if status == "delayed":
-            reason += f"；延期原因：{clause.get('delay_reason') or '有司稽迟'}"
+            kind = DELAY_KIND_LABELS.get(str(clause.get("delay_kind")), "")
+            reason += f"；延期原因{'（' + kind + '）' if kind else ''}：{clause.get('delay_reason') or '有司稽迟'}"
+        if clause.get("autonomy_risk") and status in {"applied", "delayed"}:
+            reason += f"；{clause.get('autonomy_note') or '将领自主风险：' + str(clause['autonomy_risk'])}"
+        if clause.get("source") == "card" and clause.get("cost_hint"):
+            reason += f"；代价：{clause['cost_hint']}"
         code = f" [{clause['code']}]" if clause.get("code") and status == "rejected" else ""
         changed = f"（草案时为 {clause.get('previous_status')}）" if clause.get("changed") else ""
         lines.append(f"{index}. [{tag}]{code} ({source}) {what}{reason}{changed}")
@@ -365,6 +425,12 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
         lines.append(f"## 纪事\n{result['memorial']}")
     if result.get("discarded_drafts"):
         lines.append("## 已放弃的草案（未施行）：" + "、".join(result["discarded_drafts"]))
+    if result.get("replies"):
+        lines.append("## 回奏送达（上季遣使所问）")
+        lines.extend(f"- {row['name']}：{row['text']}" for row in result["replies"])
+    if result.get("written_opinions"):
+        lines.append("## 书面议状送达（已入谏言库）")
+        lines.extend(f"- {row['name']}：{row['text']}" for row in result["written_opinions"])
     if result.get("final_notice"):
         lines.append(f"## 注意：{result['final_notice']['text']}")
     outcome = result.get("outcome")

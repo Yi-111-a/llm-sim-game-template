@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from datetime import date
 from pathlib import Path
@@ -37,6 +38,11 @@ SCENARIO_FILES = (
     "assets.yaml",
     "memorials.yaml",
 )
+# 可选文件（第 9 轮）：缺失时不写入解析结果，旧剧本的内容哈希不变。
+OPTIONAL_SCENARIO_FILES = (
+    "policy_cards.yaml",
+    "tutorial.yaml",
+)
 MAX_TEXT_LENGTH = 10_000
 MAX_SCENARIO_FILES = 1_000
 MAX_IMAGE_DIMENSION = 4_096
@@ -53,7 +59,7 @@ def yaml_load(text: str) -> Any:
 
 def _files_signature(root: Path) -> tuple[Any, ...]:
     signature: list[tuple[str, int | None, int | None]] = []
-    for filename in ("scenario.yaml", *SCENARIO_FILES):
+    for filename in ("scenario.yaml", *SCENARIO_FILES, *OPTIONAL_SCENARIO_FILES):
         try:
             stat = (root / filename).stat()
             signature.append((filename, stat.st_mtime_ns, stat.st_size))
@@ -79,6 +85,10 @@ def load_scenario(path: str | Path) -> dict[str, Any]:
             result[filename.removesuffix(".yaml")] = yaml_load(file_path.read_text(encoding="utf-8")) or {}
         elif filename != "scenario.yaml":
             result[filename.removesuffix(".yaml")] = []
+    for filename in OPTIONAL_SCENARIO_FILES:
+        file_path = root / filename
+        if file_path.is_file():
+            result[filename.removesuffix(".yaml")] = yaml_load(file_path.read_text(encoding="utf-8")) or []
     _SCENARIO_CACHE[str(root)] = (signature, result)
     return clone_data(result)
 
@@ -400,7 +410,94 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
             if isinstance(option, dict):
                 check_ops(option.get("ops", []) or [], f"{location}.options.{option.get('id')}.ops")
                 check_memory(option.get("memory"), f"{location}.options.{option.get('id')}")
+    errors.extend(round9_errors(data, region_ids))
     return errors
+
+
+def round9_errors(data: dict[str, Any], region_ids: set[str]) -> list[str]:
+    """第 9 轮：settings.agenda / capital_region / courier / autonomy / postures、地区 courier_days、政令卡、新手引导。"""
+    from simcore.domain.cards import card_errors
+
+    errors: list[str] = []
+    scenario = data.get("scenario") if isinstance(data.get("scenario"), dict) else {}
+    settings = scenario.get("settings") if isinstance(scenario.get("settings"), dict) else {}
+    agenda = settings.get("agenda")
+    if agenda is not None:
+        if not isinstance(agenda, dict):
+            errors.append("settings.agenda 须为对象 {audience_per_season, debate_per_season, remote_reply?}")
+        else:
+            for key in sorted(set(agenda) - {"audience_per_season", "debate_per_season", "remote_reply"}):
+                errors.append(f"settings.agenda 含未知键：{key}")
+            for key in ("audience_per_season", "debate_per_season"):
+                value = agenda.get(key)
+                if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+                    errors.append(f"settings.agenda.{key} 须为非负整数")
+            if agenda.get("remote_reply") not in (None, "next_season", "immediate"):
+                errors.append("settings.agenda.remote_reply 须为 next_season 或 immediate")
+    capital = settings.get("capital_region")
+    if capital is not None and str(capital) not in region_ids:
+        errors.append(f"settings.capital_region 地区不存在：{capital}")
+    courier = settings.get("courier")
+    if courier is not None:
+        if not isinstance(courier, dict) or any(key != "late_threshold_days" for key in courier):
+            errors.append("settings.courier 只支持 {late_threshold_days}")
+        elif not isinstance(courier.get("late_threshold_days", 60), (int, float)):
+            errors.append("settings.courier.late_threshold_days 须为数")
+    autonomy = settings.get("autonomy")
+    if autonomy is not None:
+        if not isinstance(autonomy, dict) or not (autonomy.get("formula") or autonomy.get("by_order")):
+            errors.append("settings.autonomy 须为 {formula, by_order?, outcomes?, levels?}")
+        else:
+            for key in sorted(set(autonomy) - {"formula", "by_order", "outcomes", "levels"}):
+                errors.append(f"settings.autonomy 含未知键：{key}")
+            formulas = [autonomy.get("formula")] if autonomy.get("formula") is not None else []
+            by_order = autonomy.get("by_order") if isinstance(autonomy.get("by_order"), dict) else {}
+            for key in by_order:
+                if key not in {"march", "move", "detach", "hold", "attack", "scorch"}:
+                    errors.append(f"settings.autonomy.by_order 的命令类型无效：{key}")
+            formulas.extend(by_order.values())
+            for formula in formulas:
+                try:
+                    ast.parse(str(formula), mode="eval")
+                except SyntaxError:
+                    errors.append(f"settings.autonomy 公式无效：{formula}")
+            outcomes = autonomy.get("outcomes")
+            if outcomes is not None and (
+                not isinstance(outcomes, dict) or any(key not in {"delay", "alter", "sortie"} for key in outcomes)
+            ):
+                errors.append("settings.autonomy.outcomes 只能含 delay / alter / sortie 的权重")
+    postures = settings.get("postures")
+    if postures is not None and (not isinstance(postures, dict) or any(key not in {"hold", "attack", "scorch"} for key in postures)):
+        errors.append("settings.postures 只能覆盖 hold / attack / scorch 的系数")
+    for region in data.get("regions") or []:
+        if isinstance(region, dict) and "courier_days" in region:
+            value = region.get("courier_days")
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f"地区 {region.get('id')} 的 courier_days 须为非负整数")
+    for event in data.get("events") or []:
+        if isinstance(event, dict) and event.get("region") is not None and str(event.get("region")) not in region_ids:
+            errors.append(f"事件 {event.get('id')} 的 region 不存在：{event.get('region')}")
+    errors.extend(card_errors(data))
+    for index, step in enumerate(tutorial_steps(data)):
+        where = f"tutorial[{index}]"
+        if not isinstance(step, dict):
+            errors.append(f"{where} 须为对象")
+            continue
+        for key in sorted(set(step) - {"turn", "step", "title", "text", "target"}):
+            errors.append(f"{where} 含未知键：{key}")
+        if not isinstance(step.get("turn"), int) or not step.get("title") or not step.get("text"):
+            errors.append(f"{where} 须有 turn（整数）、title、text")
+    return errors
+
+
+def tutorial_steps(data: dict[str, Any]) -> list[Any]:
+    """新手引导步骤：scenario.yaml 的 tutorial 键，或 tutorial.yaml（二者都写时合并）。"""
+    scenario = data.get("scenario") if isinstance(data.get("scenario"), dict) else {}
+    rows: list[Any] = []
+    for raw in (scenario.get("tutorial"), data.get("tutorial")):
+        if isinstance(raw, list):
+            rows.extend(raw)
+    return rows
 
 
 def upkeep_errors(raw: Any, resource_ids: set[str], faction_ids: set[str], army_ids: set[str]) -> list[str]:
@@ -496,6 +593,14 @@ def _load_for_validation(root: Path) -> tuple[dict[str, Any], list[str]]:
         except (OSError, yaml.YAMLError) as exc:
             errors.append(f"{filename} 无法读取：{exc}")
             data[key] = {"entries": []} if filename == "assets.yaml" else []
+    for filename in OPTIONAL_SCENARIO_FILES:
+        path = root / filename
+        if not path.is_file():
+            continue
+        try:
+            data[filename.removesuffix(".yaml")] = yaml_load(path.read_text(encoding="utf-8")) or []
+        except (OSError, yaml.YAMLError) as exc:
+            errors.append(f"{filename} 无法读取：{exc}")
     return data, errors
 
 
@@ -595,6 +700,7 @@ def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> 
             adjacency={edge["to"]: int(edge.get("travel_turns", 1)) for edge in row.get("adjacency", [])},
             stats=_clamped_stats(row.get("stats", {}), stat_ranges),
             controller=row.get("controller", main_faction),
+            courier_days=int(row["courier_days"]) if isinstance(row.get("courier_days"), (int, float)) else None,
         )
         for row in data.get("regions", [])
     }

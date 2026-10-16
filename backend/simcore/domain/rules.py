@@ -568,7 +568,7 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
         return Rejected("UNKNOWN_ENTITY", f"常设命令不存在：{op.id}")
     if op.op == "remember" and op.character not in state.characters:
         return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.character}")
-    if op.op in {"adjust_army", "set_army_faction", "set_army_commander", "march"} and op.army not in state.armies:
+    if op.op in {"adjust_army", "set_army_faction", "set_army_commander", "march", "set_army_posture"} and op.army not in state.armies:
         return Rejected("UNKNOWN_ENTITY", f"军队不存在：{op.army}")
     if op.op == "set_army_faction" and op.faction not in state.factions:
         return Rejected("UNKNOWN_ENTITY", f"势力不存在：{op.faction}")

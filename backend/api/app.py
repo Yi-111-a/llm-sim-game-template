@@ -31,6 +31,7 @@ from simcore.llm.factory import create_provider
 from simcore.prompts.loader import render_prompt
 from simcore.service import (
     ENGINE_VERSION,
+    ENVOY_SENT,
     GameError,
     GameService,
     engine_root,
@@ -82,10 +83,20 @@ class AdoptedOption(RequestModel):
     option_id: str
 
 
+class CardUse(RequestModel):
+    card_id: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class DraftEdict(RequestModel):
     sections: dict[str, str] = Field(default_factory=dict)
     adopted: list[AdoptedOption] = Field(default_factory=list)
     ops: list[dict[str, Any]] = Field(default_factory=list)
+    cards: list[CardUse] = Field(default_factory=list)
+
+
+class SessionFlags(RequestModel):
+    tutorial: bool | None = None
 
 
 class PolishEdict(RequestModel):
@@ -98,9 +109,10 @@ class ChooseOption(RequestModel):
 
 class DebateRequest(RequestModel):
     topic: str = ""
-    participants: list[str]
+    participants: list[str] = Field(default_factory=list)
     memorial_id: str | None = None
     option_id: str | None = None
+    written: list[str] = Field(default_factory=list)
 
 
 class AdvanceTurn(RequestModel):
@@ -410,7 +422,24 @@ def create_app() -> FastAPI:
             request.sections,
             [row.model_dump() for row in request.adopted],
             request.ops,
+            cards=[row.model_dump() for row in request.cards],
         )
+
+    @app.get("/api/sessions/{session_id}/policy_cards")
+    async def get_policy_cards(session_id: str) -> list[dict[str, Any]]:
+        return service.policy_cards(session_id)
+
+    @app.get("/api/sessions/{session_id}/present")
+    async def get_present(session_id: str) -> dict[str, Any]:
+        return service.present(session_id)
+
+    @app.get("/api/sessions/{session_id}/armies")
+    async def get_armies(session_id: str) -> dict[str, Any]:
+        return service.armies(session_id)
+
+    @app.put("/api/sessions/{session_id}/flags")
+    async def put_session_flags(session_id: str, request: SessionFlags) -> dict[str, Any]:
+        return service.set_session_flags(session_id, request.tutorial)
 
     @app.post("/api/sessions/{session_id}/abort")
     async def abort_agent(session_id: str) -> dict[str, bool]:
@@ -443,7 +472,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/sessions/{session_id}/debate")
     async def debate(session_id: str, request: DebateRequest) -> dict[str, Any]:
-        return await service.debate(session_id, request.topic, request.participants, request.memorial_id, request.option_id)
+        return await service.debate(session_id, request.topic, request.participants, request.memorial_id, request.option_id, request.written)
 
     @app.get("/api/sessions/{session_id}/advice")
     async def list_advice(session_id: str) -> list[dict[str, Any]]:
@@ -472,6 +501,8 @@ def create_app() -> FastAPI:
         runtime.current_turn = state.turn
         user_text = request.text
         mode = service.audience_mode(session, state, character_id)  # 面见 / 书面奏对 / 遣使问对
+        # 朝会日程：已满 → 409 AGENDA_EXHAUSTED（流开始之前）；远地召对（next_season）只发使者，回奏于下季结算时生成
+        started = service.begin_audience(session_id, character_id, user_text, via="rest") if refusal is None else None
 
         def sse(event: str, payload: dict[str, Any]) -> str:
             return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -486,6 +517,14 @@ def create_app() -> FastAPI:
                 yield "event: done\ndata: {}\n\n"
                 return
             yield sse("status", {"status": "ok", "mode": mode["mode"], "mode_label": mode["label"], "mode_note": mode["note"]})
+            if started is not None and started["deferred"]:
+                notice = f"{ENVOY_SENT}（{mode['label']}：{mode['note']}）"
+                session.append_message("player", user_text, {"character": character_id, "mode": mode["mode"], "deferred": True})
+                service.touch(session_id)
+                yield sse("deferred", {"text": notice, "agenda": started["agenda"]})
+                yield sse("message", {"text": notice})
+                yield "event: done\ndata: {}\n\n"
+                return
             provider = runtime.provider(session.scenario, "minister_chat")
             messages = minister_chat_messages(character_id, state, user_text, session.scenario, session.seed, session.last_report())
             pieces: list[str] = []

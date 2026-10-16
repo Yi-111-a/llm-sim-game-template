@@ -14,7 +14,10 @@ INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP serve
 1. list_scenarios → new_game(scenario, seed) 得到 session_id 与开局简报（或 list_saves → load_game 继续存档）。
 2. 每季先读 briefing(session_id)：目标、公开国势、危机计分项、本季奏疏（含选项与 ops 摘要）、待决事件、上季事实。
 3. 需要时 audience 召见人物（你按返回的人设卡与事实摘要扮演），court_debate 举行廷议（立场由引擎给定），save_advice 把有用谏言存入谏言库。
-4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，ops 直接给出 StateOp（格式见 op_reference）；
+   朝会日程有上限（简报「朝会日程」，满则 AGENDA_EXHAUSTED）；不在京者召对只能遣使，回奏于下季 briefing「回奏」送达；
+   不在京者不能当场廷议（NOT_PRESENT），可列入 court_debate 的 written 递书面议状，下季入谏言库。
+4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，cards 使用政令卡（policy_cards 查看），ops 直接给出 StateOp（格式见 op_reference）；
+   作用于远地的条款「驿程遥远，令达于下季」；军令（出征、分兵、set_army_posture）附将领自主风险等级；
    看回执中每条 applied（可行：确认后本季即行）/ rejected / delayed（确认后延至下季结算时执行），再 confirm_edict。
    草案不确认不施行：本季有未确认草案时 end_turn 会以 DRAFT_UNCONFIRMED 拒绝（确要放弃则 discard_drafts: true）。
    确认诏书或处置抉择后若出现「本季新出奏疏」，可在 end_turn 前继续拟诏处理。
@@ -44,20 +47,28 @@ DESCRIPTIONS: dict[str, str] = {
     ),
     "audience": (
         "召对某位人物：character 为人物 id。client 模式返回人设卡 + 该人物可知的事实摘要 + 记忆 + 口吻要求，由你扮演作答；"
-        "server 模式需同时给 question，返回服务端模型的回答。死者或系狱者会被拒绝。"
+        "server 模式需同时给 question，返回服务端模型的回答。死者或系狱者会被拒绝。每次召对计入朝会日程（满则 AGENDA_EXHAUSTED）；"
+        "人不在京（书面奏对 / 遣使问对）时不当场回话：返回「使者已发，回奏于下季送达」，下季 briefing「回奏」一节给出人设卡与摘要供扮演。"
         "Audience with a character: returns a persona card and what they know (client mode) or their reply (server mode)."
     ),
     "court_debate": (
-        "廷议：topic 为议题，participants 为 1–6 个人物 id，memorial_id 可选（就某条本季奏疏廷议；给了它 topic 可留空），"
+        "廷议：topic 为议题，participants 为 1–6 个在京人物 id（不在京者 NOT_PRESENT；written 列出不在京者，递书面议状，"
+        "其立场与理由于下季送达谏言库，不参与当场辩论），memorial_id 可选（就某条本季奏疏廷议；给了它 topic 可留空），"
         "option_id 可选（指定「所议之案」：赞成即主此案、反对即主他案；不给时引擎按奏疏所请 / 谏言推定，推定不出则诸案并陈、不以首个选项为案）。"
         "议题对应奏疏时用奏疏中的谏言立场（谏言人主张其谏言所指的选项），否则引擎按议题点名的人物/势力/官职/地区/军队与各人的亲疏、派系利益与忠诚给出立场"
         "（support/oppose/neutral），并列出 topic_entities；client 模式返回立场 + 人设，由你写台词；server 模式返回各人台词。"
         "廷议结论只能存为谏言，不直接改变状态。Court debate: engine-decided, topic-dependent stances; you (client mode) write the speeches."
     ),
+    "policy_cards": (
+        "政令卡：剧本预设的常用政令（军务 / 内政 / 人事 / 外交 / 财计），每张列出参数及按当前局势过滤的可选值、代价提示、是否可用（冷却 / 条件）。"
+        "在 draft_edict 的 cards 中以 [{card_id, params: {参数名: 值}}] 使用，引擎展开为玩家层条款并照常校验。"
+        "Policy cards with parameter options; use them via draft_edict(cards=[{card_id, params}])."
+    ),
     "save_advice": "把谏言存入谏言库（不改变世界状态）：character 为进言人 id，text 为谏言原文。Save a piece of advice to the advice log.",
     "draft_edict": (
         "拟诏书草案（不改变状态）。sections 为 {类别: 诏令文本}（client 模式仅作记录，server 模式由模型解释）；"
-        "adopted 为 [{memorial_id, option_id}] 采纳奏疏选项；ops 为 StateOp 列表（见 op_reference）。"
+        "adopted 为 [{memorial_id, option_id}] 采纳奏疏选项；cards 为 [{card_id, params}] 政令卡（见 policy_cards）；"
+        "ops 为 StateOp 列表（见 op_reference）。作用于远地者「驿程遥远，令达于下季」（delayed，延期原因注明驿程 / 有司稽迟 / 将领自主）；"
         "回执逐条给出 applied（可行：确认后本季即行；确认后记「已行」）/ rejected（原因与错误码）"
         "/ delayed（确认后延至下季结算时执行（第 n 回合）；确认后记「已延至…」），并给出 edict_id"
         "（edict_id 只取 edict- 开头的编号本身）。草案须 confirm_edict 才施行。"
@@ -101,13 +112,16 @@ TOOL_PARAMS: dict[str, list[tuple[str, str, Any]]] = {
         ("topic", "str", ""),
         ("memorial_id", "str", ""),
         ("option_id", "str", ""),
+        ("written", "list[str]|None", None),
     ],
+    "policy_cards": [("session_id", "str", REQUIRED)],
     "save_advice": [("session_id", "str", REQUIRED), ("character", "str", REQUIRED), ("text", "str", REQUIRED)],
     "draft_edict": [
         ("session_id", "str", REQUIRED),
         ("sections", "dict[str,str]|None", None),
         ("adopted", "list[dict[str,str]]|None", None),
         ("ops", "list[dict]|None", None),
+        ("cards", "list[dict]|None", None),
     ],
     "confirm_edict": [("session_id", "str", REQUIRED), ("edict_id", "str", REQUIRED)],
     "choose": [("session_id", "str", REQUIRED), ("choice_id", "str", REQUIRED), ("option_id", "str", REQUIRED)],

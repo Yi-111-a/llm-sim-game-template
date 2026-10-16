@@ -1,0 +1,4 @@
+- {id: guard, name: 禁军, faction: court, region: capital, strength: 20000, commander: general}
+- {id: pass_army, name: 关军, faction: court, region: pass, strength: 10000}
+- {id: rebel_army, name: 叛军主力, faction: rebels, region: north, strength: 30000, quality: 1.0}
+- {id: west_army, name: 西军, faction: court, region: west, strength: 15000, commander: westlord}

@@ -577,6 +577,7 @@ def _battle_side(rows: list[dict[str, Any]]) -> str:
         who = str(row.get("commander") or "")
         command = row.get("command")
         extras.append(f"主帅{who}在军" if command == "present" else f"主帅{who}不在军中，副将暂摄" if command == "acting" else "无主帅")
+        extras.extend(str(note) for note in row.get("modifiers") or [])
         parts.append(f"{row.get('name', row.get('army'))}{format_number(float(row.get('strength', 0)))}（{'，'.join(extras)}）")
     return "、".join(parts) or "—"
 
@@ -591,7 +592,8 @@ def battle_breakdown(battle: dict[str, Any]) -> str:
     sides = f"攻：{_battle_side(factors.get('attacker') or [])}；守：{_battle_side(factors.get('defender') or [])}"
     if defense:
         sides += f"，城防+{format_number(defense)}%"
-    formula = f"战力=兵×素质{'×(1+城防%)' if defense else ''}×天时±{luck:g}%"
+    ordered = any(row.get("modifiers") for row in [*(factors.get("attacker") or []), *(factors.get("defender") or [])])
+    formula = f"战力=兵×素质{'×军令' if ordered else ''}{'×(1+城防%)' if defense else ''}×天时±{luck:g}%"
     if battle.get("result") == "stalemate":
         return f"{sides}。{formula}；城防≥80 且攻方战力不足守方两倍，据险相持，双方无损。"
     losses = battle.get("losses") or {}
