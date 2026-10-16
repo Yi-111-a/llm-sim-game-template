@@ -391,3 +391,13 @@ def test_digest_skips_empty_armies(r9_state) -> None:
     army.strength = 0
     line = next((row for row in render_digest(state, 1).splitlines() if row.startswith("【军队】")), "")
     assert f"{army.name} 0" not in line
+
+
+def test_resource_change_clipped_at_a_bound_says_so(r9_state) -> None:
+    state = r9_state.model_copy(deep=True)
+    key, row = next((k, r) for k, r in state.resources.items() if r.minimum is not None)
+    row.amount = row.minimum
+    state, facts = apply({"op": "adjust_resource", "resource": key, "delta": -100, "reason": "亡"}, state)
+    assert f"（已至下限 {row.minimum:g}，原拟 −100）" in facts[0].text
+    state, facts = apply({"op": "adjust_resource", "resource": key, "delta": 5}, state)
+    assert "已至" not in facts[0].text

@@ -114,8 +114,13 @@ def apply(
         if row.maximum is not None:
             amount = min(row.maximum, amount)
         row.amount = amount
+        capped = ""
+        if abs((amount - before) - op.delta) > 1e-9:
+            # 到上下限截断：与地区指标一样注明，免得只见「+0」而不知其故
+            edge = f"上限 {row.maximum:g}" if op.delta > 0 and row.maximum is not None else f"下限 {row.minimum:g}" if row.minimum is not None else "限"
+            capped = f"（已至{edge}，原拟 {signed_number(op.delta)}）"
         facts.append(
-            Fact(kind="resource", text=f"{row.name} {signed_number(amount - before)}{suffix}", entity=op.resource, before=before, after=amount)
+            Fact(kind="resource", text=f"{row.name} {signed_number(amount - before)}{capped}{suffix}", entity=op.resource, before=before, after=amount)
         )
     elif isinstance(op, AddLedger):
         if op.id:
