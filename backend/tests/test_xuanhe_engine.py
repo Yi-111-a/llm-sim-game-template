@@ -488,3 +488,20 @@ def test_model_ops_are_normalised_and_special_entries_split(r9_state) -> None:
     guide = op_guide(r9_state)
     assert '"op": "appoint"' in guide and "adjust_resource" not in guide  # 资源不能直接增减
     assert summarize_ops([{"type": "adjust_resource"}], r9_state) == [""]
+
+
+def test_appointing_someone_on_the_road_explains_why(r9_state) -> None:
+    from simcore.domain.ops import parse_op
+    from simcore.domain.rules import Rejected, validate
+
+    state, _ = apply({"op": "move_character", "character": "plotter", "to_region": "capital"}, r9_state)
+    result = validate(parse_op({"op": "appoint", "character": "plotter", "office": "censor"}), state)
+    assert isinstance(result, Rejected) and "正在途中" in result.message and "无须先 move_character" in result.message
+
+
+def test_interpreter_context_lists_regions_and_armies(mech_scenario) -> None:
+    from simcore.agent.roles import _entity_context
+
+    text = _entity_context(mech_scenario)
+    first_region = mech_scenario["regions"][0]
+    assert f"{first_region['name']}={first_region['id']}" in text and "军队" in text

@@ -488,7 +488,9 @@ def _entity_context(scenario: dict[str, Any]) -> str:
     resources = [row.get("id") for row in scenario.get("scenario", {}).get("resources", [])]
     people = [f"{row.get('name')}={row.get('id')}" for row in scenario.get("characters", [])]
     offices = [f"{row.get('name')}={row.get('id')}" for row in scenario.get("scenario", {}).get("offices", [])]
-    return f"资源 {resources}；人物 {people}；官职 {offices}"
+    regions = [f"{row.get('name')}={row.get('id')}" for row in scenario.get("regions", []) if isinstance(row, dict)]
+    armies = [f"{row.get('name')}={row.get('id')}" for row in scenario.get("armies", []) if isinstance(row, dict)]
+    return f"资源 {resources}；人物 {people}；官职 {offices}；地区 {regions}；军队 {armies}"
 
 
 def _delay_probability(formula: dict[str, Any], state: WorldState) -> float:

@@ -499,8 +499,14 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
         if character is None or office is None:
             return Rejected("UNKNOWN_ENTITY", "人物或官职不存在")
         if op.op == "appoint":
-            if character.status != "alive" or character.in_transit:
-                return Rejected("CHARACTER_UNAVAILABLE", "人物当前不能任职")
+            if character.status != "alive":
+                return Rejected("CHARACTER_UNAVAILABLE", f"{character.name}{STATUS_NAMES.get(character.status, character.status)}，不能任职")
+            if character.in_transit:
+                return Rejected(
+                    "CHARACTER_UNAVAILABLE",
+                    f"{character.name}正在途中（{travel_note(state, character)}），途中不能另授官职；"
+                    "任命本身会令不在任所者启程赴任，无须先 move_character",
+                )
             if office.holder not in (None, op.character):
                 return Rejected("OFFICE_OCCUPIED", "该官职已有任职者")
             held = held_offices(character)
