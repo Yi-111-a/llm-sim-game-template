@@ -314,3 +314,11 @@ def test_memory_when_placeholder_is_the_season_it_happens(r9_state) -> None:
     state.calendar.label = "宣和三年秋"
     state, _ = apply({"op": "remember", "character": "general", "fact": "{when}，奉命出镇"}, state)
     assert state.characters["general"].memories[-1] == "宣和三年秋，奉命出镇"
+
+
+def test_stamp_does_not_prefix_the_time_condition(r9_state) -> None:
+    from simcore.domain.describe import stamp
+
+    lines = stamp(["时间 ≥ 第3回合", "国库 ≥ 10"], 3, r9_state)
+    assert lines[0] == "时间 ≥ 第3回合" or not lines[0].startswith(lines[1].split("时")[0] + "时时间")
+    assert "时时间" not in "".join(lines) and lines[1].endswith("时国库 ≥ 10")

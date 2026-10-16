@@ -153,4 +153,5 @@ def describe_satisfied(condition: Any, state: WorldState, turn: int) -> list[str
 def stamp(lines: list[str], turn: int, state: WorldState | None = None) -> list[str]:
     """「天宝十四载冬时…」（无历法可推时为「第20回合时…」）。"""
     when = turn_label(state, turn, short=True) if state is not None else f"第{turn}回合"
-    return [f"{when}时{line}" for line in lines]
+    # 时限条件本身就是时间，不再冠「某季时」（以前写成「宣和七年冬时时间 ≥ 宣和七年冬」）
+    return [line if line.startswith("时间 ") else f"{when}时{line}" for line in lines]
