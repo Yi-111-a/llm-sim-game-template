@@ -49,9 +49,17 @@ def find_claude() -> list[str] | None:
     local = Path.home() / ".local" / "bin" / ("claude.exe" if sys.platform == "win32" else "claude")
     if local.exists():
         return [str(local)]
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        bundled = _windows_glob_newest(os.path.join(appdata, "Claude", "claude-code", "*", "*", "claude.exe"))
+    # Claude 桌面版自带的 CLI。桌面版是 MSIX 打包应用：它自己看到的 %APPDATA% 被重定向到
+    # %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming；从外面（普通终端、天宝安装版）只能在后者找到。
+    patterns = []
+    if os.environ.get("APPDATA"):
+        patterns.append(os.path.join(os.environ["APPDATA"], "Claude", "claude-code", "*", "*", "claude.exe"))
+    if os.environ.get("LOCALAPPDATA"):
+        patterns.append(os.path.join(
+            os.environ["LOCALAPPDATA"], "Packages", "Claude_*", "LocalCache", "Roaming", "Claude", "claude-code", "*", "*", "claude.exe"
+        ))
+    for pattern in patterns:
+        bundled = _windows_glob_newest(pattern)
         if bundled:
             return [bundled]
     return None

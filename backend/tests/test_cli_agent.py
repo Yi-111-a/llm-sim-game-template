@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import textwrap
 
@@ -140,3 +141,21 @@ def test_factory_builds_cli_providers_from_presets() -> None:
     codex = create_provider({"provider": "codex_cli", "model": "default"}, "edict_interpreter")
     assert isinstance(claude, CliAgentProvider) and claude.kind == "claude"
     assert isinstance(codex, CliAgentProvider) and codex.kind == "codex"
+
+
+def test_finds_claude_desktops_cli_in_the_msix_redirected_appdata(tmp_path, monkeypatch) -> None:
+    # Claude 桌面版是 MSIX 应用：它看到的 %APPDATA% 实际在 %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming，
+    # 普通终端和天宝安装版只能在那里找到它自带的 claude.exe（取最新版本）
+    base = tmp_path / "Packages" / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude" / "claude-code"
+    for version, stamp in (("2.1.295", 1_000), ("2.1.299", 2_000)):
+        exe = base / version / "abc" / "claude.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"")
+        os.utime(exe, (stamp, stamp))
+    monkeypatch.delenv("SIM_CLAUDE_CLI", raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "no-appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(cli_agent.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cli_agent.Path, "home", lambda: tmp_path / "home")
+    found = cli_agent.find_claude()
+    assert found and found[0].endswith(str(base / "2.1.299" / "abc" / "claude.exe"))
