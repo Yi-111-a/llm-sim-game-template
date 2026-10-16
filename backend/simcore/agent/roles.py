@@ -223,6 +223,7 @@ async def interpret_edict(
             render_prompt(
                 "edict_interpreter",
                 {
+                    "op_guide": op_guide(tools.state),
                     "entity_context": _entity_context(scenario),
                     "state_summary": render_digest(tools.state, seed, scenario=scenario),
                     "category": category,
@@ -241,7 +242,7 @@ async def interpret_edict(
             fallback_messages = [
                 {
                     "role": "system",
-                    "content": '仅返回 JSON 对象，格式为 {"ops":[...]}；只提出类型化操作，不解释。',
+                    "content": '仅返回 JSON 对象，格式为 {"ops":[...]}；每个元素必须有 "op" 字段，只提出类型化操作，不解释。',
                 },
                 {"role": "user", "content": prompt},
             ]
@@ -254,13 +255,15 @@ async def interpret_edict(
                 response_format={"type": "json_object"},
             )
         proposed: list[dict[str, Any]] = []
+        notes: list[str] = []
+        questions: list[str] = []
         for call in result.tool_calls:
             if call.name in {"propose_ops", "submit_ops"}:
-                receipt = tools.propose_ops(call.arguments.get("ops", []), tier=PLAYER_TIER)
-                proposed.extend(receipt)
+                real = split_model_ops(call.arguments.get("ops", []), notes, questions)
+                proposed.extend(tools.propose_ops(real, tier=PLAYER_TIER))
         if not result.tool_calls and result.content:
             try:
-                operations = _parse_ops_json(result.content)
+                operations = split_model_ops(_parse_ops_json(result.content), notes, questions)
                 proposed.extend(tools.propose_ops(operations, tier=PLAYER_TIER))
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 proposed.append({
@@ -269,8 +272,11 @@ async def interpret_edict(
                     "reason": f"JSON 模式输出无效：{exc}",
                     "code": "INVALID_TARGET",
                 })
+        if questions:
+            clauses.append({"category": category, "text": text, "status": "needs_clarification", "ops": [], "reason": "；".join(questions), "source": "text"})
         if not proposed:
-            clauses.append({"category": category, "text": text, "status": "narrative_only", "ops": [], "reason": "", "source": "text"})
+            if not questions:
+                clauses.append({"category": category, "text": text, "status": "narrative_only", "ops": [], "reason": "；".join(notes), "source": "text"})
             continue
         add_clauses(proposed, {"category": category, "text": text, "source": "text", "label": f"诏令（{category}）"})
     cascade_delays(state, clauses)
@@ -284,6 +290,40 @@ async def interpret_edict(
         ),
         "confirmed": False,
     }
+
+
+NARRATIVE_OPS = frozenset({"narrative", "note", "narrative_only"})
+CLARIFY_OPS = frozenset({"clarify", "request_clarification", "needs_clarification", "ask_clarification"})
+
+
+def split_model_ops(ops: Any, notes: list[str], questions: list[str]) -> list[dict[str, Any]]:
+    """整理模型给出的操作：写成 {"type": ...} 而缺 "op" 的按 op 名读；「仅叙事」「请澄清」两类不是操作，
+    分别记入 notes / questions（成为 narrative_only / needs_clarification 条款），其余原样交规则层校验。"""
+    real: list[dict[str, Any]] = []
+    for raw in ops if isinstance(ops, list) else []:
+        if not isinstance(raw, dict):
+            real.append(raw)
+            continue
+        row = dict(raw)
+        if "op" not in row and isinstance(row.get("type"), str):
+            row["op"] = row.pop("type")
+        name = str(row.get("op") or "")
+        if name in NARRATIVE_OPS:
+            notes.append(str(row.get("text") or row.get("note") or ""))
+        elif name in CLARIFY_OPS:
+            questions.append(str(row.get("question") or row.get("text") or "此条须补充说明"))
+        else:
+            real.append(row)
+    return real
+
+
+def op_guide(state: WorldState) -> str:
+    """解释诏令时给模型看的可用操作（玩家层）与示例，一行一个。"""
+    from simcore.domain.permissions import player_ops
+    from simcore.domain.reference import op_examples
+
+    examples = op_examples(state, None)
+    return "\n".join(json.dumps(examples.get(name) or {"op": name}, ensure_ascii=False) for name in sorted(player_ops(state)))
 
 
 def _parse_ops_json(content: str) -> list[dict[str, Any]]:

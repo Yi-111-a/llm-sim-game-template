@@ -381,7 +381,7 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
         return f"{name('region', raw['region'])} 归 {name('faction', raw['faction'])}"
     if op == "choose_event_option":
         return f"处置待决事件 {raw.get('choice_id')}"
-    return str(op)
+    return str(op) if op else ""  # 无 op 的条目（解析失败的模型输出）不写「None」
 
 
 def _route_note(state: WorldState, origin: str | None, destination: Any, faction: str | None) -> str:

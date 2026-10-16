@@ -470,3 +470,21 @@ def test_order_risk_after_a_commander_change_in_the_same_edict_names_the_new_com
     posture = receipt["clauses"][1]
     assert posture["status"] in {"applied", "delayed"}
     assert old not in str(posture.get("autonomy_note") or "")
+
+
+def test_model_ops_are_normalised_and_special_entries_split(r9_state) -> None:
+    """模型写 {"type": ...} 而缺 op 的按 op 读；narrative / clarify 不是操作，分开记下；op 指南列出玩家可用操作的写法。"""
+    from simcore.agent.roles import op_guide, split_model_ops
+
+    notes: list[str] = []
+    questions: list[str] = []
+    real = split_model_ops([
+        {"type": "appoint", "character": "general", "office": "marshal"},
+        {"type": "narrative", "note": "赈济成效仅作叙事"},
+        {"op": "request_clarification", "question": "分拨两路各几何？"},
+    ], notes, questions)
+    assert real == [{"op": "appoint", "character": "general", "office": "marshal"}]
+    assert notes == ["赈济成效仅作叙事"] and questions == ["分拨两路各几何？"]
+    guide = op_guide(r9_state)
+    assert '"op": "appoint"' in guide and "adjust_resource" not in guide  # 资源不能直接增减
+    assert summarize_ops([{"type": "adjust_resource"}], r9_state) == [""]
