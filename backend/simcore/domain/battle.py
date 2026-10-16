@@ -179,9 +179,15 @@ def _fight(
             army.strength = 0.0
             facts.append(Fact(kind="army", text=f"{army.name}无路可退，溃散", entity=army.id, before=routed, after=0.0))
         else:
+            commander = state.characters.get(army.commander) if army.commander else None
+            with_army = commander is not None and commander.status == "alive" and commander.region == army.region and not commander.in_transit
             army.region = retreat
             battle["retreat_names"][army.id] = state.regions[retreat].name
-            facts.append(Fact(kind="retreat", text=f"{army.name}退往{state.regions[retreat].name}", entity=army.id, before=region_id, after=retreat))
+            text = f"{army.name}退往{state.regions[retreat].name}"
+            if with_army:
+                commander.region = retreat  # 统帅在军中：随军退走，不留在敌境
+                text += f"，{commander.name}随军"
+            facts.append(Fact(kind="retreat", text=text, entity=army.id, before=region_id, after=retreat))
     winner_name = attacker_name if attacker_won else defender_name
     battle["winner"] = attacker if attacker_won else defender
     battle["winner_name"] = winner_name

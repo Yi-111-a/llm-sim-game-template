@@ -161,3 +161,24 @@ def test_character_region_arrived_excludes_officials_on_the_road(r9_state) -> No
     assert not matches({**cond, "arrived": True}, state)
     assert matches({**cond, "arrived": True}, r9_state)
     assert "不在途中" in describe_condition({**cond, "arrived": True}, r9_state)
+
+
+def test_commander_in_camp_retreats_with_the_beaten_army(r9_state) -> None:
+    """败军退走时，在军中的统帅随军同退（不留在敌境）；遥领者不动。"""
+    state = _battle_state(r9_state)
+    state.armies["guard"].strength = 1000  # 守方必败
+    guard = state.armies["guard"]
+    commander = next(row for row in state.characters.values() if row.faction == guard.faction and row.status == "alive" and row.id != "ruler")
+    commander.region, commander.in_transit, guard.commander = "plain", None, commander.id
+    [battle], facts = resolve_battles(state, random.Random(9), WARS)
+    retreat = battle["retreats"]["guard"]
+    assert battle["winner"] != "court" and retreat
+    assert state.characters[commander.id].region == retreat == state.armies["guard"].region
+    assert any(fact.kind == "retreat" and commander.name in fact.text for fact in facts)
+
+    remote = _battle_state(r9_state)
+    remote.armies["guard"].strength = 1000
+    far = next(region for region in remote.regions if region != "plain")
+    remote.characters[commander.id].region, remote.armies["guard"].commander = far, commander.id
+    resolve_battles(remote, random.Random(9), WARS)
+    assert remote.characters[commander.id].region == far
