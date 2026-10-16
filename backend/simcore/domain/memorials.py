@@ -7,7 +7,18 @@ from typing import Any
 from simcore.domain.events import matches
 from simcore.domain.models import WorldState
 from simcore.domain.ops import memory_ops, parse_op
-from simcore.domain.rules import STATUS_NAMES, entity_name, find_route, stat_name, trait_name, turn_unit_label
+from simcore.domain.rules import (
+    STATUS_NAMES,
+    army_station,
+    entity_name,
+    find_route,
+    office_army,
+    office_station,
+    posting_plan,
+    stat_name,
+    trait_name,
+    turn_unit_label,
+)
 from simcore.domain.visibility import format_number
 
 
@@ -204,7 +215,17 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
             return f"{resource.name} {'↑' if float(raw['delta']) > 0 else '↓' if float(raw['delta']) < 0 else '不变'}（风闻）"
         return f"{name('resource', raw['resource'])} {signed(raw['delta'])}"
     if op == "appoint":
-        return f"任 {name('character', raw['character'])} 为 {name('office', raw['office'])}"
+        text = f"任 {name('character', raw['character'])} 为 {name('office', raw['office'])}"
+        office_id = str(raw["office"])
+        army_id = office_army(state, office_id)
+        if army_id:
+            text += f"，兼统{state.armies[army_id].name}"
+        station = office_station(state, office_id)
+        character = state.characters.get(str(raw["character"]))
+        if station is not None and character is not None:
+            plan = posting_plan(state, character, station, bool(raw.get("dispatch", False)), army=state.armies.get(army_id) if army_id else None)
+            text += f"；{plan['text']}"
+        return text
     if op == "dismiss":
         return f"免 {name('character', raw['character'])} {name('office', raw['office'])}"
     if op == "adjust_region":
@@ -234,7 +255,13 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
     if op == "set_army_commander":
         if not raw.get("character"):
             return f"罢{name('army', raw['army'])}统帅"
-        return f"{name('army', raw['army'])} 由 {name('character', raw.get('character'))} 统领"
+        text = f"{name('army', raw['army'])} 由 {name('character', raw.get('character'))} 统领"
+        army = state.armies.get(str(raw["army"]))
+        character = state.characters.get(str(raw.get("character")))
+        if army is not None and character is not None:
+            plan = posting_plan(state, character, army_station(army), bool(raw.get("dispatch", False)), army=army)
+            text += f"；{plan['text']}"
+        return text
     if op == "adjust_trait":
         if str(raw["trait"]) in {str(item) for item in state.rules.get("hidden_traits", []) or []}:
             return f"{name('character', raw['character'])} 心态有变（不明）"

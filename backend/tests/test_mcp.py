@@ -14,6 +14,7 @@ from simcore.service import GameService
 
 EXPECTED_TOOLS = {
     "list_scenarios",
+    "export_log",
     "new_game",
     "list_saves",
     "load_game",

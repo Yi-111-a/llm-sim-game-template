@@ -16,18 +16,19 @@ from typing import Any
 from simcore.agent.debate import debate_speeches, debate_summary, decide_stances, match_memorial, persona_card, topic_entities
 from simcore.agent.loop import AgentAborted
 from simcore.agent.offline import is_offline
-from simcore.agent.roles import chat_availability, interpret_edict, minister_chat_messages, narrator, offline_minister_text
+from simcore.agent.roles import AUDIENCE_VOICE, chat_availability, interpret_edict, minister_chat_messages, narrator, offline_minister_text
 from simcore.agent.tools import PLAYER_TIER, SCENARIO_TIER, AgentTools
 from simcore.config import load_settings
 from simcore.domain.apply import OpRejected, edict_memories
+from simcore.domain.command import command_table, command_table_lines
 from simcore.domain.difficulty import DifficultyError, current_difficulty, public_difficulties
 from simcore.domain.digest import render_digest
 from simcore.domain.events import matches
 from simcore.domain.memorials import MemorialError, is_visible, memorial_flag, summarize_ops, visible_memorials
 from simcore.domain.models import TurnReport, WorldState
 from simcore.domain.reference import ReferenceError, build_reference
-from simcore.domain.rules import held_offices, mover_faction, player_character_id, travel_note, traveller_label
-from simcore.domain.turn import GameOver, choice_option_id
+from simcore.domain.rules import audience_mode, held_offices, mover_faction, player_character_id, travel_note, traveller_label
+from simcore.domain.turn import GameOver, choice_option_id, final_season_notice
 from simcore.domain.visibility import (
     battle_text,
     fact_line,
@@ -39,6 +40,7 @@ from simcore.domain.visibility import (
     redacted_report,
     resource_display,
 )
+from simcore.export import build_export, compact_clauses
 from simcore.llm.base import LLMProvider
 from simcore.llm.factory import create_provider
 from simcore.scenario.loader import build_initial_state, load_scenario, validate_scenario
@@ -345,6 +347,10 @@ class GameService:
             "review": self.final_review(session, state) if over else None,
             "last_report": public_report(report, state, session.seed, crisis),
             "can_advance": state.outcome is None,
+            # 官职—所在—所统—指挥状态总表（玩家势力），见 domain.command
+            "command_table": command_table(state, self.player_character(session, state)),
+            # 下一次结算即终局时的提示（game_length 时限），否则 None
+            "final_notice": final_season_notice(state, self.definition(session)),
         }
 
     def final_review(self, session: SessionStore, state: WorldState) -> dict[str, Any] | None:
@@ -429,6 +435,14 @@ class GameService:
         for clause in receipt["clauses"]:
             op = clause.get("op")
             clause["summary"] = summarize_ops([op], state)[0] if isinstance(op, dict) and op else ""
+        # 回执的公开摘要写进旁路文件（不改日志、不改状态），供 export_log 复盘。
+        session.record_draft({
+            "action": "draft",
+            "edict_id": receipt["id"],
+            "turn": state.turn,
+            "adopted": receipt.get("adopted", []),
+            "clauses": compact_clauses(receipt["clauses"]),
+        })
         receipt["base_turn"] = state.turn
         receipt["base_head"] = session.head_id
         receipt["base_hash"] = state_hash(state)
@@ -491,12 +505,21 @@ class GameService:
         ]
         if flags:
             session.append_ops(flags)
-        self.touch(session_id)
         receipt["confirmed"] = True
         session.save_draft(receipt)
         receipt["execution_rate"] = (
             sum(clause["status"] == "applied" for clause in clauses) / len(clauses) if clauses else 1
         )
+        session.append_edict({
+            "action": "confirm",
+            "edict_id": edict_id,
+            "turn": state.turn,
+            "adopted": receipt.get("adopted", []),
+            "clauses": compact_clauses(clauses),
+            "changed_clauses": receipt.get("changed_clauses", []),
+            "execution_rate": receipt["execution_rate"],
+        })
+        self.touch(session_id)
         receipt["state"] = public_view(session.head_state(), session.seed)
         return receipt
 
@@ -595,6 +618,7 @@ class GameService:
             "memorial": memorial,
             "outcome": state.outcome.model_dump(mode="json") if state.outcome else None,
             "calendar_label": state.calendar.label,
+            "final_notice": final_season_notice(state, self.definition(session)),
         }
 
     def season_context(self, session: SessionStore) -> dict[str, Any]:
@@ -655,16 +679,25 @@ class GameService:
         refusal = chat_availability(character_id, state, afterlife)
         if refusal is not None:
             raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}{'已故' if character.status == 'dead' else '系狱'}，无法召对")
+        mode = self.audience_mode(session, state, character_id)
         return {
             "persona": persona_card(state, character_id, session.scenario),
             "digest": render_digest(state, session.seed, character_id, session.last_report(), session.scenario),
             "memories": list(character.memories[-12:]),
+            # 召对方式：面见（人在御前）/ 书面奏对（远在他处）/ 遣使问对（在途）
+            "mode": mode,
             "voice": (
                 f"以{character.name}的身份与口吻作答：{character.speech_style or '言辞得体'}。"
+                f"召对方式：{mode['label']}——{mode['note']}{AUDIENCE_VOICE[mode['mode']]}"
                 "只说此人可能知道的事；数字只能引用上面事实摘要中的值，风闻区间不得说成确数；"
                 "不得声称已经执行任何政令。"
             ),
         }
+
+    def audience_mode(self, session: SessionStore, state: WorldState, character_id: str) -> dict[str, str]:
+        if character_id not in state.characters:
+            return {"mode": "in_person", "label": "面见", "note": ""}
+        return audience_mode(state, character_id, self.definition(session).get("settings") or {})
 
     async def chat(self, session_id: str, character_id: str, text: str) -> dict[str, Any]:
         """非流式召对（MCP server 模式用）。"""
@@ -675,10 +708,11 @@ class GameService:
         if content is None:
             messages = minister_chat_messages(character_id, session.state, text, session.scenario, session.seed, session.last_report())
             content = (await provider.chat(messages)).content
-        session.append_message("player", text, {"character": character_id})
-        session.append_message("character", content, {"character": character_id, "status": "ok"})
+        mode = self.audience_mode(session, session.head_state(), character_id)
+        session.append_message("player", text, {"character": character_id, "mode": mode["mode"]})
+        session.append_message("character", content, {"character": character_id, "status": "ok", "mode": mode["mode"]})
         self.touch(session_id)
-        return {"status": "ok", "character": character_id, "content": content}
+        return {"status": "ok", "character": character_id, "content": content, "mode": mode}
 
     @staticmethod
     def offline_chat_text(session: SessionStore, character_id: str, text: str, provider: Any) -> str | None:
@@ -722,9 +756,20 @@ class GameService:
         stances = decide_stances(
             state, session.scenario, topic, unique, memorial_id=str(memorial["id"]) if memorial else None, seed=session.seed
         )
+        options = [row for row in (memorial or {}).get("options", []) or [] if isinstance(row, dict)]
+        if memorial is not None and options:
+            listing = "；".join(f"`{row.get('id')}`「{row.get('label', row.get('id'))}」" for row in options)
+            proposition = f"就奏疏「{memorial.get('title', memorial.get('id'))}」诸选项择一（{listing}）；各人立场附所主张的选项"
+        else:
+            proposition = f"「{topic}」——赞成即主张照此施行，反对即主张不行，持中即未置可否"
         analysis = {
             "topic_entities": topic_entities(state, topic),
-            "memorial": {"id": memorial.get("id"), "title": memorial.get("title")} if memorial else None,
+            "memorial": {
+                "id": memorial.get("id"),
+                "title": memorial.get("title"),
+                "options": [{"id": row.get("id"), "label": row.get("label", row.get("id"))} for row in options],
+            } if memorial else None,
+            "proposition": proposition,
         }
         return topic, stances, analysis
 
@@ -777,6 +822,13 @@ class GameService:
     def history(self, session_id: str) -> list[dict[str, Any]]:
         return self.session(session_id).timeline()
 
+    def export_log(self, session_id: str, from_turn: int | None = None, to_turn: int | None = None) -> dict[str, Any]:
+        """结构化复盘日志（只读，公开视图）：见 simcore.export.build_export。"""
+        session = self.session(session_id)
+        if from_turn is not None and to_turn is not None and from_turn > to_turn:
+            raise GameError("INVALID_REQUEST", "from_turn 不能大于 to_turn")
+        return build_export(session, session_id, self.definition(session).get("crisis"), from_turn, to_turn)
+
     def rewind(self, session_id: str, entry_id: str | None) -> dict[str, Any]:
         session = self.session(session_id)
         if entry_id is not None and not any(item["id"] == entry_id and item["type"] != "branch" for item in session.entries):
@@ -803,6 +855,8 @@ class GameService:
             )
         if state.outcome is not None:
             lines.append(f"**本局已终局：{state.outcome.title}**（{'失败' if state.outcome.kind == 'fail' else '结局'}）{state.outcome.text}")
+        if view["final_notice"]:
+            lines.append(f"**{view['final_notice']['text']}**")
         if view["objectives"]:
             lines.append("\n## 目标")
             status_names = {"on_track": "守住", "at_risk": "告急", "failed": "已失", "achieved": "达成", "pending": "待定"}
@@ -816,6 +870,18 @@ class GameService:
             lines.append(f"\n## 危机计：{crisis['title']} {crisis['display']}（{crisis['band']}）")
             for term in crisis["terms"]:
                 lines.append(f"- 分项 {term['label']}：{term['display']}")
+            lines.append("（分项按当前状态计算，即下次结算的预计漂移；上季实际变化见「上季危机变化」。）")
+        change = (view["last_report"] or {}).get("crisis_change")
+        if change:
+            lines.append("\n## 上季危机变化（结算当时的实际贡献）")
+            lines.extend(f"- {line}" for line in change["lines"])
+        table = view["command_table"]
+        table_lines = command_table_lines(table)
+        if table_lines and state.outcome is None:
+            lines.append("\n## 官职与兵权（官职—所在—所统—指挥状态；遥领、出缺、无统帅加粗）")
+            lines.extend(table_lines)
+            if table["alerts"]:
+                lines.append("提醒：" + "；".join(table["alerts"]))
         if view.get("review"):
             lines.extend(self._review_lines(view["review"]))
         travellers = self._traveller_lines(state)

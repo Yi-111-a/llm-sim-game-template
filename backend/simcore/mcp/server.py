@@ -78,6 +78,11 @@ DESCRIPTIONS: dict[str, str] = {
         "Resolve the season and return the TurnReport."
     ),
     "history": "存档时间线（含全部分支）：每个节点的 id、类型、回合、说明、父节点，标出当前所在。List the session timeline.",
+    "export_log": (
+        "结构化复盘日志（只读）：按季列出采纳的奏疏选项、客户端 ops、拟诏与确认回执、延期条款、事件抉择、召对与廷议、"
+        "end_turn 的事实 / 事件 / 对账（含经常收支明细）/ 危机计与本季危机变化拆分、终局。from_turn / to_turn 按下诏所在季筛选。"
+        "隐藏数值只给风闻区间。Structured per-season log export (public view only)."
+    ),
     "rewind": "回到时间线上的某个节点（entry_id；留空回到开局），之后的操作另开分支，原分支保留。Rewind to an entry id.",
 }
 
@@ -150,11 +155,14 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
     @register
     async def audience(session_id: str, character: str, question: str = "") -> str:
         card = service.audience_card(session_id, character)
+        mode = card["mode"]
         if server_mode and question.strip():
             reply = await service.chat(session_id, character, question)
-            return f"{card['persona']['name']}：{reply['content']}"
+            label = "" if mode["mode"] == "in_person" else f"（{mode['label']}）"
+            return f"{card['persona']['name']}{label}：{reply['content']}"
         persona = card["persona"]
         return (
+            f"# 召对方式：{mode['label']}——{mode['note']}\n"
             f"# 人设卡：{persona['name']}（{persona['character']}）\n"
             f"官职：{'、'.join(persona['offices']) or '无'}；派系：{persona['bloc'] or '无'}；头衔：{persona['title'] or '无'}\n"
             f"人物：{persona['persona']}\n言谈：{persona['speech_style']}\n所知：{'、'.join(persona['knowledge']) or '—'}\n"
@@ -170,15 +178,22 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         if server_mode:
             result = await service.debate(session_id, topic, participants, memorial_id or None)
             lines = [f"# 廷议：{result['topic']}", *_debate_context(result)]
-            lines.extend(f"- {row['name']}（{row['stance']}）：{row['text']}" for row in result["speeches"])
+            lines.extend(
+                f"- {row['name']}（{row['stance']}{'；' + row['position'] if row.get('target_option_id') else ''}）：{row['text']}"
+                for row in result["speeches"]
+            )
             lines.append(result["summary"])
             return "\n".join(lines)
         brief = service.debate_brief(session_id, topic, participants, memorial_id or None)
         lines = [f"# 廷议：{brief['topic']}", *_debate_context(brief), brief["instructions"], "", "## 立场（引擎给定，不可更改）"]
         for row in brief["stances"]:
             persona = row["persona"]
+            if row.get("target_option_id"):
+                target = f"{row['position']}（{row.get('target_reason') or row['reason']}）。"
+            else:
+                target = f"{row['position']}。" if row.get("position") else ""
             lines.append(
-                f"- {row['name']}（{row['character']}）：{row['stance_label']}（{row['stance']}）——{row['reason']}。"
+                f"- {row['name']}（{row['character']}）：{row['stance_label']}（{row['stance']}）——{row['reason']}。{target}"
                 f"官职：{'、'.join(persona['offices']) or '无'}；人物：{persona['persona']}；言谈：{persona['speech_style']}"
             )
         lines.extend(["", "## 事实摘要", brief["digest"], "", brief["summary"]])
@@ -238,6 +253,10 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         return "\n".join(lines)
 
     @register
+    async def export_log(session_id: str, from_turn: int | None = None, to_turn: int | None = None) -> str:
+        return _dump(service.export_log(session_id, from_turn, to_turn))
+
+    @register
     async def rewind(session_id: str, entry_id: str | None = None) -> str:
         view = service.rewind(session_id, entry_id)
         return f"已回到 {entry_id or '开局'}：{view['calendar_label']}（第{view['turn']}回合）。之后的操作将另开分支。"
@@ -271,7 +290,7 @@ def _clause_lines(clauses: list[dict[str, Any]]) -> list[str]:
 
 
 def _debate_context(result: dict[str, Any]) -> list[str]:
-    lines = []
+    lines = [f"议题命题：{result['proposition']}"] if result.get("proposition") else []
     if result.get("memorial"):
         lines.append(f"对应奏疏：[{result['memorial']['id']}] {result['memorial']['title']}（谏言人按奏疏中的立场）")
     entities = result.get("topic_entities") or []
@@ -290,7 +309,10 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
     reconciliation = report.get("reconciliation") or []
     if reconciliation:
         lines.append("## 对账（期初 → 诏令 → 延期执行 → 经常收支 → 事件/选择 → 期末）")
-        lines.extend(f"- {row['display']}" for row in reconciliation)
+        for row in reconciliation:
+            lines.append(f"- {row['display']}")
+            if row.get("regular_display"):
+                lines.append(f"  - {row['regular_display']}")
         shown = {row["resource"] for row in reconciliation}
         hidden = [
             row.get("name", key)
@@ -333,12 +355,19 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
     crisis = report.get("crisis") or {}
     if crisis:
         lines.append(f"## 危机计 {crisis.get('title')}：{crisis.get('display')}（{crisis.get('band')}）")
+        lines.append("分项（按结算后状态计算，即下次结算的预计漂移）：")
         for term in crisis.get("terms", []):
             lines.append(f"- {term.get('label')}：{term.get('display')}")
+    change = report.get("crisis_change")
+    if change:
+        lines.append("## 本季危机变化（结算当时的实际贡献）")
+        lines.extend(f"- {line}" for line in change.get("lines", []))
     if report.get("warnings"):
         lines.append("## 提示：" + "；".join(dict.fromkeys(report["warnings"])))
     if show_memorial and result.get("memorial"):
         lines.append(f"## 纪事\n{result['memorial']}")
+    if result.get("final_notice"):
+        lines.append(f"## 注意：{result['final_notice']['text']}")
     outcome = result.get("outcome")
     if outcome:
         lines.append(f"## 终局：{outcome['title']}（{'失败' if outcome['kind'] == 'fail' else '结局'}）\n{outcome.get('text', '')}")

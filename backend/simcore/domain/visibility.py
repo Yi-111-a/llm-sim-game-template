@@ -201,6 +201,143 @@ def public_crisis(
     }
 
 
+HIDDEN_DELTA_EDGES = (0.0, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0, 30.0, 50.0, 100.0)
+
+
+def delta_range(amount: float) -> list[float] | float:
+    """隐藏数值的变化量只给档位区间：[+3, +5]、[−1, −0.5]；为 0 时给 0。档位见 HIDDEN_DELTA_EDGES。"""
+    if abs(amount) < 1e-9:
+        return 0.0
+    size = abs(amount)
+    low, high = HIDDEN_DELTA_EDGES[-2], HIDDEN_DELTA_EDGES[-1]
+    for left, right in zip(HIDDEN_DELTA_EDGES, HIDDEN_DELTA_EDGES[1:], strict=False):
+        if size <= right + 1e-9:
+            low, high = left, right
+            break
+    return [low, high] if amount > 0 else [-high, -low]
+
+
+def _noisy_interval(value: float, half: float, key: str) -> tuple[float, float]:
+    """隐藏变量的区间（与风闻区间同法：中心带 ±半宽/2 的种子噪声，真值必在区间内）。"""
+    center = value + random.Random(key).uniform(-half / 2, half / 2)
+    return (center - half, center + half)
+
+
+CRISIS_ITEM_KINDS = {
+    "edict": "诏令",
+    "choice": "抉择",
+    "delayed": "延期执行",
+    "standing": "常设令/账目/工程",
+    "event": "事件冲击",
+}
+
+
+def public_crisis_change(
+    crisis: dict[str, Any] | None, change: Any, state: WorldState, seed: int
+) -> dict[str, Any] | None:
+    """本季危机值变化的公开拆分：漂移（结算当时各分项）、难度加成、事件冲击（带事件标题）、诏令 / 延期 / 抉择等，
+    以及上下限截断与余差。危机资源隐藏时，各项与合计只给档位区间（delta_range）；分项公式引用隐藏变量时以区间代入。
+
+    返回 {title, hidden, total, items: [{kind, kind_label, label, value, display}], drift: {terms, base, factor, difficulty_label,
+    difficulty, clamp}, lines: [中文行]}。
+    """
+    if not crisis or not isinstance(change, dict) or change.get("resource") not in state.resources:
+        return None
+    resource = state.resources[str(change["resource"])]
+    hidden_crisis = resource.hidden
+    hidden = hidden_resources(state)
+
+    def shown(amount: float) -> Any:
+        return delta_range(amount) if hidden_crisis else round(amount, 2)
+
+    items = []
+    for row in change.get("items", []) or []:
+        amount = float(row.get("amount", 0.0) or 0.0)
+        value = shown(amount)
+        items.append({
+            "kind": row.get("kind"),
+            "kind_label": CRISIS_ITEM_KINDS.get(str(row.get("kind")), "其他"),
+            "label": str(row.get("label", "")),
+            "value": value,
+            "display": format_value(value, signed=True),
+        })
+    drift_raw = change.get("drift") or {}
+    drift: dict[str, Any] = {}
+    if drift_raw:
+        values = {key: float(value) for key, value in (drift_raw.get("values") or {}).items()}
+        intervals = {
+            key: _noisy_interval(values[key], float(intel_precision(state, key)["half_width"]), f"crisis-split:{seed}:{state.turn}:{key}")
+            for key in hidden
+            if key in values
+        }
+        terms = []
+        low_sum = high_sum = 0.0
+        exact_ids = {row.get("id"): row.get("value") for row in drift_raw.get("terms", []) or []}
+        for term in crisis.get("terms", []) or []:
+            expression = str(term.get("expr", "0"))
+            if expression_names(expression) & hidden:
+                bounds = interval_evaluate(expression, values, intervals)
+                value: Any = list(bounds) if bounds is not None else None
+                if bounds is not None:
+                    low_sum += bounds[0]
+                    high_sum += bounds[1]
+            else:
+                value = exact_ids.get(term.get("id"))
+                if isinstance(value, (int, float)):
+                    low_sum += float(value)
+                    high_sum += float(value)
+            terms.append({"id": term.get("id"), "label": term.get("label", term.get("id")), "value": value, "display": format_value(value, signed=True)})
+        factor = float(drift_raw.get("factor", 1.0) or 1.0)
+        if hidden_crisis and any(isinstance(row["value"], list) for row in terms):
+            base: Any = [round(low_sum, 2), round(high_sum, 2)]
+            extra: Any = sorted([round(low_sum * (factor - 1), 2), round(high_sum * (factor - 1), 2)])
+        else:
+            base = round(float(drift_raw.get("base", 0.0) or 0.0), 2)  # 危机值公开时漂移总额本已见于账目行
+            extra = round(float(drift_raw.get("difficulty", 0.0) or 0.0), 2)
+        if abs(factor - 1) < 1e-9:
+            extra = 0.0
+        difficulty = state.rules.get("difficulty") if isinstance(state.rules.get("difficulty"), dict) else {}
+        clamp = float(drift_raw.get("clamp", 0.0) or 0.0)
+        drift = {
+            "terms": terms,
+            "base": base,
+            "base_display": format_value(base, signed=True),
+            "factor": factor,
+            "difficulty_label": str(difficulty.get("label") or ""),
+            "difficulty": extra,
+            "difficulty_display": format_value(extra, signed=True),
+            "clamp": shown(clamp) if abs(clamp) > 1e-9 else 0.0,
+        }
+    other = float(change.get("other", 0.0) or 0.0)
+    total_raw = float(change.get("closing", 0.0) or 0.0) - float(change.get("opening", 0.0) or 0.0)
+    total = shown(total_raw)
+    title = str(crisis.get("title", resource.name))
+    suffix = "，风闻" if hidden_crisis else ""
+    lines = [f"{title}变化：{format_value(total, signed=True)}{suffix}（以下为该季结算当时的实际贡献，非下季预计）"]
+    if drift:
+        term_text = "；".join(f"{row['label']} {row['display']}" for row in drift["terms"])
+        lines.append(f"漂移 {drift['base_display']}（{term_text}）")
+        if abs(drift["factor"] - 1) > 1e-9:
+            label = drift["difficulty_label"] or "难度"
+            lines.append(f"难度加成（{label} ×{drift['factor']:g}）{drift['difficulty_display']}")
+        if drift["clamp"] not in (0, 0.0):
+            lines.append(f"上下限截断 {format_value(drift['clamp'], signed=True)}")
+    for item in items:
+        lines.append(f"{item['kind_label']}「{item['label']}」{item['display']}")
+    if abs(other) > 1e-9:
+        lines.append(f"其他（截断等）{format_value(shown(other), signed=True)}")
+    return {
+        "title": title,
+        "hidden": hidden_crisis,
+        "total": total,
+        "total_display": format_value(total, signed=True),
+        "items": items,
+        "drift": drift,
+        "other": shown(other) if abs(other) > 1e-9 else 0.0,
+        "lines": lines,
+    }
+
+
 def public_report(
     report: TurnReport | dict[str, Any] | None,
     state: WorldState,
@@ -258,13 +395,16 @@ def public_report(
         {**battle, "text": battle_text(battle, state)} if isinstance(battle, dict) else battle
         for battle in data.get("battles", []) or []
     ]
+    # 本季危机变化拆分（结算当时的公开快照，见 public_crisis_change）；旧存档没有时为 None
+    data["crisis_change"] = data["crisis"].get("public_change") if isinstance(data.get("crisis"), dict) else None
     if data.get("crisis"):
         snapshot = data["crisis"].get("public")
         if isinstance(snapshot, dict):
             data["crisis"] = snapshot  # 结算当时计算的公开快照（end_turn / 季报 / 简报同一份数字）
         else:
             data["crisis"] = public_crisis(crisis, state, seed, data["crisis"].get("terms")) if crisis else {}
-    data["reconciliation"] = public_reconciliation(data.get("reconciliation"), state)
+    data["reconciliation"] = public_reconciliation(data.get("reconciliation"), state, data.get("regular_detail"))
+    data.pop("regular_detail", None)  # 已并入 reconciliation[].regular_detail（隐藏资源的明细不外露）
     return data
 
 
@@ -276,17 +416,21 @@ RECONCILIATION_STEPS = (
     ("events", "事件/选择"),
     ("closing", "期末"),
 )
+REGULAR_KIND_LABELS = {"income": "收入", "ledger": "账目", "project": "工程", "drift": "漂移", "standing": "常设令/竣工", "other": "其他"}
 
 
-def public_reconciliation(raw: Any, state: WorldState) -> list[dict[str, Any]]:
-    """公开资源的分段对账：期初 → 诏令 → 延期执行 → 经常收支 → 事件/选择 → 期末（隐藏资源不列）。
+def public_reconciliation(raw: Any, state: WorldState, detail: Any = None) -> list[dict[str, Any]]:
+    """公开资源的分段对账：期初 → 诏令 → 延期执行 → 经常收支 → 事件/选择 → [取整差] → 期末（隐藏资源不列）。
 
-    数值字段保留原始浮点（相加等于期末，误差 < 1e-6）；shown / display 按一位小数取整，并把取整余差归入变动最大的一段，
-    使显示的各段之和与期末完全一致。
+    数值字段保留原始浮点（相加等于期末，误差 < 1e-6）；shown / display 各段按一位小数取整，取整余差不并入任何一段，
+    而是单列「取整差」（shown.rounding），使显示的各段之和与期末完全一致、每段显示值都等于其真值的取整。
+    regular_detail：经常收支明细 [{kind, label, amount, shown, display}]（收入按公式 label、账目逐项、工程逐项、常设令、漂移、
+    上下限截断），明细显示值与该段显示值之差同样单列「取整差」。
     """
     if not isinstance(raw, dict):
         return []
     hidden = hidden_resources(state)
+    details = detail if isinstance(detail, dict) else {}
     rows: list[dict[str, Any]] = []
     for key, values in raw.items():
         if key in hidden or key not in state.resources or not isinstance(values, dict) or "opening" not in values:
@@ -296,22 +440,42 @@ def public_reconciliation(raw: Any, state: WorldState) -> list[dict[str, Any]]:
         shown = {step: round(numbers[step], 1) for step, _ in RECONCILIATION_STEPS}
         deltas = [step for step, _ in RECONCILIATION_STEPS[1:-1]]
         residual = round(shown["closing"] - shown["opening"] - sum(shown[step] for step in deltas), 1)
-        if residual:
-            biggest = max(deltas, key=lambda step: abs(numbers[step]))
-            shown[biggest] = round(shown[biggest] + residual, 1)
         parts = [
             f"{label} {_signed(shown[step]) if step not in {'opening', 'closing'} else format_number(shown[step])}"
             for step, label in RECONCILIATION_STEPS
         ]
+        if residual:
+            shown["rounding"] = residual
+            parts.insert(-1, f"取整差 {_signed(residual)}")
         unit = f"（{resource.unit}）" if resource.unit else ""
-        rows.append({
+        row: dict[str, Any] = {
             "resource": key,
             "name": resource.name,
             "unit": resource.unit,
             **numbers,
             "shown": shown,
             "display": f"{resource.name}{unit}：" + " → ".join(parts),
-        })
+        }
+        items = details.get(key)
+        if isinstance(items, list) and items:
+            regular: list[dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                amount = float(item.get("amount", 0.0) or 0.0)
+                regular.append({
+                    "kind": item.get("kind"),
+                    "label": str(item.get("label", "")),
+                    "amount": amount,
+                    "shown": round(amount, 1),
+                    "display": f"{item.get('label', '')} {_signed(round(amount, 1))}",
+                })
+            gap = round(shown["regular"] - sum(item["shown"] for item in regular), 1)
+            if gap:
+                regular.append({"kind": "rounding", "label": "取整差", "amount": 0.0, "shown": gap, "display": f"取整差 {_signed(gap)}"})
+            row["regular_detail"] = regular
+            row["regular_display"] = "经常收支明细：" + "；".join(item["display"] for item in regular)
+        rows.append(row)
     return rows
 
 

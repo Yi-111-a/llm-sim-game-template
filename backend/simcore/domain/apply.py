@@ -40,10 +40,12 @@ from simcore.domain.rules import (
     STATUS_NAMES,
     Rejected,
     army_station,
-    commander_presence,
     entity_name,
     find_route,
     held_offices,
+    office_army,
+    office_station,
+    posting_plan,
     stat_name,
     trait_name,
     turn_unit_label,
@@ -133,7 +135,16 @@ def apply(
             character.office = op.office
         updated.offices[op.office].holder = op.character
         office_name = updated.offices[op.office].name
-        facts.append(Fact(kind="appointment", text=f"{character.name}任{office_name}", entity=op.character, after=op.office))
+        text = f"{character.name}任{office_name}"
+        army_id = office_army(updated, op.office)
+        army = updated.armies[army_id] if army_id else None
+        if army is not None and army.commander != op.character:
+            army.commander = op.character
+            text += f"，兼统{army.name}"
+        station = office_station(updated, op.office)
+        if station is not None:
+            text += _posting(updated, character, station, op.dispatch, army)
+        facts.append(Fact(kind="appointment", text=text, entity=op.character, after=op.office))
     elif isinstance(op, Dismiss):
         character = updated.characters[op.character]
         held = [office for office in held_offices(character) if office != op.office]
@@ -142,7 +153,12 @@ def apply(
             character.office = held[0] if held else None
         updated.offices[op.office].holder = None
         office_name = updated.offices[op.office].name
-        facts.append(Fact(kind="appointment", text=f"{character.name}免{office_name}", entity=op.character, before=op.office))
+        text = f"{character.name}免{office_name}"
+        army_id = office_army(updated, op.office)
+        if army_id and updated.armies[army_id].commander == op.character:
+            updated.armies[army_id].commander = None
+            text += f"，罢统{updated.armies[army_id].name}"
+        facts.append(Fact(kind="appointment", text=text, entity=op.character, before=op.office))
     elif isinstance(op, SetCharacterStatus):
         character = updated.characters[op.character]
         before = character.status
@@ -268,7 +284,7 @@ def apply(
         army.commander = op.character
         text = f"{army.name}易帅，由{entity_name(updated, op.character)}统领" if op.character else f"罢{army.name}统帅"
         if op.character:
-            text += _dispatch_commander(updated, army, op.dispatch)
+            text += _posting(updated, updated.characters[op.character], army_station(army), op.dispatch, army)
         facts.append(Fact(kind="army_commander", text=text, entity=op.army, before=before, after=op.character))
     elif isinstance(op, AdjustTrait):
         character = updated.characters[op.character]
@@ -366,17 +382,13 @@ def _escort_commander(state: WorldState, army: Any) -> str:
     return f"，统帅{commander.name}随军"
 
 
-def _dispatch_commander(state: WorldState, army: Any, dispatch: bool) -> str:
-    """新统帅不在军中时：dispatch 且未在途则自动启程赴军（赴任中）；否则遥领。两种情形都由副将暂摄。返回事实后缀。"""
-    commander = state.characters[army.commander]
-    if commander_presence(state, army)["present"]:
-        return ""
-    station = army_station(army)
-    if dispatch and commander.in_transit is None and commander.region != station and commander.status == "alive":
-        if find_route(state, commander.region, station, commander.faction) is not None:
-            route_text = _start_transit(state, commander, station, commander.faction)
-            return f"；{commander.name}自{state.regions[commander.region].name}赴任{route_text}，未到之前由副将暂摄"
-    return f"；{commander_presence(state, army)['note']}"
+def _posting(state: WorldState, character: Any, station: str, dispatch: bool, army: Any = None) -> str:
+    """任帅 / 任有任所的官职之后：按 rules.posting_plan 启程赴任或遥领，返回事实后缀「；已启程赴任（…）」/「；遥领，不赴任（…）」。"""
+    plan = posting_plan(state, character, station, dispatch, army=army)
+    if plan["kind"] == "dispatch":
+        path, turns = plan["route"]
+        character.in_transit = {"to_region": station, "eta_turn": state.turn + turns, "from_region": character.region, "route": path}
+    return f"；{plan['text']}"
 
 
 RULER_TITLE_DEFAULT = "陛下"

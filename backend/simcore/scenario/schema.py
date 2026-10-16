@@ -51,6 +51,8 @@ class GameLength(BaseModel):
     overtime_flag: str | None = None
     overtime_last_turn: int | None = None
     fallback_ending: str | None = None
+    # 延长模式（结局 extension_hint 的前提）。引擎尚未实现任何延长模式，声明了也不显示提示（见 turn.extension_hint）。
+    extension_mode: str | None = None
 
 
 class CounterDef(BaseModel):

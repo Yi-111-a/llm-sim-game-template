@@ -78,6 +78,45 @@ def player_character_id(state: WorldState, settings: dict[str, Any] | None = Non
     return None
 
 
+AUDIENCE_MODES = {"in_person": "面见", "written": "书面奏对", "envoy": "遣使问对"}
+
+
+def court_region(state: WorldState, settings: dict[str, Any] | None = None) -> str | None:
+    """御前所在：玩家本人（君主）所在地区；无玩家人物时取 settings / rules 的 capital_region。"""
+    player = player_character_id(state, settings)
+    if player and player in state.characters:
+        return state.characters[player].region
+    for source in (state.rules, settings or {}):
+        region = source.get("capital_region")
+        if region and str(region) in state.regions:
+            return str(region)
+    return None
+
+
+def audience_mode(state: WorldState, character_id: str, settings: dict[str, Any] | None = None) -> dict[str, str]:
+    """召对方式：人在御前（与君主同地、不在途）为「面见」；远在他处为「书面奏对」（以奏疏问答）；在途为「遣使问对」。
+
+    返回 {mode: in_person|written|envoy, label, note}；note 为给扮演者的一句交代（不含内部 id）。
+    """
+    character = state.characters[character_id]
+    court = court_region(state, settings)
+    court_name = state.regions[court].name if court in state.regions else "京师"
+    where = state.regions[character.region].name if character.region in state.regions else character.region
+    if character.in_transit:
+        return {
+            "mode": "envoy",
+            "label": AUDIENCE_MODES["envoy"],
+            "note": f"{character.name}正在途中（{travel_note(state, character)}），不在御前：遣使赍问，就地书面回奏，非当面应对。",
+        }
+    if court is None or character.region == court:
+        return {"mode": "in_person", "label": AUDIENCE_MODES["in_person"], "note": f"{character.name}在{court_name}，入对御前，当面奏对。"}
+    return {
+        "mode": "written",
+        "label": AUDIENCE_MODES["written"],
+        "note": f"{character.name}人在{where}，不在御前（{court_name}）：以书面奏对，驿递往还，非当面应对，召对并不令其入京。",
+    }
+
+
 TURN_UNIT_LABELS = {"month": "月", "season": "季", "year": "年"}
 
 
@@ -174,8 +213,70 @@ def commander_presence(state: WorldState, army: Any) -> dict[str, Any]:
         note = f"主帅{commander.name}赴任中（{travel_note(state, commander)}），由副将暂摄"
     else:
         where = state.regions.get(commander.region)
-        note = f"主帅{commander.name}不在军中（今在{where.name if where else commander.region}），由副将暂摄"
+        note = f"主帅{commander.name}遥领，不在军中（今在{where.name if where else commander.region}），由副将暂摄"
     return {"commander": commander.id, "name": commander.name, "present": False, "note": note}
+
+
+def office_posting(state: WorldState, office_id: str) -> dict[str, str]:
+    """官职的任所定义（rules.office_postings，来自剧本 offices 的 army / seat）；京官、虚衔为空字典。"""
+    postings = state.rules.get("office_postings") or {}
+    row = postings.get(office_id) if isinstance(postings, dict) else None
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def office_army(state: WorldState, office_id: str) -> str | None:
+    """此职所统军队 id（剧本写了 army 且军队存在时）。"""
+    army = office_posting(state, office_id).get("army")
+    return army if army and army in state.armies else None
+
+
+def office_station(state: WorldState, office_id: str) -> str | None:
+    """此职的任所地区：seat，否则所统军队的落脚地；京官、虚衔为 None。"""
+    seat = office_posting(state, office_id).get("seat")
+    if seat and seat in state.regions:
+        return seat
+    army = office_army(state, office_id)
+    return army_station(state.armies[army]) if army else None
+
+
+def posting_plan(state: WorldState, character: Any, station: str, dispatch: bool, *, army: Any = None) -> dict[str, Any]:
+    """任命（任帅 / 有任所的官职）之后此人是否赴任，以及回执与事实统一使用的说明（不改状态）。
+
+    返回 {kind, text, route}：kind 为 present（已在任所）/ en_route（已在赴任途中）/ dispatch（启程赴任，route 为
+    (路径, 回合数)）/ remote（遥领）。text 为事实后缀（不含前导分号），一律写成「已启程赴任（…）」或「遥领，不赴任（…）」，
+    统兵时附「由副将暂摄」。
+    """
+    deputy = "，由副将暂摄" if army is not None else ""
+    unit = turn_unit_label(state)
+    destination = state.regions[station].name if station in state.regions else station
+    transit = character.in_transit
+    if transit is None and character.region == station:
+        return {"kind": "present", "text": "人在军中，即日视事" if army is not None else "人在任所，即日视事", "route": None}
+    if transit and transit.get("to_region") == station:
+        return {"kind": "en_route", "text": f"已在赴任途中（{travel_note(state, character)}）{deputy}", "route": None}
+    if dispatch and transit is None and character.status == "alive":
+        found = find_route(state, character.region, station, character.faction)
+        if found is not None:
+            path, turns = found
+            turns = max(1, turns)
+            origin = state.regions[character.region].name if character.region in state.regions else character.region
+            via = [state.regions[region_id].name for region_id in path[1:-1]]
+            detail = f"自{origin}" + (f"经{'、'.join(via)}" if via else "") + f"，约{turns}{unit}抵{destination}"
+            left_behind = [
+                row.name
+                for row in state.armies.values()
+                if row.commander == character.id and row is not army and not row.in_transit and row.region == character.region
+            ]
+            behind = f"；其原统{'、'.join(left_behind)}改由副将暂摄" if left_behind else ""
+            return {"kind": "dispatch", "text": f"已启程赴任（{detail}），到任前由副将暂摄{behind}" if army is not None
+                    else f"已启程赴任（{detail}）{behind}", "route": (path, turns)}
+        return {"kind": "remote", "text": f"遥领，不赴任（无路可达{destination}）{deputy}", "route": None}
+    if transit:
+        where = f"正在途中：{travel_note(state, character)}"
+    else:
+        region = state.regions.get(character.region)
+        where = f"今在{region.name if region else character.region}"
+    return {"kind": "remote", "text": f"遥领，不赴任（{where}）{deputy}", "route": None}
 
 
 def max_concurrent_offices(state: WorldState) -> int:

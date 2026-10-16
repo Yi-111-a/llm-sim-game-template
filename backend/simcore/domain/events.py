@@ -18,8 +18,12 @@ CONDITION_KINDS = (
     "character_region",
     "office_holder",
     "army_strength",
+    "army_commander",
+    "army_region",
     "relation",
 )
+# 只比较相等与否的条件（operator 为 eq 或 ne）
+IDENTITY_KINDS = frozenset({"army_commander", "army_region"})
 
 
 def matches(conditions: Any, state: WorldState, turn: int | None = None) -> bool:
@@ -113,6 +117,20 @@ def _match_kind(conditions: dict[str, Any], state: WorldState, turn: int) -> boo
             faction = conditions.get("faction")
             total = sum(row.strength for row in state.armies.values() if row.faction == faction)
         return _compare(total, operator, float(conditions["value"]))
+    if kind in IDENTITY_KINDS:
+        army = state.armies.get(conditions["army"])
+        if army is None:
+            return False
+        if kind == "army_commander":
+            # character: null 表示无统帅；统帅已不在世视同无统帅
+            commander = army.commander
+            if commander is not None and (commander not in state.characters or state.characters[commander].status != "alive"):
+                commander = None
+            same = commander == conditions.get("character")
+        else:
+            # 驻地：在途的军队仍算在出发地（抵达那一季的结算才改驻地），与 character_region 一致
+            same = army.region == conditions.get("region")
+        return not same if operator == "ne" else same
     if kind == "relation":
         return _compare(relation_value(state, conditions["a"], conditions["b"]), operator, float(conditions["value"]))
     return False
@@ -147,7 +165,13 @@ def condition_errors(conditions: Any, location: str) -> list[str]:
     if kind not in CONDITION_KINDS:
         return [f"{location} 未知条件类型：{kind}"]
     operator = conditions.get("operator")
-    allowed = (*OPERATORS, "exists", "absent") if kind == "flag" else OPERATORS
+    allowed = (*OPERATORS, "exists", "absent") if kind == "flag" else ("eq", "ne") if kind in IDENTITY_KINDS else OPERATORS
+    if kind in IDENTITY_KINDS and not conditions.get("army"):
+        return [f"{location} 缺少 army"]
+    if kind == "army_commander" and "character" not in conditions:
+        return [f"{location} 缺少 character（无统帅写 null）"]
+    if kind == "army_region" and not conditions.get("region"):
+        return [f"{location} 缺少 region"]
     if operator is not None and operator not in allowed:
         return [f"{location} 不支持的比较符：{operator}"]
     return []

@@ -126,6 +126,8 @@ def decide_stances(
     entities = topic_entities(state, topic)
     polarity = topic_polarity(topic)
     interests = definition.get("bloc_interests") or (definition.get("settings") or {}).get("bloc_interests") or {}
+    if not isinstance(interests, dict) or not interests:
+        interests = state.rules.get("bloc_interests") or {}
     result: list[dict[str, Any]] = []
     for character_id in participants:
         character = state.characters[character_id]
@@ -160,7 +162,175 @@ def decide_stances(
             "stance_label": STANCE_LABELS[stance],
             "reason": reason,
         })
+    if memorial is not None and [row for row in memorial.get("options", []) or [] if isinstance(row, dict)]:
+        assign_option_targets(state, memorial, result, interests, seed)
+    else:
+        for row in result:
+            row.update({
+                "target_option_id": None,
+                "target_option_label": None,
+                "proposition": topic,
+                "position": f"{row['stance_label']}「{topic}」",
+            })
     return result
+
+
+OPTION_LINE_WEIGHT = 15.0
+OPTION_AFFINITY_WEIGHT = 0.5
+_NEGATIVE_SELF = ("不用", "不得", "不许", "罢", "免", "贬", "削", "夺", "诛", "下狱", "流", "拒", "驳", "斥")
+
+
+def _option_text(option: dict[str, Any]) -> str:
+    memory = option.get("memory")
+    rows = memory if isinstance(memory, list) else [memory] if isinstance(memory, dict) else []
+    notes = "；".join(str(row.get("text") or "") for row in rows if isinstance(row, dict))
+    return f"{option.get('label', option.get('id', ''))}；{option.get('hint', '')}；{notes}"
+
+
+def _self_effect(state: WorldState, character_id: str, option: dict[str, Any]) -> int:
+    """选项对本人的利害：+1 有利（任命、统兵、被选中、恩宠上升）、−1 不利（免职、处置、恩宠下降、记忆里写着不用/被驳）、0 无涉。"""
+    score = 0
+    for op in option.get("ops", []) or []:
+        if not isinstance(op, dict):
+            continue
+        name = op.get("op")
+        if name in {"appoint", "set_army_commander"} and op.get("character") == character_id:
+            score += 1
+        elif name in {"dismiss"} and op.get("character") == character_id:
+            score -= 1
+        elif name == "set_character_status" and op.get("character") == character_id and op.get("status") != "alive":
+            score -= 1
+        elif name == "set_flag" and op.get("value") == character_id:
+            score += 1
+        elif name == "adjust_trait" and op.get("character") == character_id and op.get("trait") in {"favor", "loyalty"}:
+            score += 1 if float(op.get("delta", 0) or 0) > 0 else -1
+        elif name == "set_army_commander" and op.get("character") != character_id:
+            army = state.armies.get(str(op.get("army")))
+            if army is not None and army.commander == character_id:
+                score -= 1  # 夺其兵权
+    memory = option.get("memory")
+    for row in memory if isinstance(memory, list) else [memory] if isinstance(memory, dict) else []:
+        if isinstance(row, dict) and row.get("character") == character_id:
+            score += -1 if any(word in str(row.get("text", "")) for word in _NEGATIVE_SELF) else 1
+    character = state.characters[character_id]
+    label = str(option.get("label", ""))
+    if character.name in label or any(state.offices[office].name in label for office in held_offices(character) if office in state.offices):
+        score += 1 if topic_polarity(label) >= 0 else -1
+    return (score > 0) - (score < 0)
+
+
+def _option_score(
+    state: WorldState, character_id: str, option: dict[str, Any], interests: Any, line: str
+) -> tuple[float, str]:
+    """某人对某选项的好恶：本人利害 > 亲疏（选项点名的人物、官职在任者、军队统帅）> 派系利益 > 谏言措辞与选项的相合程度。"""
+    character = state.characters[character_id]
+    text = _option_text(option)
+    label = str(option.get("label", option.get("id", "")))
+    direction = topic_polarity(label) or 1
+    parts: list[tuple[float, str]] = []
+    own = _self_effect(state, character_id, option)
+    if own:
+        parts.append((SELF_INTEREST * own, "事关本人" + ("之进退" if own > 0 else "，不利于己")))
+    mentioned: dict[str, dict[str, Any]] = {str(row["id"]): row for row in topic_entities(state, text)}
+    for op in option.get("ops", []) or []:
+        if isinstance(op, dict):
+            for key in ("character", "a", "b"):
+                if op.get(key) in state.characters:
+                    mentioned.setdefault(str(op[key]), {"kind": "character", "id": op[key], "name": state.characters[str(op[key])].name})
+            if op.get("op") == "set_flag" and op.get("value") in state.characters:
+                picked = str(op["value"])
+                mentioned.setdefault(picked, {"kind": "character", "id": picked, "name": state.characters[picked].name})
+    for entity in mentioned.values():
+        if entity["kind"] != "character" or entity["id"] == character_id:
+            continue
+        value = _affinity(state, character_id, str(entity["id"])) * OPTION_AFFINITY_WEIGHT * direction
+        if abs(value) >= 1:
+            parts.append((value, f"与{entity['name']}同气连枝" if value > 0 else f"与{entity['name']}素有嫌隙"))
+    if character.bloc and isinstance(interests, dict) and isinstance(interests.get(character.bloc), dict):
+        for key, weight in interests[character.bloc].items():
+            hit = str(key) in mentioned or (len(str(key)) >= 2 and str(key) in text)
+            if hit and isinstance(weight, (int, float)) and not isinstance(weight, bool):
+                parts.append((float(weight) * direction, f"{bloc_label(state, character.bloc)}的利益所在"))
+    if line:
+        overlap = len(_bigrams(line) & _bigrams(f"{label}{option.get('hint', '')}"))
+        if overlap:
+            parts.append((OPTION_LINE_WEIGHT * overlap, "与所上之言相合"))
+    total = sum(value for value, _ in parts)
+    reason = max(parts, key=lambda item: abs(item[0]))[1] if parts else ""
+    return total, reason
+
+
+def _lead_polarity(label: str) -> int:
+    """选项标题首句的褒贬（「驳回，另择…并厚赐」取「驳回」）：+1 准许 / 授予类，−1 驳斥 / 罢免类，0 不明。"""
+    head = re.split(r"[，,；;。]", label, maxsplit=1)[0]
+    return topic_polarity(head)
+
+
+def assign_option_targets(
+    state: WorldState, memorial: dict[str, Any], rows: list[dict[str, Any]], interests: Any, seed: int
+) -> None:
+    """廷议对应奏疏时，给每个立场定出所主张的选项：target_option_id / target_option_label（+ against_option_*）。
+
+    1. 每人对每个选项按本人利害、亲疏、派系利益、谏言措辞打分（_option_score）。
+    2. 「所议之案」：本场赞成者（廷议立场 support）与奏疏中在世赞成者合计最中意的选项；同分时取标题首句为准许 / 授予的，
+       再取靠前者。与所议之案首句褒贬相同的选项算作「同一方」（准兼、照准同属准许一方）。
+    3. 赞成者在所议之案一方中取自己得分最高者（同分取所议之案）；反对者在另一方中取得分最高者，记 against = 所议之案；
+       持中者与其余人取得分最高者；全无利害时以种子择一（「无所偏倚」）。
+    """
+    options = [row for row in memorial.get("options", []) or [] if isinstance(row, dict)]
+    advisors = {str(row.get("character")): row for row in memorial.get("advisors", []) or [] if isinstance(row, dict)}
+    title = str(memorial.get("title", memorial.get("id", "")))
+    polarity = [_lead_polarity(str(option.get("label", ""))) for option in options]
+
+    def scores_for(character_id: str) -> list[tuple[float, str]]:
+        line = str(advisors.get(character_id, {}).get("line", ""))
+        return [_option_score(state, character_id, option, interests, line) for option in options]
+
+    supporters = list(dict.fromkeys([
+        *(row["character"] for row in rows if row["stance"] == "support"),
+        *(
+            character_id
+            for character_id, row in advisors.items()
+            if row.get("stance") == "support" and character_id in state.characters and state.characters[character_id].status == "alive"
+        ),
+    ]))
+    totals = [0.0] * len(options)
+    for character_id in supporters:
+        for index, (value, _) in enumerate(scores_for(character_id)):
+            totals[index] += value
+    proposal = max(range(len(options)), key=lambda index: (totals[index], polarity[index], -index))
+    same_side = [index for index in range(len(options)) if index == proposal or (polarity[proposal] != 0 and polarity[index] == polarity[proposal])]
+    other_side = [index for index in range(len(options)) if index not in same_side] or [index for index in range(len(options)) if index != proposal]
+    for row in rows:
+        scores = scores_for(row["character"])
+        stance = row["stance"]
+        against: int | None = None
+        if stance == "support":
+            pick = max(same_side, key=lambda index: (scores[index][0], index == proposal, -index))
+            why = scores[pick][1] or "附议所议之案"
+        else:
+            candidates = list(range(len(options)))
+            if stance == "oppose" and other_side:
+                candidates = other_side
+                against = proposal
+            best = max(candidates, key=lambda index: (scores[index][0], -index))
+            if all(abs(scores[index][0]) < 1e-9 for index in candidates):
+                roll = random.Random(f"debate-option:{seed}:{state.turn}:{memorial.get('id')}:{row['character']}")
+                pick, why = candidates[roll.randrange(len(candidates))], ("力驳所议之案" if against is not None else "无所偏倚，姑从此议")
+            else:
+                pick, why = best, scores[best][1]
+        option = options[pick]
+        label = str(option.get("label", option.get("id")))
+        row["target_option_id"] = option.get("id")
+        row["target_option_label"] = label
+        row["target_reason"] = why
+        row["proposition"] = f"就「{title}」诸选项择一"
+        position = f"主张「{label}」（{option.get('id')}）"
+        if against is not None:
+            row["against_option_id"] = options[against].get("id")
+            row["against_option_label"] = str(options[against].get("label", options[against].get("id")))
+            position += f"，反对「{row['against_option_label']}」（{row['against_option_id']}）"
+        row["position"] = position
 
 
 def bloc_label(state: WorldState, bloc: str) -> str:
@@ -277,6 +447,9 @@ def _mentions_self(state: WorldState, character_id: str, topic: str) -> bool:
     return any(army.commander == character_id and army.name in topic for army in state.armies.values())
 
 
+TARGET_KEYS = ("target_option_id", "target_option_label", "against_option_id", "against_option_label", "proposition", "position")
+
+
 def debate_summary(stances: list[dict[str, Any]]) -> str:
     groups: dict[str, list[str]] = {"support": [], "oppose": [], "neutral": []}
     for row in stances:
@@ -285,7 +458,12 @@ def debate_summary(stances: list[dict[str, Any]]) -> str:
         f"{STANCE_LABELS[key]} {len(names)} 人" + (f"（{'、'.join(names)}）" if names else "")
         for key, names in groups.items()
     ]
-    return "；".join(parts) + "。廷议结论只作谏言，须经诏书方能施行。"
+    targets: dict[str, list[str]] = {}
+    for row in stances:
+        if row.get("target_option_id"):
+            targets.setdefault(f"「{row['target_option_label']}」", []).append(row["name"])
+    tally = "；主张：" + "；".join(f"{label} {len(names)} 人（{'、'.join(names)}）" for label, names in targets.items()) if targets else ""
+    return "；".join(parts) + tally + "。廷议结论只作谏言，须经诏书方能施行。"
 
 
 def persona_card(state: WorldState, character_id: str, scenario: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -327,11 +505,12 @@ async def debate_speeches(
         character = state.characters[row["character"]]
         digest = render_digest(state, seed, character.id, report, scenario)
         allowed = digest_numbers(digest) | {float(item) for item in _NUMBER.findall(topic)}
+        target = {key: row[key] for key in TARGET_KEYS if key in row}
         if offline:
             text = offline_debate_line(character.id, row, topic, state, scenario, seed, digest, speeches)
             if any(float(item) not in allowed for item in _NUMBER.findall(text)):
                 text = template_speech(character.name, row["stance"], digest)
-            speeches.append({"character": character.id, "name": character.name, "stance": row["stance"], "reason": row["reason"], "text": text})
+            speeches.append({"character": character.id, "name": character.name, "stance": row["stance"], "reason": row["reason"], "text": text, **target})
             previous.append(f"{character.name}（{row['stance_label']}）：{text}")
             continue
         prompt = render_prompt(
@@ -342,7 +521,8 @@ async def debate_speeches(
                 "speech_style": character.speech_style,
                 "stance": row["stance"],
                 "stance_label": row["stance_label"],
-                "reason": row["reason"],
+                "reason": f"{row['reason']}；{row['position']}" if row.get("position") else row["reason"],
+                "position": row.get("position", ""),
                 "topic": topic,
                 "digest": digest,
                 "previous": previous,
@@ -356,7 +536,7 @@ async def debate_speeches(
         text = result.content.strip()
         if not text or any(float(item) not in allowed for item in _NUMBER.findall(text)):
             text = template_speech(character.name, row["stance"], digest)
-        speeches.append({"character": character.id, "name": character.name, "stance": row["stance"], "reason": row["reason"], "text": text})
+        speeches.append({"character": character.id, "name": character.name, "stance": row["stance"], "reason": row["reason"], "text": text, **target})
         previous.append(f"{character.name}（{row['stance_label']}）：{text}")
     return speeches
 

@@ -104,6 +104,14 @@ def _leaf(condition: dict[str, Any], state: WorldState, negate: bool) -> str:
         if condition.get("character") is None:
             return f"{office}{'有人' if negate else '出缺'}"
         return f"{office}{'不' if negate else ''}由{entity_name(state, condition.get('character'))}担任"
+    if kind in {"army_commander", "army_region"}:
+        negate = negate != (str(condition.get("operator", "eq")) == "ne")
+        army = entity_name(state, condition.get("army"))
+        if kind == "army_region":
+            return f"{army}{'不驻' if negate else '驻'}{entity_name(state, condition.get('region'))}"
+        if condition.get("character") is None:
+            return f"{army}{'有统帅' if negate else '无统帅'}"
+        return f"{army}{'不' if negate else ''}由{entity_name(state, condition.get('character'))}统领"
     if kind == "army_strength":
         who = entity_name(state, condition.get("army") or condition.get("faction"))
         return f"{who}兵力 {_symbol(operator, negate)} {_number(value)}"

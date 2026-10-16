@@ -250,6 +250,7 @@ class LedgerLine(DomainModel):
     kind: str
     resource: str
     reason: str = ""
+    group: str = ""  # 经常收支明细的归类名（收入公式的 label、账目名、工程名、「X漂移」）；旧存档为空时按 name 归类
 
 
 class TurnReport(DomainModel):
@@ -268,4 +269,6 @@ class TurnReport(DomainModel):
     # 本季各资源分段对账：{resource: {opening?, edicts?, delayed, regular, events, closing}}；
     # resolve_turn 填 delayed / regular / events（季内三段），SessionStore.append_turn 补期初、诏令与季前抉择。
     reconciliation: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # 经常收支明细：{resource: [{kind, label, amount}]}，kind 为 income / ledger / project / drift / standing / other。
+    regular_detail: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     state_hash: str = ""

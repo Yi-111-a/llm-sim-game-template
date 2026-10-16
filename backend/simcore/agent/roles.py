@@ -14,6 +14,7 @@ from simcore.domain.difficulty import delay_factor
 from simcore.domain.digest import digest_numbers, render_digest
 from simcore.domain.memorials import MemorialError, adopted_ops
 from simcore.domain.models import TurnReport, WorldState
+from simcore.domain.rules import audience_mode
 from simcore.domain.visibility import format_number, resource_display
 from simcore.llm.base import LLMProvider, ToolCallingUnsupported
 from simcore.prompts.loader import render_prompt
@@ -288,9 +289,10 @@ def minister_chat_messages(
     seed: int = 0,
     report: TurnReport | dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """召对提示词：人设 + 该人物可知的 StateDigest + 该人物记忆。"""
+    """召对提示词：人设 + 该人物可知的 StateDigest + 该人物记忆 + 召对方式（面见 / 书面奏对 / 遣使问对）。"""
     character = state.characters[character_id]
     digest = render_digest(state, seed, character_id, report, scenario)
+    mode = audience_mode(state, character_id)
     return [
         {
             "role": "system",
@@ -306,9 +308,11 @@ def minister_chat_messages(
                     "digest": digest,
                     "memories": character.memories[-12:],
                     "user_text": user_text,
+                    "audience_mode": mode["label"],
                 },
                 (scenario or {}).get("root"),
-            ),
+            )
+            + f"\n召对方式：{mode['label']}。{mode['note']}" + AUDIENCE_VOICE[mode["mode"]],
         },
         {"role": "user", "content": user_text},
     ]
@@ -347,7 +351,20 @@ def offline_minister_text(
     allowed = digest_numbers(digest) | {float(item) for item in _NUMBER.findall(user_text)}
     if any(float(item) not in allowed for item in _NUMBER.findall(text)):
         text = offline_minister_reply(character_id, state, "", scenario, seed, "")
+    mode = audience_mode(state, character_id)
+    if mode["mode"] == "written":
+        where = state.regions.get(state.characters[character_id].region)
+        text = f"〔书面奏对·自{where.name if where else '外镇'}驿递〕{text}"
+    elif mode["mode"] == "envoy":
+        text = f"〔遣使问对·途中回奏〕{text}"
     return text
+
+
+AUDIENCE_VOICE = {
+    "in_person": "可写当面应对。",
+    "written": "请以书面奏疏的口吻作答（如「臣某谨奏」「伏惟圣鉴」），不得写成当面应对、入殿或叩见的情景，也不得说自己已奉召入京。",
+    "envoy": "此人在途中，由使者赍问，请以途中书面回奏的口吻作答，不得写成当面应对。",
+}
 
 
 async def chronicler(

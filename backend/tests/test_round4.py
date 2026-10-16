@@ -303,7 +303,7 @@ def test_season_reconciliation_sums_exactly_with_fixed_seed(mech_env) -> None:
             steps = ("edicts", "delayed", "regular", "events")
             assert row["opening"] + sum(row[step] for step in steps) == pytest.approx(row["closing"], abs=1e-6)
             shown = row["shown"]
-            assert round(shown["opening"] + sum(shown[step] for step in steps), 1) == shown["closing"]
+            assert round(shown["opening"] + sum(shown[step] for step in steps) + shown.get("rounding", 0), 1) == shown["closing"]
     assert later["closing"] == pytest.approx(service.session(session_id).state.resources["treasury"].amount)
     text = _turn_text(first, show_memorial=False)
     assert "## 对账（期初 → 诏令 → 延期执行 → 经常收支 → 事件/选择 → 期末）" in text

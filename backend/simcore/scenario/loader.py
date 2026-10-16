@@ -268,6 +268,13 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
                 first = str(exc).splitlines()[0]
                 errors.append(f"{location}[{index}] 不是合法操作：{first}")
 
+    for office in scenario.offices if scenario else []:
+        if not isinstance(office, dict):
+            continue
+        if office.get("army") is not None and office.get("army") not in army_ids:
+            errors.append(f"官职 {office.get('id')} 的所统军队不存在：{office.get('army')}")
+        if office.get("seat") is not None and office.get("seat") not in region_ids:
+            errors.append(f"官职 {office.get('id')} 的任所地区不存在：{office.get('seat')}")
     for character in rows("characters"):
         for office in [character.get("office"), *(character.get("offices") or [])]:
             if office is not None and office_ids and office not in office_ids:
@@ -550,7 +557,12 @@ def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> 
         )
         for row in data.get("characters", [])
     }
-    offices = {row["id"]: Office(**row) for row in scenario.offices}
+    offices = {
+        row["id"]: Office(**{key: value for key, value in row.items() if key not in OFFICE_POSTING_KEYS}) for row in scenario.offices
+    }
+    postings = office_postings(scenario.offices)
+    if postings:
+        rules.setdefault("office_postings", postings)
     for character in characters.values():
         for office_id in character.offices:
             if office_id in offices:
@@ -579,6 +591,22 @@ def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> 
         rules=rules,
     )
     return apply_difficulty(state, difficulty_row)
+
+
+OFFICE_POSTING_KEYS = frozenset({"army", "seat"})
+
+
+def office_postings(rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """官职的任所：{office: {army?, seat?}}（只收写了 army / seat 的官职），开局写入 rules.office_postings。
+
+    army：此职所统军队（任命即兼统，免职即罢其统帅）；seat：任所地区（未写时取所统军队的驻地）。
+    """
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        posting = {key: str(row[key]) for key in ("army", "seat") if isinstance(row, dict) and row.get(key)}
+        if posting:
+            result[str(row.get("id"))] = posting
+    return result
 
 
 def _initial_offices(row: dict[str, Any]) -> list[str]:

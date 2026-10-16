@@ -10,6 +10,8 @@ from simcore.domain.rules import Rejected, validate
 
 PLAYER_TIER = "player"
 SCENARIO_TIER = "scenario"
+# 玩家层提议缺省 dispatch=true 的操作（一条任命规则：君主亲任即遣赴任，剧本 / 事件按其写明的值，缺省遥领）
+DISPATCH_OPS = frozenset({"set_army_commander", "appoint"})
 
 
 class AgentTools:
@@ -46,8 +48,8 @@ class AgentTools:
         receipt: list[dict[str, Any]] = []
         for raw_op in ops:
             try:
-                if tier == PLAYER_TIER and isinstance(raw_op, dict) and raw_op.get("op") == "set_army_commander":
-                    raw_op = {"dispatch": True, **raw_op}  # 玩家任帅：人不在军中则自动赴任
+                if tier == PLAYER_TIER and isinstance(raw_op, dict) and raw_op.get("op") in DISPATCH_OPS:
+                    raw_op = {"dispatch": True, **raw_op}  # 玩家任帅 / 任有任所的官职：人不在任所则启程赴任（写 dispatch: false 为遥领）
                 op = parse_op(raw_op)
                 denied = check_player_op(op, self.state) if tier == PLAYER_TIER else None
                 result = denied or validate(op, self.state)

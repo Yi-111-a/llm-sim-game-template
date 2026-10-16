@@ -172,20 +172,39 @@ class SessionStore:
         期初 = 上次结算后的值；诏令 = 期间各操作条目的变化（choose_event_option 计入「事件/选择」）；
         其后三段（延期执行、经常收支、事件/选择）由 resolve_turn 给出。各段相加恰为期末 − 期初。
         """
-        from simcore.domain.visibility import public_crisis
+        from simcore.domain.visibility import public_crisis, public_crisis_change
 
         path = self._path_to(self.head_id)
         start_index = max((index for index, entry in enumerate(path) if entry["type"] == "turn"), default=-1)
         opening_state = self._snapshot(path[start_index]["id"]) if start_index >= 0 else self.initial_state
         previous = opening_state
         choices: dict[str, float] = {}
+        change = report.crisis.get("change") if isinstance(report.crisis, dict) else None
+        crisis_id = str(change.get("resource")) if isinstance(change, dict) else ""
+        pre_items: list[dict[str, Any]] = []  # 两次结算之间（诏令、季前抉择）对危机值的逐条贡献
         for entry in path[start_index + 1:]:
             after = self._snapshot(entry["id"])
-            if entry["type"] == "op" and (entry["payload"].get("op") or {}).get("op") == "choose_event_option":
+            op = (entry["payload"].get("op") or {}) if entry["type"] == "op" else {}
+            if entry["type"] == "op" and op.get("op") == "choose_event_option":
                 for key, row in after.resources.items():
                     before = previous.resources[key].amount if key in previous.resources else row.amount
                     choices[key] = choices.get(key, 0.0) + row.amount - before
+            if crisis_id and entry["type"] == "op" and crisis_id in after.resources and crisis_id in previous.resources:
+                delta = after.resources[crisis_id].amount - previous.resources[crisis_id].amount
+                if abs(delta) > 1e-12:
+                    if op.get("op") == "choose_event_option":
+                        choice = next((row for row in previous.pending_choices if row.id == op.get("choice_id")), None)
+                        pre_items.append({"kind": "choice", "label": choice.title if choice else str(op.get("choice_id")), "amount": delta})
+                    else:
+                        pre_items.append({"kind": "edict", "label": str(entry["payload"].get("source") or "诏令"), "amount": delta})
             previous = after
+        if isinstance(change, dict) and crisis_id in opening_state.resources:
+            merged: dict[tuple[str, str], dict[str, Any]] = {}
+            for item in pre_items:
+                slot = merged.setdefault((item["kind"], item["label"]), {**item, "amount": 0.0})
+                slot["amount"] += item["amount"]
+            change["items"] = [*merged.values(), *change.get("items", [])]
+            change["opening"] = opening_state.resources[crisis_id].amount
         for key, row in report.reconciliation.items():
             opening = opening_state.resources[key].amount if key in opening_state.resources else row["start"]
             choice = choices.get(key, 0.0)
@@ -196,10 +215,41 @@ class SessionStore:
         crisis = (self.scenario.get("scenario", {}) or {}).get("crisis")
         if crisis and report.crisis:
             report.crisis["public"] = public_crisis(crisis, updated, self.seed)
+            split = public_crisis_change(crisis, report.crisis.get("change"), updated, self.seed)
+            if split is not None:
+                report.crisis["public_change"] = split
 
     def append_message(self, role: str, content: str, metadata: dict[str, Any] | None = None) -> str:
         entry = self._append("message", {"role": role, "content": content, "metadata": metadata or {}})
         return entry["id"]
+
+    def append_edict(self, payload: dict[str, Any]) -> str:
+        """确认诏书回执的公开摘要（export_log 用）：记入日志（随分支走），不改变 WorldState，也不进入状态哈希。"""
+        return str(self._append("edict", payload)["id"])
+
+    @property
+    def receipts_path(self) -> Path:
+        return self.path.with_name(f"{self.path.stem}.receipts.jsonl")
+
+    def record_draft(self, payload: dict[str, Any]) -> None:
+        """拟诏回执的公开摘要写进旁路文件 <session>.receipts.jsonl（拟诏不改日志、不移动 head）；带 base_head 以便按分支筛选。"""
+        with self.receipts_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(_dumps({**payload, "base_head": self.head_id, "timestamp": _now()}) + "\n")
+
+    def draft_records(self) -> list[dict[str, Any]]:
+        try:
+            lines = self.receipts_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        rows = []
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
 
     def append_advice(self, character: str, text: str, source: str = "player") -> dict[str, Any]:
         """谏言库条目：只记入日志，不改变 WorldState，也不进入状态哈希。"""
@@ -467,6 +517,7 @@ class SessionStore:
     def delete_drafts(self) -> None:
         self._drafts_cache = None
         self.drafts_path.unlink(missing_ok=True)
+        self.receipts_path.unlink(missing_ok=True)
 
     def reload(self) -> None:
         """从磁盘重读（另一进程写入同一存档后调用）。日志只追加、节点不可变，缓存按节点 id 保持有效。"""
@@ -560,6 +611,9 @@ def _entry_label(entry: dict[str, Any]) -> str:
         return f"推进至第{report.get('turn')}回合{suffix}"
     if kind == "pending":
         return f"延期条款（第{payload.get('due_turn')}回合执行）"
+    if kind == "edict":
+        action = "拟诏" if payload.get("action") == "draft" else "确认诏书"
+        return f"{action} {payload.get('edict_id', '')}"
     if kind == "advice":
         return f"谏言：{str(payload.get('text', ''))[:20]}"
     if kind == "message":

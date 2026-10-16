@@ -444,6 +444,10 @@ def create_app() -> FastAPI:
     async def get_history(session_id: str) -> list[dict[str, Any]]:
         return service.history(session_id)
 
+    @app.get("/api/sessions/{session_id}/export")
+    async def export_log(session_id: str, from_turn: int | None = None, to_turn: int | None = None) -> dict[str, Any]:
+        return service.export_log(session_id, from_turn, to_turn)
+
     @app.post("/api/sessions/{session_id}/rewind")
     async def rewind(session_id: str, request: RewindRequest) -> dict[str, Any]:
         return service.rewind(session_id, request.entry_id)
@@ -454,6 +458,7 @@ def create_app() -> FastAPI:
         state = session.state
         runtime.current_turn = state.turn
         user_text = request.text
+        mode = service.audience_mode(session, state, character_id)  # 面见 / 书面奏对 / 遣使问对
 
         def sse(event: str, payload: dict[str, Any]) -> str:
             return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -467,7 +472,7 @@ def create_app() -> FastAPI:
                 yield sse("message", {"text": refusal["content"]})
                 yield "event: done\ndata: {}\n\n"
                 return
-            yield sse("status", {"status": "ok"})
+            yield sse("status", {"status": "ok", "mode": mode["mode"], "mode_label": mode["label"], "mode_note": mode["note"]})
             provider = runtime.provider(session.scenario, "minister_chat")
             messages = minister_chat_messages(character_id, state, user_text, session.scenario, session.seed, session.last_report())
             pieces: list[str] = []
@@ -486,8 +491,8 @@ def create_app() -> FastAPI:
             except Exception as exc:  # noqa: BLE001 - 流中错误以 SSE error 事件告知前端
                 yield sse("error", {"code": "PROVIDER_ERROR", "message": f"模型调用失败：{type(exc).__name__}"})
             content = "".join(pieces)
-            session.append_message("player", user_text, {"character": character_id})
-            session.append_message("character", content, {"character": character_id, "status": "ok"})
+            session.append_message("player", user_text, {"character": character_id, "mode": mode["mode"]})
+            session.append_message("character", content, {"character": character_id, "status": "ok", "mode": mode["mode"]})
             service.touch(session_id)
             yield "event: done\ndata: {}\n\n"
 

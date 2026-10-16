@@ -36,6 +36,8 @@ class Appoint(OpModel):
     op: Literal["appoint"]
     character: str
     office: str
+    # 有任所的官职（Office.army / seat）：True 令其启程赴任；False 为遥领。玩家层提议缺省为 True，剧本 / 事件缺省 False。
+    dispatch: bool = False
 
 
 class Dismiss(OpModel):
@@ -137,7 +139,7 @@ class SetArmyCommander(OpModel):
     op: Literal["set_army_commander"]
     army: str
     character: str | None = None
-    # True：新统帅不在军中时自动启程赴任（玩家层提议缺省为 True；剧本 / 事件缺省 False，即遥领，由副将暂摄）
+    # True：新统帅不在军中时启程赴任（玩家层提议缺省为 True；剧本 / 事件缺省 False，即遥领，由副将暂摄）
     dispatch: bool = False
 
 

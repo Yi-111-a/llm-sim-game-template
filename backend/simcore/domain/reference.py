@@ -11,9 +11,16 @@ from typing import Any
 from simcore.domain.models import WorldState
 from simcore.domain.ops import OP_NAMES, op_model_schema, op_signature
 from simcore.domain.permissions import OP_LABELS, OP_ROUTES, SCENARIO_ONLY_HINT, player_ops, player_statuses
-from simcore.domain.rules import STATUS_NAMES, held_offices, mover_faction, travel_note
+from simcore.domain.rules import STATUS_NAMES, held_offices, mover_faction, office_army, office_station, travel_note
 
 TABLE_LIMIT = 12
+# 任命规则（op_reference 的 rules.notes 与 op=appoint / set_army_commander 的 note 共用，与回执、事实的写法一致）
+APPOINTMENT_RULE = (
+    "任命只有一条规则：君主直接下达的 set_army_commander，以及 appoint 有任所的官职（offices 表中带 army / seat 者；带 army 的官职兼统该军），"
+    "dispatch 缺省为 true——此人不在任所即启程赴任，回执与事实写「已启程赴任（自A经B，约n季抵C），到任前由副将暂摄」；"
+    "写 dispatch: false 则遥领，写「遥领，不赴任（今在A），由副将暂摄」。奏疏选项、事件中的任命按其写明的 dispatch（缺省 false，即遥领），"
+    "摘要同样标明「已启程赴任」或「遥领，不赴任」。已在任所写「人在军中 / 人在任所，即日视事」。"
+)
 ENTITY_KINDS = ("resources", "characters", "offices", "regions", "armies", "factions", "ledger", "standing_orders", "pending_choices")
 
 
@@ -109,7 +116,17 @@ def _entity_rows(state: WorldState) -> dict[str, list[dict[str, Any]]]:
             }
             for row in state.characters.values()
         ],
-        "offices": [{"id": row.id, "name": row.name, "holder": row.holder, "requires": row.requires} for row in state.offices.values()],
+        "offices": [
+            {
+                "id": row.id,
+                "name": row.name,
+                "holder": row.holder,
+                "requires": row.requires,
+                **({"army": office_army(state, row.id)} if office_army(state, row.id) else {}),
+                **({"seat": office_station(state, row.id)} if office_station(state, row.id) else {}),
+            }
+            for row in state.offices.values()
+        ],
         "regions": [
             {"id": row.id, "name": row.name, "controller": row.controller, "adjacency": row.adjacency, "stats": list(row.stats)}
             for row in state.regions.values()
@@ -145,6 +162,10 @@ def _compact(kind: str, row: dict[str, Any], state: WorldState) -> str:
     elif kind == "offices":
         holder = state.characters.get(row["holder"]) if row["holder"] else None
         extra.append(holder.name if holder else "出缺")
+        if row.get("army") in state.armies:
+            extra.append(f"统{state.armies[row['army']].name}")
+        elif row.get("seat") in state.regions:
+            extra.append(f"任所{state.regions[row['seat']].name}")
     elif kind == "armies":
         region = state.regions.get(row["region"])
         commander = state.characters.get(row["commander"]) if row["commander"] else None
@@ -192,6 +213,8 @@ def build_reference(
         if op == "set_character_status":
             statuses = "、".join(f"{item}（{STATUS_NAMES.get(item, item)}）" for item in player_statuses(state))
             result["note"] = f"君主可直接施加：{statuses}；须为本朝臣属，或身在本朝控制之地"
+        if op in {"appoint", "set_army_commander"}:
+            result["note"] = APPOINTMENT_RULE
         if op == "start_project":
             result["note"] = "每季花费须为正；on_complete 只能提升本地区指标（每项 ≤ 10）且每点增益至少花费 10，或其他玩家可用操作"
         return result
@@ -241,8 +264,8 @@ def build_reference(
                 "每条 op 是一个 JSON 对象，op 字段为操作名；未知字段会被拒绝。",
                 "move_character / move_army / march 可指向任何可达地区：引擎按邻接表寻最短路（同样短时优先本方控制地区），整段一次出发，"
                 "途中不能再下令；抵达回合 = 各段回合数之和。无路可达时返回 OUT_OF_RANGE。",
-                "move_army / march 时，与军队同驻一地的统帅默认随军同行（with_commander: false 则留驻）。"
-                "set_army_commander 任命不在军中的人，此人自动启程赴任，到任前由副将暂摄。",
+                "move_army / march 时，与军队同驻一地的统帅默认随军同行（with_commander: false 则留驻）。",
+                APPOINTMENT_RULE,
                 "appoint 前须满足官职 requires；已达兼职上限时先 dismiss。",
                 "被拒条款返回稳定错误码：OP_NOT_PERMITTED、UNKNOWN_ENTITY、INVALID_TARGET、OFFICE_OCCUPIED、OFFICE_HELD、OFFICE_REQUIREMENT、"
                 "CHARACTER_UNAVAILABLE、OUT_OF_RANGE、INSUFFICIENT_RESOURCE、CONDITION_FAILED、GAME_OVER。",

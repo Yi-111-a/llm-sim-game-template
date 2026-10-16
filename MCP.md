@@ -72,6 +72,7 @@ SIM_MCP_MODE = "client"
 | `choose` | `session_id, choice_id, option_id` | 处置待决事件 |
 | `end_turn` | `session_id` | 事实、账目合计、战报、事件、新待决事件、危机分项、纪事、终局 |
 | `history` / `rewind` | `session_id` / `session_id, entry_id?` | 时间线（含分支）/ 回到某节点另开分支 |
+| `export_log` | `session_id, from_turn?, to_turn?` | 结构化复盘日志（JSON，公开视图）：逐季的采纳选项、客户端 ops、拟诏 / 确认回执、延期条款、抉择、结算事实、对账（含经常收支明细）、危机变化拆分、终局；REST 为 `GET /api/sessions/{id}/export` |
 
 所有工具只读公开视图；错误一律以「错误 [CODE]：中文说明」返回（`is_error=true`），不含堆栈。
 
