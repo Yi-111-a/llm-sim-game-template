@@ -20,6 +20,13 @@ APPOINTMENT_RULE = (
     "dispatch 缺省为 true——此人不在任所即启程赴任，回执与事实写「已启程赴任（自A经B，约n季抵C），到任前由副将暂摄」；"
     "写 dispatch: false 则遥领，写「遥领，不赴任（今在A），由副将暂摄」。奏疏选项、事件中的任命按其写明的 dispatch（缺省 false，即遥领），"
     "摘要同样标明「已启程赴任」或「遥领，不赴任」。已在任所写「人在军中 / 人在任所，即日视事」。"
+    "启程赴任者原在同地所统之军：解除其统帅（暂无主帅，副将摄事）；唯其仍任官职所统之军照旧兼统（人不在军中，副将暂摄）——回执与状态一致。"
+    "同一奏疏选项 / 抉择里「任某职（带 army）」与「该军易帅为同一人、dispatch: true」合并为一条：已启程赴任并兼统该军。"
+)
+DETACH_RULE = (
+    "move_army / march 调动全军；只调一部用 detach（army, strength, to_region, new_army_name?, commander?）：从原军分出 strength 兵力编为新军"
+    "（新 id 为「原军id_d序号」，名缺省「原军名偏师」），自原驻地开拔赴 to_region（与原驻地相同则就地分屯）；strength 须少于原军现有兵力。"
+    "commander 为新军统帅：与原军同驻者随新军同行（其原统之军依任命规则处置），否则启程赴任；不写则暂无主帅。"
 )
 ENTITY_KINDS = ("resources", "characters", "offices", "regions", "armies", "factions", "ledger", "standing_orders", "pending_choices")
 
@@ -58,6 +65,13 @@ def op_examples(state: WorldState, player: str | None = None) -> dict[str, dict[
         "move_character": {"op": "move_character", "character": who, "to_region": near or "<region>"},
         "move_army": {"op": "move_army", "army": army.id if army else "<army>", "to_region": army_near or "<region>", "with_commander": True},
         "march": {"op": "march", "army": army.id if army else "<army>", "to_region": army_near or "<region>"},
+        "detach": {
+            "op": "detach",
+            "army": army.id if army else "<army>",
+            "strength": max(1, int((army.strength if army else 2000) // 4 // 100 * 100)) if army else 1000,
+            "to_region": army_near or "<region>",
+            "new_army_name": f"{army.name}偏师" if army else "偏师",
+        },
         "set_army_commander": {"op": "set_army_commander", "army": army.id if army else "<army>", "character": who},
         "start_project": {
             "op": "start_project",
@@ -215,6 +229,8 @@ def build_reference(
             result["note"] = f"君主可直接施加：{statuses}；须为本朝臣属，或身在本朝控制之地"
         if op in {"appoint", "set_army_commander"}:
             result["note"] = APPOINTMENT_RULE
+        if op == "detach":
+            result["note"] = DETACH_RULE
         if op == "start_project":
             result["note"] = "每季花费须为正；on_complete 只能提升本地区指标（每项 ≤ 10）且每点增益至少花费 10，或其他玩家可用操作"
         return result
@@ -265,6 +281,7 @@ def build_reference(
                 "move_character / move_army / march 可指向任何可达地区：引擎按邻接表寻最短路（同样短时优先本方控制地区），整段一次出发，"
                 "途中不能再下令；抵达回合 = 各段回合数之和。无路可达时返回 OUT_OF_RANGE。",
                 "move_army / march 时，与军队同驻一地的统帅默认随军同行（with_commander: false 则留驻）。",
+                DETACH_RULE,
                 APPOINTMENT_RULE,
                 "appoint 前须满足官职 requires；已达兼职上限时先 dismiss。",
                 "被拒条款返回稳定错误码：OP_NOT_PERMITTED、UNKNOWN_ENTITY、INVALID_TARGET、OFFICE_OCCUPIED、OFFICE_HELD、OFFICE_REQUIREMENT、"

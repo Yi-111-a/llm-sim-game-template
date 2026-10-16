@@ -262,21 +262,103 @@ def posting_plan(state: WorldState, character: Any, station: str, dispatch: bool
             origin = state.regions[character.region].name if character.region in state.regions else character.region
             via = [state.regions[region_id].name for region_id in path[1:-1]]
             detail = f"自{origin}" + (f"经{'、'.join(via)}" if via else "") + f"，约{turns}{unit}抵{destination}"
-            left_behind = [
-                row.name
-                for row in state.armies.values()
-                if row.commander == character.id and row is not army and not row.in_transit and row.region == character.region
-            ]
-            behind = f"；其原统{'、'.join(left_behind)}改由副将暂摄" if left_behind else ""
+            kept, released = left_behind_armies(state, character, army)
+            behind = left_behind_text(kept, released) + _elsewhere_text(state, character, army, kept, released)
             return {"kind": "dispatch", "text": f"已启程赴任（{detail}），到任前由副将暂摄{behind}" if army is not None
-                    else f"已启程赴任（{detail}）{behind}", "route": (path, turns)}
+                    else f"已启程赴任（{detail}）{behind}", "route": (path, turns), "release": [row.id for row in released]}
         return {"kind": "remote", "text": f"遥领，不赴任（无路可达{destination}）{deputy}", "route": None}
     if transit:
         where = f"正在途中：{travel_note(state, character)}"
     else:
         region = state.regions.get(character.region)
         where = f"今在{region.name if region else character.region}"
-    return {"kind": "remote", "text": f"遥领，不赴任（{where}）{deputy}", "route": None}
+    return {"kind": "remote", "text": f"遥领，不赴任（{where}）{deputy}{_elsewhere_text(state, character, army, [], [])}", "route": None}
+
+
+def _elsewhere_text(state: WorldState, character: Any, army: Any, kept: list[Any], released: list[Any]) -> str:
+    """此人另统、且不在身边的军队（遥领之军）照旧由其兼统：「；仍兼领安西军（不在军中，副将暂摄）」，免得回执只说一军而状态里是两军。"""
+    skip = {row.id for row in (*kept, *released)} | ({army.id} if army is not None else set())
+    names = [row.name for row in state.armies.values() if row.commander == character.id and row.id not in skip]
+    return f"；仍兼领{'、'.join(names)}（不在军中，副将暂摄）" if names else ""
+
+
+def left_behind_armies(state: WorldState, character: Any, army: Any = None) -> tuple[list[Any], list[Any]]:
+    """此人启程他往时留在原地的所统军队，分为 (仍兼统, 解除统领)。
+
+    一条规则：人离军而去，原统之军即解除其统帅（army.commander = None，副将摄事）；唯此军是他仍担任的官职所统
+    （offices 的 army），官在军在，仍由其兼统（人不在军中，副将暂摄）。只看与此人同驻一地、不在途的军队。
+    """
+    tied = {office_army(state, office) for office in held_offices(character)}
+    kept: list[Any] = []
+    released: list[Any] = []
+    for row in state.armies.values():
+        if row.commander != character.id or row is army or row.in_transit or row.region != character.region:
+            continue
+        (kept if row.id in tied else released).append(row)
+    return kept, released
+
+
+def left_behind_text(kept: list[Any], released: list[Any]) -> str:
+    """留下之军的说明（事实 / 回执后缀，带前导分号）。"""
+    parts = []
+    if released:
+        parts.append(f"其原统{'、'.join(row.name for row in released)}不再由其统领（暂无主帅，副将摄事）")
+    if kept:
+        parts.append(f"仍兼统{'、'.join(row.name for row in kept)}（人不在军中，副将暂摄）")
+    return "".join(f"；{part}" for part in parts)
+
+
+def coalesce_postings(ops: list[Any], state: WorldState) -> list[Any]:
+    """同一组操作（奏疏选项、抉择效果、事件效果）里的任命与易帅合并为一条最终态，避免先说「遥领，不赴任」又说「已启程赴任」。
+
+    规则：appoint 某人为带 army 的官职（未写 dispatch 或为 false），其后同组又有 set_army_commander 令此人统该军且
+    dispatch: true → appoint 改为 dispatch: true（启程赴任、兼统该军），并删去那条多余的 set_army_commander。
+    其余操作原样保留，顺序不变；不改传入的列表。
+    """
+    result = list(ops)
+    for index, raw in enumerate(result):
+        if not isinstance(raw, dict) or raw.get("op") != "appoint" or raw.get("dispatch"):
+            continue
+        army_id = office_army(state, str(raw.get("office")))
+        if army_id is None:
+            continue
+        for later in range(index + 1, len(result)):
+            other = result[later]
+            if (
+                isinstance(other, dict)
+                and other.get("op") == "set_army_commander"
+                and other.get("army") == army_id
+                and other.get("character") == raw.get("character")
+                and other.get("dispatch")
+            ):
+                result[index] = {**raw, "dispatch": True}
+                del result[later]
+                break
+    return result
+
+
+def initial_offices(scenario: dict[str, Any] | None, character_id: str) -> list[str] | None:
+    """剧本开局时此人的官职（characters.yaml 的 office / offices）；剧本里找不到此人时为 None。"""
+    for row in (scenario or {}).get("characters", []) or []:
+        if isinstance(row, dict) and str(row.get("id")) == character_id:
+            held = [str(item) for item in row.get("offices") or []]
+            if row.get("office") and str(row["office"]) not in held:
+                held.insert(0, str(row["office"]))
+            return held
+    return None
+
+
+def current_title(state: WorldState, character_id: str, scenario: dict[str, Any] | None = None) -> tuple[str, str]:
+    """(当前头衔, 旧衔)：官职与开局不同（新任、改任、罢免）时，头衔取现任官职名，静态 title 作为旧衔（履历）；未变时照旧。"""
+    character = state.characters[character_id]
+    held = held_offices(character)
+    start = initial_offices(scenario, character_id)
+    static = str(character.title or "")
+    if start is None or set(start) == set(held):
+        return static, ""
+    names = [state.offices[office].name for office in held if office in state.offices]
+    title = "、".join(names) if names else "无现职"
+    return title, static if static and static != title else ""
 
 
 def max_concurrent_offices(state: WorldState) -> int:
@@ -350,6 +432,29 @@ def validate(op_value: StateOp | dict[str, Any], state: WorldState) -> Ok | Reje
             return Rejected("INVALID_TARGET", f"{army.name}已驻{state.regions[op.to_region].name}")
         if find_route(state, army.region, op.to_region, army.faction) is None:
             return Rejected("OUT_OF_RANGE", f"{army.name}无路可达{state.regions[op.to_region].name}")
+    if op.op == "detach":
+        army = state.armies.get(op.army)
+        if army is None or op.to_region not in state.regions:
+            return Rejected("UNKNOWN_ENTITY", "军队或目标地区不存在")
+        if army.in_transit:
+            return Rejected("CHARACTER_UNAVAILABLE", f"{army.name}正在行军（{travel_note(state, army)}），途中不能分兵")
+        if not op.strength > 0:
+            return Rejected("INVALID_TARGET", "分兵数须为正数")
+        if op.strength >= army.strength:
+            return Rejected(
+                "INVALID_TARGET",
+                f"{army.name}现有兵力 {army.strength:g}，分兵 {op.strength:g} 须少于全军；全军调动请用 move_army",
+            )
+        if op.to_region != army.region and find_route(state, army.region, op.to_region, army.faction) is None:
+            return Rejected("OUT_OF_RANGE", f"{army.name}无路可达{state.regions[op.to_region].name}")
+        if op.new_army_name is not None and not op.new_army_name.strip():
+            return Rejected("INVALID_TARGET", "新军名不能为空")
+        if op.commander is not None:
+            leader = state.characters.get(op.commander)
+            if leader is None:
+                return Rejected("UNKNOWN_ENTITY", f"人物不存在：{op.commander}")
+            if leader.status != "alive":
+                return Rejected("CHARACTER_UNAVAILABLE", f"{leader.name}不在世或不能统兵")
     if op.op == "start_project":
         if op.region not in state.regions or op.turns <= 0:
             return Rejected("INVALID_TARGET", "工程地区无效或工期必须大于零")

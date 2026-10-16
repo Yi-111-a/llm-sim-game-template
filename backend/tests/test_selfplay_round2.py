@@ -248,7 +248,7 @@ def test_multi_step_travel_finds_route_and_travels_as_one_transit(mech_scenario)
         assert state.characters["general"].region == "capital"
     state, report = resolve_turn(state, random.Random(0), mech_scenario)
     assert state.characters["general"].region == "north" and "郭将军抵达北镇" in [fact.text for fact in report.facts]
-    assert summarize_op({"op": "move_army", "army": "guard", "to_region": "plain"}, state) == "禁军 移驻 平原（经雄关，约2季）"
+    assert summarize_op({"op": "move_army", "army": "guard", "to_region": "plain"}, state) == "禁军（全军 20000） 移驻 平原（经雄关，约2季）"
 
 
 def test_route_prefers_own_regions_and_rejects_unreachable(mech_scenario) -> None:

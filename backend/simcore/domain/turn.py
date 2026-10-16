@@ -24,6 +24,8 @@ from simcore.domain.models import (
     clone,
 )
 from simcore.domain.ops import memory_ops, parse_op
+from simcore.domain.rules import coalesce_postings
+from simcore.domain.visibility import format_number
 
 
 class GameOver(RuntimeError):
@@ -111,8 +113,11 @@ def resolve_turn(
             if entry.turns <= 0:
                 updated.ledger.remove(entry)
 
-    # 5. 收入
+    # 4b. 养兵（formulas.upkeep：按当前兵额逐项计费，入经常收支）
     formulas = scenario_definition.get("formulas", {}) or {}
+    _collect_upkeep(updated, formulas.get("upkeep") or [], report)
+
+    # 5. 收入
     _collect_income(updated, formulas.get("income", {}) or {}, target, report)
 
     # 6. 工程
@@ -317,7 +322,7 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
     event_title = str(event.get("title", event_id))
     explicit_internal = event_is_internal(event)
     effect_facts: list[Fact] = []
-    for op in event.get("effects", []) or []:
+    for op in coalesce_postings(list(event.get("effects", []) or []), updated):
         try:
             updated, facts = apply(op, updated, turn=target, inplace=True, source=event_title)
             effect_facts.extend(facts)
@@ -572,6 +577,61 @@ def _crisis_change(
 
 def _amounts(state: WorldState) -> dict[str, float]:
     return {key: row.amount for key, row in state.resources.items()}
+
+
+def upkeep_rows(state: WorldState, rules: Any) -> list[dict[str, Any]]:
+    """formulas.upkeep 的逐项计算（不改状态）：[{label, resource, strength, per, amount, cost, armies}]。
+
+    每项 `{resource, per, amount, label, factions?, armies?}`：所列势力（缺省为玩家势力；无玩家势力时为全部）
+    或所列军队的现有兵力合计 strength，每 per 兵计 amount，本季开支 cost = strength / per × amount（正数为支出）。
+    格式不对的条目跳过（validate_scenario 会报告）。
+    """
+    rows: list[dict[str, Any]] = []
+    own = state.rules.get("player_faction")
+    for index, row in enumerate(rules if isinstance(rules, list) else []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            per = float(row.get("per", 0) or 0)
+            amount = float(row.get("amount", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        resource_id = str(row.get("resource") or "treasury")
+        if per <= 0 or resource_id not in state.resources:
+            continue
+        factions = {str(item) for item in row.get("factions") or []} or ({str(own)} if own else set())
+        wanted = {str(item) for item in row.get("armies") or []}
+        armies = [
+            army for army in state.armies.values()
+            if army.strength > 0 and (army.id in wanted if wanted else (not factions or army.faction in factions))
+        ]
+        strength = sum(army.strength for army in armies)
+        rows.append({
+            "label": str(row.get("label") or f"养兵{index + 1}"),
+            "resource": resource_id,
+            "strength": strength,
+            "per": per,
+            "amount": amount,
+            "cost": strength / per * amount,
+            "armies": [army.id for army in armies],
+        })
+    return rows
+
+
+def upkeep_label(row: dict[str, Any]) -> str:
+    """明细名：「边军衣粮（兵 106000，每 10000 兵 15）」。"""
+    return f"{row['label']}（兵 {format_number(row['strength'])}，每 {format_number(row['per'])} 兵 {format_number(row['amount'])}）"
+
+
+def _collect_upkeep(state: WorldState, rules: Any, report: TurnReport) -> None:
+    for row in upkeep_rows(state, rules):
+        if not row["cost"]:
+            continue
+        resource = state.resources[row["resource"]]
+        label = upkeep_label(row)
+        report.ledger_lines.append(
+            LedgerLine(name=label, amount=_credit(resource, -row["cost"]), kind="upkeep", resource=row["resource"], reason="按现兵额计", group=label)
+        )
 
 
 def _collect_income(state: WorldState, incomes: dict[str, Any], target: int, report: TurnReport) -> None:

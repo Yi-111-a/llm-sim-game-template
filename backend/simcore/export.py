@@ -7,7 +7,8 @@
   摘要、错误码、延期原因与执行回合；
 - delayed：排入下季的延期条款（摘要、执行回合、来源）；
 - choices：事件抉择 {choice_id, option_id, title, option}；
-- audiences / debates / advice：召对（人物与方式）、廷议议题、谏言；
+- audiences / debates / advice：召对（人物与方式）、廷议议题、谏言；client 模式的召对 / 廷议另有轻量记录（旁路文件
+  <session>.calls.jsonl：人物、方式、议题、参与者、回合，via: "client"，不含台词）；
 - end_turn：该季结算（进入 T+1）的事实、事件、战报、对账（含经常收支明细与取整差）、危机计、危机变化拆分、终局与季末公开国势。
 隐藏数值只出现为风闻区间（与 public_report / public_view 相同的处理），不导出真值。
 """
@@ -153,6 +154,21 @@ def build_export(
         turn = int(record.get("turn", 0) or 0)
         if turn in seasons:
             seasons[turn]["drafts"].append({key: record.get(key) for key in ("edict_id", "adopted", "clauses") if key in record})
+    # client 模式的召对 / 廷议（调用方模型自写台词）只有轻量记录：谁、方式、议题、回合，不含台词
+    for record in session.call_records():
+        if record.get("base_head") is not None and record.get("base_head") not in path_ids:
+            continue
+        turn = int(record.get("turn", 0) or 0)
+        if turn not in seasons:
+            continue
+        if record.get("kind") == "audience":
+            seasons[turn]["audiences"].append({
+                key: record.get(key) for key in ("character", "name", "mode", "mode_label", "via") if record.get(key) is not None
+            })
+        elif record.get("kind") == "debate":
+            seasons[turn]["debates"].append({
+                key: record.get(key) for key in ("topic", "memorial_id", "option_id", "participants", "via") if record.get(key) not in (None, "")
+            })
     rows = [
         row
         for turn, row in sorted(seasons.items())

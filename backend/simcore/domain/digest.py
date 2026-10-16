@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from simcore.domain.models import TurnReport, WorldState
-from simcore.domain.rules import STATUS_NAMES, commander_presence, held_offices, stat_name, travel_note, traveller_label
+from simcore.domain.rules import STATUS_NAMES, army_station, commander_presence, current_title, held_offices, stat_name, travel_note, traveller_label
 from simcore.domain.visibility import fact_line, format_number, public_report, resource_display
 
 __all__ = ["STATUS_NAMES", "digest_numbers", "render_digest"]
@@ -37,7 +37,7 @@ def render_digest(
         if character.in_transit:
             where += f"（{travel_note(state, character)}）"
         lines.append(
-            f"【本人】{character.name}{('（' + character.title + '）') if character.title else ''}；{offices}；"
+            f"【本人】{character.name}{_title_note(state, character.id, scenario)}；{offices}；"
             f"所在 {where}；{STATUS_NAMES.get(character.status, character.status)}"
         )
     lines.append("【国势】" + "；".join(resource_display(state, key, seed) for key in state.resources))
@@ -88,8 +88,10 @@ def render_digest(
             presence = commander_presence(state, army)
             if presence["present"]:
                 parts.append(f"统帅{commander.name}")
-            elif commander.in_transit:
+            elif commander.in_transit and commander.in_transit.get("to_region") == army_station(army):
                 parts.append(f"统帅{commander.name}未到任（{travel_note(state, commander)}），副将暂摄")
+            elif commander.in_transit:
+                parts.append(f"统帅{commander.name}离军他往（{travel_note(state, commander)}），副将暂摄")
             else:
                 parts.append(f"统帅{commander.name}不在军中，副将暂摄")
         if army.in_transit:
@@ -161,3 +163,11 @@ def _office_name(state: WorldState, office_id: str) -> str:
 
 
 _number = format_number
+
+
+def _title_note(state: WorldState, character_id: str, scenario: dict[str, Any] | None) -> str:
+    """【本人】名后的头衔：官职已变时注旧衔（「（旧衔：安西节度判官）」），否则照旧写静态头衔。"""
+    title, former = current_title(state, character_id, scenario)
+    if former:
+        return f"（旧衔：{former}）"
+    return f"（{title}）" if title else ""

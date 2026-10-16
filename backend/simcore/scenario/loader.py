@@ -16,6 +16,7 @@ from simcore.domain.models import (
     Calendar,
     Character,
     Faction,
+    LedgerEntry,
     Office,
     Region,
     Resource,
@@ -351,6 +352,8 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
         for resource in scenario.resources:
             if resource.get("hidden") and float(resource.get("estimate_width", 0) or 0) < 0:
                 errors.append(f"资源 {resource.get('id')} 的 estimate_width 不能为负")
+        errors.extend(initial_ledger_errors((data.get("scenario", {}) or {}).get("ledger"), resource_ids))
+        errors.extend(upkeep_errors((scenario.formulas or {}).get("upkeep"), resource_ids, faction_ids, army_ids))
         errors.extend(difficulty_errors(data.get("scenario", {}) or {}, resource_ids, seen_events))
         errors.extend(player_ops_errors((data.get("scenario", {}) or {}).get("settings") or {}))
 
@@ -380,6 +383,11 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
             elif advisor.get("requires") is not None:
                 errors.extend(_advisor_requires_errors(advisor, location, region_ids))
         option_ids = [str(option.get("id")) for option in item.get("options", []) or [] if isinstance(option, dict)]
+        for advisor in item.get("advisors", []) or []:
+            if isinstance(advisor, dict) and advisor.get("option") is not None and str(advisor.get("option")) not in option_ids:
+                errors.append(f"{location} 的谏言人 {advisor.get('character')} 的 option 不在选项中：{advisor.get('option')}")
+        if item.get("proposal") is not None and str(item.get("proposal")) not in option_ids:
+            errors.append(f"{location} 的 proposal 不在选项中：{item.get('proposal')}")
         if not option_ids:
             errors.append(f"{location} 至少需要一个选项")
         if len(set(option_ids)) != len(option_ids):
@@ -388,6 +396,37 @@ def _mechanics_errors(data: dict[str, Any], scenario: ScenarioDocument | None) -
             if isinstance(option, dict):
                 check_ops(option.get("ops", []) or [], f"{location}.options.{option.get('id')}.ops")
                 check_memory(option.get("memory"), f"{location}.options.{option.get('id')}")
+    return errors
+
+
+def upkeep_errors(raw: Any, resource_ids: set[str], faction_ids: set[str], army_ids: set[str]) -> list[str]:
+    """formulas.upkeep：[{resource, per, amount, label, factions?, armies?}]（按现兵额每 per 兵计 amount，正数为支出）。"""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        return ["formulas.upkeep 必须是列表"]
+    errors: list[str] = []
+    for index, row in enumerate(raw):
+        where = f"formulas.upkeep[{index}]"
+        if not isinstance(row, dict):
+            errors.append(f"{where} 必须是对象")
+            continue
+        unknown = [key for key in row if key not in {"resource", "per", "amount", "label", "factions", "armies"}]
+        if unknown:
+            errors.append(f"{where} 含未知键：{'、'.join(map(str, unknown))}")
+        if str(row.get("resource") or "treasury") not in resource_ids:
+            errors.append(f"{where} 的资源不存在：{row.get('resource')}")
+        per, amount = row.get("per"), row.get("amount")
+        if isinstance(per, bool) or not isinstance(per, (int, float)) or per <= 0:
+            errors.append(f"{where}.per 须为正数")
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            errors.append(f"{where}.amount 须为数值")
+        for faction in row.get("factions") or []:
+            if faction_ids and str(faction) not in faction_ids:
+                errors.append(f"{where} 的势力不存在：{faction}")
+        for army in row.get("armies") or []:
+            if str(army) not in army_ids:
+                errors.append(f"{where} 的军队不存在：{army}")
     return errors
 
 
@@ -590,7 +629,73 @@ def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> 
         armies=armies,
         rules=rules,
     )
+    _initial_ledger(state, data["scenario"].get("ledger"))
     return apply_difficulty(state, difficulty_row)
+
+
+def _initial_ledger(state: WorldState, rows: Any) -> None:
+    """scenario.yaml 的 `ledger:`：开局即有的经常账目（T0 起可见，T0→T1 结算即计入经常收支）。
+
+    每项 `{id?, name, category, amount, kind: recurring|one_off = recurring, turns?, reason?, cancellable = false}`；
+    剧本定额默认不可由诏令撤销（cancellable: false）。id 缺省按引擎序号生成（ledger-xxxxxxxx）。格式不对的条目跳过（validate 报告）。
+    """
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or str(row.get("category")) not in state.resources or not row.get("name"):
+            continue
+        try:
+            amount = float(row.get("amount", 0))
+        except (TypeError, ValueError):
+            continue
+        entry_id = str(row.get("id") or "")
+        if not entry_id:
+            sequence = int(state.flags.get("_internal:id_seq", 0)) + 1
+            state.flags["_internal:id_seq"] = sequence
+            entry_id = f"ledger-{sequence:08x}"
+        state.ledger.append(
+            LedgerEntry(
+                id=entry_id,
+                name=str(row["name"]),
+                category=str(row["category"]),
+                amount=amount,
+                kind="one_off" if row.get("kind") == "one_off" else "recurring",
+                turns=int(row["turns"]) if row.get("turns") is not None else None,
+                reason=str(row.get("reason") or ""),
+                cancellable=bool(row.get("cancellable", False)),
+            )
+        )
+
+
+def initial_ledger_errors(rows: Any, resource_ids: set[str]) -> list[str]:
+    """scenario.yaml 的 ledger 列表检查。"""
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        return ["ledger 必须是列表"]
+    errors: list[str] = []
+    seen: set[str] = set()
+    for index, row in enumerate(rows):
+        where = f"ledger[{index}]"
+        if not isinstance(row, dict):
+            errors.append(f"{where} 必须是对象")
+            continue
+        unknown = [key for key in row if key not in {"id", "name", "category", "amount", "kind", "turns", "reason", "cancellable"}]
+        if unknown:
+            errors.append(f"{where} 含未知键：{'、'.join(map(str, unknown))}")
+        if not row.get("name"):
+            errors.append(f"{where} 缺少 name")
+        if str(row.get("category")) not in resource_ids:
+            errors.append(f"{where} 的资源不存在：{row.get('category')}")
+        if isinstance(row.get("amount"), bool) or not isinstance(row.get("amount"), (int, float)):
+            errors.append(f"{where}.amount 须为数值")
+        if row.get("kind", "recurring") not in {"recurring", "one_off"}:
+            errors.append(f"{where}.kind 须为 recurring 或 one_off")
+        if row.get("turns") is not None and (isinstance(row.get("turns"), bool) or not isinstance(row.get("turns"), int) or row["turns"] < 1):
+            errors.append(f"{where}.turns 须为正整数")
+        if row.get("id"):
+            if str(row["id"]) in seen:
+                errors.append(f"{where} id 重复：{row['id']}")
+            seen.add(str(row["id"]))
+    return errors
 
 
 OFFICE_POSTING_KEYS = frozenset({"army", "seat"})

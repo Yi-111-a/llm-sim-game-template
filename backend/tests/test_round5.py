@@ -78,8 +78,9 @@ def test_appoint_to_commander_office_dispatches_for_player_and_sets_army() -> No
     updated, facts = apply(receipt["op"], state)
     assert updated.armies["pass_army"].commander == "general" and updated.characters["general"].in_transit["to_region"] == "pass"
     assert "郭将军任关镇节度，兼统关军；已启程赴任（" in facts[0].text
-    # 其原统禁军（同驻京畿）改由副将暂摄
-    assert "其原统禁军改由副将暂摄" in facts[0].text
+    # 其原统禁军（同驻京畿）：人离军而去即解除其统帅，回执与状态一致
+    assert "其原统禁军不再由其统领（暂无主帅，副将摄事）" in facts[0].text
+    assert updated.armies["guard"].commander is None
     # 剧本 / 事件的任命缺省遥领
     remote, facts = apply({"op": "appoint", "character": "general", "office": "pass_jds"}, state)
     assert remote.characters["general"].in_transit is None and "遥领，不赴任（今在京畿）" in facts[0].text

@@ -25,6 +25,7 @@ PLAYER_OPS_DEFAULT: tuple[str, ...] = (
     "move_character",
     "move_army",
     "march",
+    "detach",
     "set_army_commander",
     "start_project",
     "add_standing_order",
@@ -48,6 +49,7 @@ OP_LABELS: dict[str, str] = {
     "move_character": "人物行程",
     "move_army": "调动军队",
     "march": "率军出征",
+    "detach": "分兵",
     "start_project": "兴工",
     "adjust_region": "调整地区指标",
     "adjust_relation": "调整关系",
@@ -123,11 +125,11 @@ def check_player_op(op_value: StateOp | dict[str, Any], state: WorldState, setti
         character = state.characters.get(str(getattr(op, "character", "")))
         if character is not None and foreign(character.faction):
             return Rejected("OP_NOT_PERMITTED", f"{character.name}不是本朝臣属，政令不及其身")
-    if name in {"move_army", "march", "set_army_commander"}:
+    if name in {"move_army", "march", "set_army_commander", "detach"}:
         army = state.armies.get(str(getattr(op, "army", "")))
         if army is not None and foreign(army.faction):
-            return Rejected("OP_NOT_PERMITTED", f"{army.name}不归本朝节制，不能调遣或易帅")
-        commander_id = getattr(op, "character", None) if name == "set_army_commander" else None
+            return Rejected("OP_NOT_PERMITTED", f"{army.name}不归本朝节制，不能调遣、分兵或易帅")
+        commander_id = getattr(op, "character", None) if name == "set_army_commander" else getattr(op, "commander", None) if name == "detach" else None
         commander = state.characters.get(str(commander_id)) if commander_id else None
         if commander is not None and foreign(commander.faction):
             return Rejected("OP_NOT_PERMITTED", f"{commander.name}不是本朝臣属，不能统领本朝军队")

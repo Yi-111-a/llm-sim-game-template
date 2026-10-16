@@ -416,7 +416,7 @@ RECONCILIATION_STEPS = (
     ("events", "事件/选择"),
     ("closing", "期末"),
 )
-REGULAR_KIND_LABELS = {"income": "收入", "ledger": "账目", "project": "工程", "drift": "漂移", "standing": "常设令/竣工", "other": "其他"}
+REGULAR_KIND_LABELS = {"income": "收入", "upkeep": "养兵", "ledger": "账目", "project": "工程", "drift": "漂移", "standing": "常设令/竣工", "other": "其他"}
 
 
 def public_reconciliation(raw: Any, state: WorldState, detail: Any = None) -> list[dict[str, Any]]:

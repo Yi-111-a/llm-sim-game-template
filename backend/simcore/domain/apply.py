@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from simcore.domain.models import (
+    Army,
     Fact,
     LedgerEntry,
     PendingClause,
@@ -21,6 +22,7 @@ from simcore.domain.ops import (
     CancelLedger,
     CancelStandingOrder,
     ChooseEventOption,
+    Detach,
     Dismiss,
     March,
     MoveArmy,
@@ -40,9 +42,12 @@ from simcore.domain.rules import (
     STATUS_NAMES,
     Rejected,
     army_station,
+    coalesce_postings,
     entity_name,
     find_route,
     held_offices,
+    left_behind_armies,
+    left_behind_text,
     office_army,
     office_station,
     posting_plan,
@@ -143,7 +148,7 @@ def apply(
             text += f"，兼统{army.name}"
         station = office_station(updated, op.office)
         if station is not None:
-            text += _posting(updated, character, station, op.dispatch, army)
+            text += _posting(updated, character, station, op.dispatch, army)[0]
         facts.append(Fact(kind="appointment", text=text, entity=op.character, after=op.office))
     elif isinstance(op, Dismiss):
         character = updated.characters[op.character]
@@ -195,6 +200,8 @@ def apply(
         facts.append(
             Fact(kind="movement", text=f"{army.name}自{origin}{verb}，赴{route_text}{escort}", entity=op.army, before=army.region, after=op.to_region)
         )
+    elif isinstance(op, Detach):
+        facts.append(_detach(updated, op))
     elif isinstance(op, StartProject):
         updated.projects.append(
             Project(
@@ -283,9 +290,15 @@ def apply(
         before = army.commander
         army.commander = op.character
         text = f"{army.name}易帅，由{entity_name(updated, op.character)}统领" if op.character else f"罢{army.name}统帅"
+        quiet = False
         if op.character:
-            text += _posting(updated, updated.characters[op.character], army_station(army), op.dispatch, army)
-        facts.append(Fact(kind="army_commander", text=text, entity=op.army, before=before, after=op.character))
+            if before == op.character:
+                text = f"{army.name}仍由{entity_name(updated, op.character)}统领"
+            suffix, kind = _posting(updated, updated.characters[op.character], army_station(army), op.dispatch, army)
+            text += suffix
+            # 同一人且未因此启程：前一条任命（兼统）已说明，不再重复一条事实
+            quiet = before == op.character and kind != "dispatch"
+        facts.append(Fact(kind="army_commander", text=text, entity=op.army, before=before, after=op.character, internal=quiet))
     elif isinstance(op, AdjustTrait):
         character = updated.characters[op.character]
         before = character.traits.get(op.trait, 0)
@@ -325,7 +338,7 @@ def apply(
             updated.flags[key] = option.id
             updated.flag_turns[key] = stamp
         facts.append(Fact(kind="choice", text=f"{choice.title}：{option.text}", entity=choice.event_id, after=option.id))
-        for effect in option.effects:
+        for effect in coalesce_postings(list(option.effects), updated):
             try:
                 updated, effect_facts = apply(effect, updated, turn=stamp, inplace=True, source=choice.title)
                 facts.extend(effect_facts)
@@ -382,13 +395,75 @@ def _escort_commander(state: WorldState, army: Any) -> str:
     return f"，统帅{commander.name}随军"
 
 
-def _posting(state: WorldState, character: Any, station: str, dispatch: bool, army: Any = None) -> str:
-    """任帅 / 任有任所的官职之后：按 rules.posting_plan 启程赴任或遥领，返回事实后缀「；已启程赴任（…）」/「；遥领，不赴任（…）」。"""
+def _posting(state: WorldState, character: Any, station: str, dispatch: bool, army: Any = None) -> tuple[str, str]:
+    """任帅 / 任有任所的官职之后：按 rules.posting_plan 启程赴任或遥领，返回 (事实后缀「；已启程赴任（…）」/「；遥领，不赴任（…）」, kind)。
+
+    启程赴任时，留在原地的所统军队按 rules.left_behind_armies 的规则真正解除其统帅（官职所统之军除外，仍兼统），
+    与回执文字一致。
+    """
     plan = posting_plan(state, character, station, dispatch, army=army)
     if plan["kind"] == "dispatch":
         path, turns = plan["route"]
+        for army_id in plan.get("release", []):
+            if army_id in state.armies and state.armies[army_id].commander == character.id:
+                state.armies[army_id].commander = None
         character.in_transit = {"to_region": station, "eta_turn": state.turn + turns, "from_region": character.region, "route": path}
-    return f"；{plan['text']}"
+    return f"；{plan['text']}", str(plan["kind"])
+
+
+def detach_name(state: WorldState, army: Any, wanted: str | None) -> str:
+    """分兵新军的名字：给定名，或「原军名偏师」；重名时加序号。"""
+    base = (wanted or "").strip() or f"{army.name}偏师"
+    names = {row.name for row in state.armies.values()}
+    if base not in names:
+        return base
+    index = 2
+    while f"{base}{index}" in names:
+        index += 1
+    return f"{base}{index}"
+
+
+def _detach(state: WorldState, op: Detach) -> Fact:
+    """分兵：新军 id 为「原军 id_d序号」，兵力自原军扣出；去向不同则整段出发（同 move_army 寻路）。"""
+    source = state.armies[op.army]
+    sequence = int(state.flags.get("_internal:id_seq", 0)) + 1
+    state.flags["_internal:id_seq"] = sequence
+    army_id = f"{source.id}_d{sequence}"
+    name = detach_name(state, source, op.new_army_name)
+    source.strength = source.strength - op.strength
+    detachment = Army(
+        id=army_id,
+        name=name,
+        faction=source.faction,
+        region=source.region,
+        strength=op.strength,
+        loyal_to=source.loyal_to,
+        quality=source.quality,
+    )
+    state.armies[army_id] = detachment
+    origin = state.regions[source.region].name
+    text = f"{source.name}分兵 {format_number(op.strength)}（留 {format_number(source.strength)}），编为{name}"
+    if op.to_region != source.region:
+        text += f"，自{origin}开拔，赴{_start_transit(state, detachment, op.to_region, detachment.faction)}"
+    else:
+        text += f"，就地分屯{origin}"
+    if op.commander:
+        leader = state.characters[op.commander]
+        detachment.commander = leader.id
+        if not leader.in_transit and leader.region == source.region:
+            # 与原军同驻：随新军同行；留下的所统之军按 left_behind_armies 处置
+            kept, released = left_behind_armies(state, leader, detachment) if op.to_region != source.region else ([], [])
+            for row in released:
+                row.commander = None
+            if detachment.in_transit:
+                leader.in_transit = dict(detachment.in_transit)
+            text += f"，由{leader.name}统领" + ("随行" if detachment.in_transit else "") + left_behind_text(kept, released)
+        else:
+            suffix, _ = _posting(state, leader, army_station(detachment), True, detachment)
+            text += f"，由{leader.name}统领{suffix}"
+    else:
+        text += "，暂无主帅（副将摄事）"
+    return Fact(kind="movement", text=text, entity=army_id, before=source.region, after=op.to_region)
 
 
 RULER_TITLE_DEFAULT = "陛下"

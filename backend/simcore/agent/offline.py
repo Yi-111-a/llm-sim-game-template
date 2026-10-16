@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from simcore.domain.models import TurnReport, WorldState
+from simcore.domain.rules import current_title, initial_offices
 from simcore.domain.visibility import format_number
 
 CHRONICLE_TEMPLATES: dict[str, list[str]] = {
@@ -354,6 +355,51 @@ def character_card(scenario: dict[str, Any] | None, character_id: str) -> dict[s
     return {}
 
 
+def _subsequence(short: str, long: str) -> bool:
+    chars = iter(long)
+    return all(char in chars for char in short)
+
+
+def refresh_greeting(greeting: str, state: WorldState, character_id: str, scenario: dict[str, Any] | None = None) -> str:
+    """开场白里的旧官衔改为现任官职（「臣常清，安西判官。」→「臣常清，安西四镇节度使。」）；官职未变时原样返回。
+
+    旧衔识别：整句是静态 title 的缩写（字序相同、至少 3 字），或句中含静态 title / 开局所任而今已不任的官职名。
+    已无官职时删去该句。
+    """
+    title, former = current_title(state, character_id, scenario)
+    if not former or not greeting:
+        return greeting
+    from simcore.domain.rules import held_offices
+
+    character = state.characters[character_id]
+    held = held_offices(character)
+    names = [state.offices[office].name for office in held if office in state.offices]
+    stale = [former] + [
+        state.offices[office].name for office in initial_offices(scenario, character_id) or [] if office not in held and office in state.offices
+    ]
+    replacement = names[0] if names else ""
+    parts = re.split(r"([，。！？；,.!?;])", greeting)
+    result: list[str] = []
+    skip_punct = False
+    for part in parts:
+        if skip_punct and part and re.fullmatch(r"[，。！？；,.!?;]", part):
+            skip_punct = False
+            continue
+        skip_punct = False
+        clause = part.strip()
+        if len(clause) >= 3 and not re.fullmatch(r"[，。！？；,.!?;]", clause) and any(_subsequence(clause, name) for name in stale if name):
+            if replacement:
+                result.append(part.replace(clause, replacement))
+            else:
+                skip_punct = True
+            continue
+        for name in stale:
+            if name and name in part:
+                part = part.replace(name, replacement or "")
+        result.append(part)
+    return "".join(result).strip()
+
+
 def _earliest(text: str, terms: tuple[str, ...]) -> str | None:
     best: tuple[int, int, str] | None = None
     for term in terms:
@@ -620,7 +666,7 @@ def offline_minister_reply(
     )
     stance_row = decide_stances(state, scenario or {}, user_text or "召对", [character_id], seed=seed)[0]
     stance = stance_row["stance"] if proposal else "neutral"
-    greeting = str(card.get("greeting") or "").strip()
+    greeting = refresh_greeting(str(card.get("greeting") or "").strip(), state, character_id, scenario)
     generic = len(user_text.strip()) < 6 and not names
     parts: list[str] = []
     if greeting and not _DIGITS.search(greeting) and (generic or rng.random() < 0.35):

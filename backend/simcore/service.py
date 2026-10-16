@@ -19,16 +19,27 @@ from simcore.agent.offline import is_offline
 from simcore.agent.roles import AUDIENCE_VOICE, chat_availability, interpret_edict, minister_chat_messages, narrator, offline_minister_text
 from simcore.agent.tools import PLAYER_TIER, SCENARIO_TIER, AgentTools
 from simcore.config import load_settings
-from simcore.domain.apply import OpRejected, edict_memories
+from simcore.domain.apply import OpRejected, apply, edict_memories
 from simcore.domain.command import command_table, command_table_lines
+from simcore.domain.describe import describe_condition
 from simcore.domain.difficulty import DifficultyError, current_difficulty, public_difficulties
 from simcore.domain.digest import render_digest
 from simcore.domain.events import matches
 from simcore.domain.memorials import MemorialError, is_visible, memorial_flag, summarize_ops, visible_memorials
-from simcore.domain.models import TurnReport, WorldState
+from simcore.domain.models import TurnReport, WorldState, clone
 from simcore.domain.reference import ReferenceError, build_reference
-from simcore.domain.rules import audience_mode, held_offices, mover_faction, player_character_id, travel_note, traveller_label
-from simcore.domain.turn import GameOver, choice_option_id, final_season_notice
+from simcore.domain.rules import (
+    audience_mode,
+    entity_name,
+    find_route,
+    held_offices,
+    mover_faction,
+    office_army,
+    player_character_id,
+    travel_note,
+    traveller_label,
+)
+from simcore.domain.turn import GameOver, choice_option_id, final_season_notice, upkeep_label, upkeep_rows
 from simcore.domain.visibility import (
     battle_text,
     fact_line,
@@ -66,6 +77,8 @@ ERROR_STATUS = {
     "GAME_OVER": 409,
     "EDICT_CONFIRMED": 409,
     "EDICT_STALE": 409,
+    "DRAFT_UNCONFIRMED": 409,
+    "UNKNOWN_OPTION": 404,
     "ABORTED": 409,
     "CHARACTER_UNAVAILABLE": 409,
     "PLAYER_CHARACTER": 422,
@@ -353,8 +366,16 @@ class GameService:
             "final_notice": final_season_notice(state, self.definition(session)),
         }
 
+    REVIEW_LIMIT = 24
+
     def final_review(self, session: SessionStore, state: WorldState) -> dict[str, Any] | None:
-        """终局复盘：结局与判定条件、目标状态、关键数值（隐藏数值只给风闻区间）、时间线要事。"""
+        """终局复盘：结局与判定条件、目标状态、关键数值（隐藏数值只给风闻区间）、时间线要事。
+
+        要事按优先级取（至多 REVIEW_LIMIT 条，按时间排列）：
+        3 — 使结局条件成立的事（旗标由某事件设下、阈值条件由某事件 / 诏令越过，取最后一次越过）、终局之季的事件、终局本身；
+        2 — 剧本 importance ≥ 2 的事件、战事、事件抉择（含逾期默认处置）、统帅任免（带兵的官职、易帅）与统帅到任；
+        0/1 — 其余可见事件。优先级 3 的全部保留；截断时 omitted 记被略去的条数。
+        """
         if state.outcome is None:
             return None
         stats = [{"id": key, "display": resource_display(state, key, session.seed)} for key in state.resources]
@@ -363,30 +384,143 @@ class GameService:
         held = sum(1 for row in state.regions.values() if own is None or row.controller in (None, own))
         stats.append({"id": "_armies", "display": f"本方兵力 {format_number(troops)}"})
         stats.append({"id": "_regions", "display": f"本方控制 {held}/{len(state.regions)} 地"})
-        highlights: list[tuple[int, int, str]] = []
-        for entry in session.history():
-            if entry["type"] != "turn":
-                continue
-            payload = entry["payload"]
-            report = payload.get("report") or {}
-            snapshot = payload.get("snapshot") or {}
-            when = str((snapshot.get("calendar") or {}).get("label") or f"第{report.get('turn')}回合")
-            turn = int(report.get("turn", 0) or 0)
-            for event in report.get("events", []) or []:
-                if event.get("internal") or event.get("outcome"):
-                    continue
-                highlights.append((int(event.get("importance", 0) or 0), turn, f"T{turn} {when}：{event.get('title')}"))
-            for battle in report.get("battles", []) or []:
-                highlights.append((2, turn, f"T{turn} {when}：{battle.get('region_name', '')}之战，{battle_text(battle, state)}"))
-        top = sorted(highlights, key=lambda row: (-row[0], row[1]))[:16]
+        rows = self._review_rows(session, state)
+        keep = sorted(rows, key=lambda row: (-row[0], row[1], row[2]))
+        chosen = [row for row in keep if row[0] >= 3]
+        chosen.extend(row for row in keep if row[0] < 3)
+        chosen = chosen[: max(self.REVIEW_LIMIT, sum(1 for row in rows if row[0] >= 3))]
         return {
             "outcome": state.outcome.model_dump(mode="json"),
             "satisfied": list(state.outcome.satisfied),
             "objectives": self.objectives(session, state),
             "stats": stats,
-            "highlights": [text for _, _, text in sorted(top, key=lambda row: row[1])],
+            "highlights": [row[3] for row in sorted(chosen, key=lambda row: (row[1], row[2]))],
+            "omitted": len(rows) - len(chosen),
             "turns_played": state.turn - session.initial_state.turn,
         }
+
+    def _review_rows(self, session: SessionStore, state: WorldState) -> list[tuple[int, int, int, str]]:
+        """复盘候选要事 [(优先级, 回合, 顺序, 文本)]，见 final_review。"""
+        assert state.outcome is not None
+        definition = self.definition(session)
+        ending = next(
+            (row for row in definition.get("endings", []) or [] if isinstance(row, dict) and str(row.get("id")) == state.outcome.id),
+            {},
+        )
+        leaves = _condition_leaves(ending.get("conditions"))
+        flag_keys = {str(leaf.get("key")) for leaf in leaves if leaf.get("kind") == "flag" and leaf.get("key")}
+        thresholds = [leaf for leaf in leaves if leaf.get("kind") in {"resource", "counter", "army_strength", "region_stat", "relation"}]
+        rows: list[tuple[int, int, int, str]] = []
+        crossings: dict[int, tuple[int, int, str]] = {}
+        before: WorldState = session.initial_state
+        turn, label = before.turn, before.calendar.label
+        order = 0
+
+        def add(priority: int, text: str, at: int | None = None) -> None:
+            nonlocal order
+            order += 1
+            when = at if at is not None else turn
+            rows.append((priority, when, order, text))
+
+        for entry in session.history():
+            kind = entry["type"]
+            payload = entry.get("payload") or {}
+            after = session._snapshot(entry["id"])
+            if kind == "op":
+                op = payload.get("op") or {}
+                name = op.get("op")
+                source = str(payload.get("source") or "诏令")
+                if name == "choose_event_option":
+                    choice = next((row for row in before.pending_choices if row.id == op.get("choice_id")), None)
+                    option = next((row for row in choice.options if row.id == op.get("option_id")), None) if choice else None
+                    if choice is not None:
+                        add(2, f"T{turn} {label}：抉择「{choice.title}」→ {option.text if option else op.get('option_id')}")
+                elif name == "appoint" and office_army(before, str(op.get("office"))):
+                    army = before.armies[str(office_army(before, str(op.get("office"))))]
+                    add(2, f"T{turn} {label}：{source}——{entity_name(before, op.get('character'))}任{entity_name(before, op.get('office'))}，统{army.name}")
+                elif name == "set_army_commander" and op.get("character") and before.armies.get(str(op.get("army"))) is not None:
+                    if before.armies[str(op.get("army"))].commander != op.get("character"):
+                        add(2, f"T{turn} {label}：{source}——{entity_name(before, op.get('army'))}由{entity_name(before, op.get('character'))}统领")
+                elif name == "detach":
+                    strength = format_number(float(op.get("strength", 0) or 0))
+                    add(1, f"T{turn} {label}：{source}——{entity_name(before, op.get('army'))}分兵 {strength} 赴{entity_name(before, op.get('to_region'))}")
+                self._note_crossings(thresholds, before, after, turn, f"T{turn} {label}：{source}", crossings, order)
+            elif kind == "turn":
+                report = payload.get("report") or {}
+                snapshot_label = str((after.calendar.label if after else "") or f"第{report.get('turn')}回合")
+                at = int(report.get("turn", after.turn) or after.turn)
+                final_turn = state.outcome.turn == at
+                facts = report.get("facts", []) or []
+                flagged: set[str] = set()
+                pending_flags: list[str] = []
+                for fact in facts:
+                    fact_kind = fact.get("kind")
+                    if fact_kind == "flag" and str(fact.get("key")) in flag_keys:
+                        pending_flags.append(str(fact.get("key")))
+                    elif fact_kind == "event":
+                        if pending_flags:
+                            flagged.add(str(fact.get("entity")))
+                        pending_flags = []
+                    elif fact_kind == "choice_default":
+                        add(2, f"T{at} {snapshot_label}：{fact.get('text')}", at)
+                    elif fact_kind in {"appointment", "army_commander"} and not fact.get("internal") and "统" in str(fact.get("text", "")):
+                        add(2, f"T{at} {snapshot_label}：{fact.get('text')}", at)
+                    elif fact_kind == "arrival":
+                        who = str(fact.get("entity"))
+                        commands = [row.name for row in after.armies.values() if row.commander == who and row.region == fact.get("after")]
+                        if who in after.characters and commands:
+                            add(2, f"T{at} {snapshot_label}：{fact.get('text')}，到军统{'、'.join(commands)}", at)
+                for event in report.get("events", []) or []:
+                    if event.get("internal"):
+                        continue
+                    if event.get("outcome"):
+                        add(3, f"T{at} {snapshot_label}：终局「{event.get('title')}」", at)
+                        continue
+                    importance = int(event.get("importance", 0) or 0)
+                    if final_turn or str(event.get("id")) in flagged:
+                        priority = 3
+                    else:
+                        priority = 2 if importance >= 2 else importance
+                    add(priority, f"T{at} {snapshot_label}：{event.get('title')}", at)
+                for battle in report.get("battles", []) or []:
+                    add(2, f"T{at} {snapshot_label}：{battle.get('region_name', '')}之战，{battle_text(battle, state)}", at)
+                self._note_crossings(thresholds, before, after, at, f"T{at} {snapshot_label}", crossings, order, report)
+                turn, label = after.turn, after.calendar.label
+            before = after
+        for priority, at, text in crossings.values():
+            order += 1
+            rows.append((priority, at, order, text))
+        return rows
+
+    @staticmethod
+    def _note_crossings(
+        thresholds: list[dict[str, Any]],
+        before: WorldState,
+        after: WorldState,
+        turn: int,
+        prefix: str,
+        crossings: dict[int, tuple[int, int, str]],
+        order: int,
+        report: dict[str, Any] | None = None,
+    ) -> None:
+        """阈值条件（如「禄山兵柄 ≤ 10」）由不成立变为成立：记下这一步（事件 / 诏令）；同一条件只留最后一次越过。"""
+        for index, leaf in enumerate(thresholds):
+            try:
+                if matches(leaf, before, turn) or not matches(leaf, after, turn):
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            cause = ""
+            if report is not None:
+                key = str(leaf.get("id") or leaf.get("key") or leaf.get("army") or "")
+                causes = [
+                    str(fact.get("cause") or "")
+                    for fact in report.get("facts", []) or []
+                    if fact.get("entity") == key and fact.get("cause")
+                ]
+                cause = causes[-1] if causes else "结算"
+            text = f"{prefix}：{cause + '——' if cause else ''}{describe_condition(leaf, after)}（结局条件由此成立）"
+            crossings[index] = (3, turn, text)
 
     def debug_state(self, session_id: str) -> dict[str, Any]:
         if os.environ.get("SIM_DEBUG") != "1":
@@ -432,9 +566,18 @@ class GameService:
             raise GameError("TIMEOUT", "诏令解释超时，请稍后重试") from exc
         finally:
             self.abort_events.pop(session_id, None)
+        # 摘要按条款先后累积预演：先分兵、后调余部时，后一条写的是分兵之后的兵额（延期条款本季不预演）
+        preview = clone(state)
         for clause in receipt["clauses"]:
             op = clause.get("op")
-            clause["summary"] = summarize_ops([op], state)[0] if isinstance(op, dict) and op else ""
+            clause["summary"] = summarize_ops([op], preview)[0] if isinstance(op, dict) and op else ""
+            if isinstance(op, dict) and op:
+                clause["summary"] += self.deadline_note(session, preview, op)
+                if clause.get("status") == "applied":
+                    try:
+                        preview, _ = apply(op, preview, inplace=True)
+                    except ValueError:
+                        pass
         # 回执的公开摘要写进旁路文件（不改日志、不改状态），供 export_log 复盘。
         session.record_draft({
             "action": "draft",
@@ -449,6 +592,26 @@ class GameService:
         # 草案写进存档旁的 <session>.drafts.json：进程重启（每次调用都重启的 MCP）与桌面应用都能确认。
         session.save_draft(receipt, current_turn=state.turn)
         return receipt
+
+    def deadline_note(self, session: SessionStore, state: WorldState, op: dict[str, Any]) -> str:
+        """调动（move_army / march / move_character / detach）预计抵达晚于终局时限时的提醒；否则空串。"""
+        if op.get("op") not in {"move_army", "march", "move_character", "detach"} or state.outcome is not None:
+            return ""
+        notice_length = self.definition(session).get("game_length") or {}
+        if notice_length.get("last_turn") is None:
+            return ""
+        last_turn = int(notice_length["last_turn"])
+        overtime = notice_length.get("overtime_flag")
+        if overtime and state.flags.get(str(overtime)) not in (None, False) and notice_length.get("overtime_last_turn") is not None:
+            last_turn = int(notice_length["overtime_last_turn"])
+        mover = state.characters.get(str(op.get("character"))) if op.get("op") == "move_character" else state.armies.get(str(op.get("army")))
+        if mover is None or mover.in_transit or mover.region == str(op.get("to_region")):
+            return ""
+        found = find_route(state, mover.region, str(op.get("to_region")), getattr(mover, "faction", None))
+        if found is None:
+            return ""
+        eta = state.turn + max(1, found[1])
+        return f"（预计第 {eta} 回合抵达，晚于终局时限 T{last_turn}，本局内到不了）" if eta > last_turn else ""
 
     def abort(self, session_id: str) -> dict[str, bool]:
         self.session(session_id)
@@ -465,12 +628,17 @@ class GameService:
         session = self.session(session_id)
         receipt = session.load_draft(edict_id)
         if receipt is None:
-            raise GameError("EDICT_NOT_FOUND", "诏令草案不存在或已过期")
+            pending = self.unconfirmed_drafts(session, session.head_state(), include_superseded=True)
+            listing = "、".join(row["edict_id"] for row in pending)
+            hint = f"本季待确认的草案：{listing}" if listing else "本季没有待确认的草案"
+            raise GameError("EDICT_NOT_FOUND", f"诏令草案不存在或已过期：{edict_id}。{hint}（edict_id 只取 edict- 开头的编号本身）")
         if receipt.get("confirmed"):
             raise GameError("EDICT_CONFIRMED", "诏令已经确认")
         state = session.head_state()
         if state.outcome is not None:
             raise GameError("GAME_OVER", f"本局已终局（{state.outcome.title}），不能再下诏")
+        if receipt.get("discarded"):
+            raise GameError("EDICT_STALE", "此草案已在结算时放弃（discard_drafts），请重新拟诏")
         if receipt.get("base_turn") != state.turn:
             raise GameError("EDICT_STALE", "回合已推进，此草案已失效，请重新拟诏")
         # 日志头未动则状态必然未变；头变了（召对消息等不改状态的条目也会移动它）再比较状态哈希。
@@ -520,8 +688,46 @@ class GameService:
             "execution_rate": receipt["execution_rate"],
         })
         self.touch(session_id)
+        receipt["new_memorials"] = self.new_memorials(session, state, session.head_state())
         receipt["state"] = public_view(session.head_state(), session.seed)
         return receipt
+
+    def new_memorials(self, session: SessionStore, before: WorldState, after: WorldState) -> list[dict[str, Any]]:
+        """本季因状态变化（确认诏书、抉择）新出现的奏疏：[{id, title}]。"""
+        if after.outcome is not None:
+            return []
+        seen = {str(row["id"]) for row in visible_memorials(session.scenario, before)}
+        return [{"id": row["id"], "title": row["title"]} for row in visible_memorials(session.scenario, after) if str(row["id"]) not in seen]
+
+    def unconfirmed_drafts(self, session: SessionStore, state: WorldState, include_superseded: bool = False) -> list[dict[str, Any]]:
+        """本季拟下、尚未确认（也未放弃）且仍有可执行条款的草案：[{edict_id, summary}]（按拟诏先后）。
+
+        - 回合已推进的草案（EDICT_STALE）不算；全部条款被拒 / 仅记录的草案不算；
+        - 只含奏疏条款、而这些奏疏都已另行处理的草案不算；
+        - 「已被取代」：此后又有本季草案被确认（拟诏—改拟—确认改拟稿的常见流程），旧稿不算（include_superseded 时仍列出，
+          供 EDICT_NOT_FOUND 提示可确认的编号）。
+        """
+        drafts = list(session.drafts().items())
+        memorials = {str(row.get("id")): row for row in session.scenario.get("memorials") or [] if isinstance(row, dict)}
+        rows: list[dict[str, Any]] = []
+        for position, (edict_id, receipt) in enumerate(drafts):
+            if receipt.get("confirmed") or receipt.get("discarded") or receipt.get("base_turn") != state.turn:
+                continue
+            live = [row for row in receipt.get("clauses") or [] if row.get("status") in {"applied", "delayed"} and row.get("op")]
+            if not live:
+                continue
+            if all(row.get("source") == "memorial" for row in live) and not any(
+                str(row.get("memorial_id")) in memorials and is_visible(memorials[str(row.get("memorial_id"))], state) for row in live
+            ):
+                continue
+            superseded = any(
+                later.get("confirmed") and later.get("base_turn") == state.turn for _, later in drafts[position + 1:]
+            )
+            if superseded and not include_superseded:
+                continue
+            summary = "；".join(dict.fromkeys(str(row.get("summary") or row.get("text") or "") for row in live if row.get("summary") or row.get("text")))
+            rows.append({"edict_id": edict_id, "summary": summary[:160]})
+        return rows
 
     @staticmethod
     def _clause_label(clause: dict[str, Any]) -> str:
@@ -569,6 +775,7 @@ class GameService:
 
     def choose(self, session_id: str, choice_id: str, option_id: str) -> dict[str, Any]:
         session = self.session(session_id)
+        before = session.head_state()
         try:
             state, facts, _ = session.append_op({"op": "choose_event_option", "choice_id": choice_id, "option_id": option_id})
         except OpRejected as exc:
@@ -581,13 +788,29 @@ class GameService:
             "option_id": option_id,
             "facts": public.get("facts", []),
             "pending_choices": [row.model_dump(mode="json") for row in state.pending_choices],
+            "new_memorials": self.new_memorials(session, before, state),
             "state": public_view(state, session.seed),
         }
 
-    async def end_turn(self, session_id: str, narrate: bool = True) -> dict[str, Any]:
+    async def end_turn(self, session_id: str, narrate: bool = True, discard_drafts: bool = False) -> dict[str, Any]:
+        """结算本季。本季有拟而未确认的草案时拒绝（DRAFT_UNCONFIRMED，列出编号），以免本季诏令悄然遗失；
+        discard_drafts=True 时把这些草案标为已放弃再结算（返回 discarded_drafts）。"""
         session = self.session(session_id)
         if session.state.outcome is not None:
             raise GameError("GAME_OVER", f"本局已终局（{session.state.outcome.title}），不能再推进回合")
+        pending = self.unconfirmed_drafts(session, session.head_state())
+        if pending and not discard_drafts:
+            listing = "；".join(f"{row['edict_id']}（{row['summary'] or '…'}）" for row in pending)
+            raise GameError(
+                "DRAFT_UNCONFIRMED",
+                f"本季尚有未确认的诏书草案：{listing}。草案不确认便不施行——请先 confirm_edict；"
+                "若确要放弃这些草案，以 discard_drafts: true 再结算。",
+            )
+        for row in pending:
+            receipt = session.load_draft(row["edict_id"])
+            if receipt is not None:
+                receipt["discarded"] = True
+                session.save_draft(receipt)
         context = self.season_context(session)
         try:
             state, report, _ = session.append_turn()
@@ -619,6 +842,7 @@ class GameService:
             "outcome": state.outcome.model_dump(mode="json") if state.outcome else None,
             "calendar_label": state.calendar.label,
             "final_notice": final_season_notice(state, self.definition(session)),
+            "discarded_drafts": [row["edict_id"] for row in pending],
         }
 
     def season_context(self, session: SessionStore) -> dict[str, Any]:
@@ -740,8 +964,19 @@ class GameService:
                 raise GameError("CHARACTER_UNAVAILABLE", f"{character.name}不在朝，不能与议")
         return unique
 
+    def record_call(self, session_id: str, kind: str, **fields: Any) -> None:
+        """client 模式召对 / 廷议的轻量记录（export_log 用；不含台词，不改日志与状态）。"""
+        session = self.session(session_id)
+        session.record_call({"kind": kind, "turn": session.head_state().turn, "via": "client", **fields})
+
     def _debate_setup(
-        self, session: SessionStore, state: WorldState, topic: str, participants: list[str], memorial_id: str | None
+        self,
+        session: SessionStore,
+        state: WorldState,
+        topic: str,
+        participants: list[str],
+        memorial_id: str | None,
+        option_id: str | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         """廷议共用部分：议题（可由 memorial_id 补出）、立场与议题分析（topic_entities / 对应奏疏）。"""
         try:
@@ -753,13 +988,37 @@ class GameService:
         if not topic.strip():
             raise GameError("INVALID_REQUEST", "廷议议题不能为空")
         unique = self._debate_participants(session, state, participants)
-        stances = decide_stances(
-            state, session.scenario, topic, unique, memorial_id=str(memorial["id"]) if memorial else None, seed=session.seed
-        )
         options = [row for row in (memorial or {}).get("options", []) or [] if isinstance(row, dict)]
+        if option_id:
+            if memorial is None:
+                raise GameError("INVALID_REQUEST", "指定所议之案（option_id）须同时给出 memorial_id")
+            if option_id not in {str(row.get("id")) for row in options}:
+                ids = "、".join(str(row.get("id")) for row in options)
+                raise GameError("UNKNOWN_OPTION", f"奏疏「{memorial.get('title', memorial.get('id'))}」没有选项：{option_id}（可选：{ids}）")
+        stances = decide_stances(
+            state,
+            session.scenario,
+            topic,
+            unique,
+            memorial_id=str(memorial["id"]) if memorial else None,
+            seed=session.seed,
+            proposal_option=option_id or None,
+        )
+        proposal: dict[str, Any] | None = None
         if memorial is not None and options:
             listing = "；".join(f"`{row.get('id')}`「{row.get('label', row.get('id'))}」" for row in options)
-            proposition = f"就奏疏「{memorial.get('title', memorial.get('id'))}」诸选项择一（{listing}）；各人立场附所主张的选项"
+            head = stances[0] if stances else {}
+            if head.get("proposal_id"):
+                proposal = {"id": head["proposal_id"], "label": head.get("proposal_label"), "basis": head.get("proposal_basis", "")}
+                proposition = (
+                    f"就奏疏「{memorial.get('title', memorial.get('id'))}」诸选项择一（{listing}）；所议之案为「{proposal['label']}」"
+                    f"（`{proposal['id']}`，{proposal['basis']}）：赞成即主此案，反对即主他案；各人立场附所主张的选项"
+                )
+            else:
+                proposition = (
+                    f"就奏疏「{memorial.get('title', memorial.get('id'))}」诸选项择一（{listing}）；诸案并陈，未有定案"
+                    "（可用 option_id 指定所议之案）：各人只列所主张的选项，不以首个选项为案"
+                )
         else:
             proposition = f"「{topic}」——赞成即主张照此施行，反对即主张不行，持中即未置可否"
         analysis = {
@@ -770,14 +1029,17 @@ class GameService:
                 "options": [{"id": row.get("id"), "label": row.get("label", row.get("id"))} for row in options],
             } if memorial else None,
             "proposition": proposition,
+            "proposal": proposal,
         }
         return topic, stances, analysis
 
-    def debate_brief(self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None) -> dict[str, Any]:
+    def debate_brief(
+        self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None, option_id: str | None = None
+    ) -> dict[str, Any]:
         """client 模式：只给立场与人设，由调用方模型写台词。"""
         session = self.session(session_id)
         state = session.state
-        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id)
+        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id, option_id)
         for row in stances:
             row["persona"] = persona_card(state, row["character"], session.scenario)
         return {
@@ -789,10 +1051,12 @@ class GameService:
             "instructions": "按 stances 的顺序为每人写一段不超过三句的发言；立场不可更改；数字只能引用 digest 中的值。",
         }
 
-    async def debate(self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None) -> dict[str, Any]:
+    async def debate(
+        self, session_id: str, topic: str, participants: list[str], memorial_id: str | None = None, option_id: str | None = None
+    ) -> dict[str, Any]:
         session = self.session(session_id)
         state = session.state
-        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id)
+        topic, stances, analysis = self._debate_setup(session, state, topic, participants, memorial_id, option_id)
         try:
             speeches = await debate_speeches(
                 state, session.scenario, topic, stances, self.provider(session.scenario, "court_debate"), session.seed, session.last_report()
@@ -865,6 +1129,12 @@ class GameService:
         for key, row in state.resources.items():
             precision = f"——{precision_text(state, key)}" if row.hidden else ""
             lines.append(f"- {resource_display(state, key, session.seed)}{precision}")
+        upkeep = upkeep_rows(state, (definition.get("formulas") or {}).get("upkeep") or [])
+        if upkeep and state.outcome is None:
+            lines.append("\n## 养兵经常开支（按现兵额，每季结算时计入经常收支；增兵即增此项）")
+            for row in upkeep:
+                name = state.resources[row["resource"]].name
+                lines.append(f"- {upkeep_label(row)}：本季约 {name} −{format_number(row['cost'])}")
         crisis = view["crisis"]
         if crisis:
             lines.append(f"\n## 危机计：{crisis['title']} {crisis['display']}（{crisis['band']}）")
@@ -905,6 +1175,7 @@ class GameService:
                     lines.append(f"- 谏言 {advisor['name']}（{stance}）：{advisor['line']}")
                 for option in item["options"]:
                     ops = "；".join(option["ops_summary"]) or "不改变状态"
+                    ops += "".join(self.deadline_note(session, state, raw) for raw in option.get("ops", []) if isinstance(raw, dict))
                     hint = f" 〔{option['hint']}〕" if option.get("hint") else ""
                     lines.append(f"- 选项 `{option['id']}`「{option['label']}」{hint} → {ops}")
         if view["pending_choices"]:
@@ -950,8 +1221,10 @@ class GameService:
             lines.append("目标：" + "；".join(f"{row['title']} {status_names.get(row['status'], row['status'])}" for row in review["objectives"]))
         lines.append("关键数值：" + "；".join(row["display"] for row in review["stats"]))
         if review["highlights"]:
-            lines.append("要事：")
+            lines.append("要事（使结局条件成立之事、终局之季、抉择、统帅任免与到任、兵事；按时间）：")
             lines.extend(f"- {line}" for line in review["highlights"])
+            if review.get("omitted"):
+                lines.append(f"（另有 {review['omitted']} 条从略，完整时间线见 history / export_log。）")
         lines.append("（本局已终局：不再有奏疏与待决事件；可用 history / rewind 回到更早节点另开分支。）")
         return lines
 
@@ -977,3 +1250,17 @@ class GameService:
             return build_reference(state, op or None, entity_kind or None, ids or None, self.player_character(session, state))
         except ReferenceError as exc:
             raise GameError(exc.code, exc.message) from exc
+
+
+def _condition_leaves(conditions: Any) -> list[dict[str, Any]]:
+    """条件树的叶子（all / any 展开；not 包着的叶子不算阈值越过，跳过）。"""
+    if isinstance(conditions, list):
+        return [leaf for item in conditions for leaf in _condition_leaves(item)]
+    if not isinstance(conditions, dict):
+        return []
+    for key in ("all", "any"):
+        if key in conditions:
+            return _condition_leaves(conditions[key])
+    if "not" in conditions:
+        return []
+    return [conditions] if conditions.get("kind") else []

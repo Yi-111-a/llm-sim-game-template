@@ -100,6 +100,11 @@ class DebateRequest(RequestModel):
     topic: str = ""
     participants: list[str]
     memorial_id: str | None = None
+    option_id: str | None = None
+
+
+class AdvanceTurn(RequestModel):
+    discard_drafts: bool = False
 
 
 class AdviceRequest(RequestModel):
@@ -424,13 +429,14 @@ def create_app() -> FastAPI:
         return service.choose(session_id, choice_id, request.option_id)
 
     @app.post("/api/sessions/{session_id}/turn")
-    async def advance_turn(session_id: str) -> dict[str, Any]:
+    async def advance_turn(session_id: str, request: AdvanceTurn | None = None, discard_drafts: bool = False) -> dict[str, Any]:
+        # 本季有未确认的草案时 409 DRAFT_UNCONFIRMED；body {discard_drafts: true} 或 ?discard_drafts=true 放弃草案后结算
         runtime.current_turn = service.session(session_id).head_turn()
-        return await service.end_turn(session_id)
+        return await service.end_turn(session_id, discard_drafts=discard_drafts or bool(request and request.discard_drafts))
 
     @app.post("/api/sessions/{session_id}/debate")
     async def debate(session_id: str, request: DebateRequest) -> dict[str, Any]:
-        return await service.debate(session_id, request.topic, request.participants, request.memorial_id)
+        return await service.debate(session_id, request.topic, request.participants, request.memorial_id, request.option_id)
 
     @app.get("/api/sessions/{session_id}/advice")
     async def list_advice(session_id: str) -> list[dict[str, Any]]:

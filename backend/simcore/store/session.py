@@ -251,6 +251,31 @@ class SessionStore:
                 rows.append(row)
         return rows
 
+    @property
+    def calls_path(self) -> Path:
+        return self.path.with_name(f"{self.path.stem}.calls.jsonl")
+
+    def record_call(self, payload: dict[str, Any]) -> None:
+        """client 模式的召对 / 廷议调用的轻量记录（谁、方式、议题、回合；不含台词）写进旁路文件 <session>.calls.jsonl：
+        不改日志、不移动 head（草案的「状态未变」判定不受影响）；带 base_head 以便 export_log 按分支筛选。"""
+        with self.calls_path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(_dumps({**payload, "base_head": self.head_id, "timestamp": _now()}) + "\n")
+
+    def call_records(self) -> list[dict[str, Any]]:
+        try:
+            lines = self.calls_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        rows = []
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+
     def append_advice(self, character: str, text: str, source: str = "player") -> dict[str, Any]:
         """谏言库条目：只记入日志，不改变 WorldState，也不进入状态哈希。"""
         entry = self._append(
@@ -517,6 +542,7 @@ class SessionStore:
     def delete_drafts(self) -> None:
         self._drafts_cache = None
         self.drafts_path.unlink(missing_ok=True)
+        self.calls_path.unlink(missing_ok=True)
         self.receipts_path.unlink(missing_ok=True)
 
     def reload(self) -> None:

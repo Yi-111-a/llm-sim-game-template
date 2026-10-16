@@ -10,6 +10,7 @@ from simcore.domain.ops import memory_ops, parse_op
 from simcore.domain.rules import (
     STATUS_NAMES,
     army_station,
+    coalesce_postings,
     entity_name,
     find_route,
     office_army,
@@ -149,7 +150,7 @@ def adopted_ops(scenario: dict[str, Any], state: WorldState, memorial_id: str, o
     option = next((row for row in item.get("options", []) or [] if row.get("id") == option_id), None)
     if option is None:
         raise MemorialError("UNKNOWN_OPTION", f"奏疏「{item.get('title', memorial_id)}」没有选项：{option_id}")
-    ops = [*(option.get("ops", []) or []), *memory_ops(option.get("memory"))]
+    ops = [*coalesce_postings(list(option.get("ops", []) or []), state), *memory_ops(option.get("memory"))]
     return [parse_op(op).model_dump(mode="json") for op in ops]
 
 
@@ -168,7 +169,7 @@ def summarize_ops(ops: list[dict[str, Any]], state: WorldState) -> list[str]:
     """
     lines: list[str] = []
     pairs: set[tuple[frozenset[str], str]] = set()
-    for raw in ops:
+    for raw in coalesce_postings(list(ops), state):
         if isinstance(raw, dict) and raw.get("op") == "adjust_relation":
             pair = (frozenset({str(raw.get("a")), str(raw.get("b"))}), str(raw.get("delta")))
             if pair in pairs:
@@ -245,7 +246,20 @@ def summarize_op(raw: dict[str, Any], state: WorldState) -> str:
             if commander.region == army.region and not commander.in_transit:
                 escort = f"，{commander.name}随军"
         verb = "率军赴" if op == "march" else "移驻"
-        return f"{name('army', raw['army'])} {verb} {name('region', raw['to_region'])}{route}{escort}"
+        whole = f"（全军 {format_number(army.strength)}）" if army is not None else ""
+        return f"{name('army', raw['army'])}{whole} {verb} {name('region', raw['to_region'])}{route}{escort}"
+    if op == "detach":
+        army = state.armies.get(str(raw["army"]))
+        strength = float(raw.get("strength", 0) or 0)
+        left = f"，留 {format_number(army.strength - strength)}" if army is not None else ""
+        label = str(raw.get("new_army_name") or "").strip() or (f"{army.name}偏师" if army is not None else "偏师")
+        if army is not None and str(raw["to_region"]) == army.region:
+            where = f"就地分屯{name('region', raw['to_region'])}"
+        else:
+            route = _route_note(state, army.region if army else None, raw["to_region"], army.faction if army else None)
+            where = f"赴 {name('region', raw['to_region'])}{route}"
+        leader = f"，{name('character', raw['commander'])}统领" if raw.get("commander") else "，暂无主帅"
+        return f"{name('army', raw['army'])} 分兵 {format_number(strength)}{left}，编为「{label}」{where}{leader}"
     if op == "move_character":
         character = state.characters.get(str(raw["character"]))
         route = _route_note(state, character.region if character else None, raw["to_region"], character.faction if character else None)

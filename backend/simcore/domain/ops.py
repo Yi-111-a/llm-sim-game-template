@@ -75,6 +75,20 @@ class March(OpModel):
     with_commander: bool = True
 
 
+class Detach(OpModel):
+    """分兵：从 army 中分出 strength 兵力，编为一支新军（同势力、同素质），自原驻地开拔赴 to_region（同地则就地分屯）。
+
+    new_army_name 缺省为「原军名偏师」；commander 为新军统帅（与原军同驻者随新军同行，否则启程赴任）。
+    """
+
+    op: Literal["detach"]
+    army: str
+    strength: float
+    to_region: str
+    new_army_name: str | None = None
+    commander: str | None = None
+
+
 class StartProject(OpModel):
     op: Literal["start_project"]
     name: str
@@ -184,6 +198,7 @@ StateOp: TypeAlias = Annotated[
     | MoveCharacter
     | MoveArmy
     | March
+    | Detach
     | StartProject
     | AdjustRegion
     | AdjustRelation
@@ -212,6 +227,7 @@ OP_NAMES: tuple[str, ...] = (
     "move_character",
     "move_army",
     "march",
+    "detach",
     "start_project",
     "adjust_region",
     "adjust_relation",

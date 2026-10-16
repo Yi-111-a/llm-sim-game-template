@@ -8,7 +8,7 @@ import random
 import re
 from typing import Any
 
-from simcore.agent.offline import character_card, is_offline, offline_debate_line
+from simcore.agent.offline import character_card, current_title, is_offline, offline_debate_line, refresh_greeting
 from simcore.domain.digest import digest_numbers, render_digest
 from simcore.domain.events import relation_value
 from simcore.domain.memorials import MemorialError, is_visible, memorial_item
@@ -101,6 +101,7 @@ def decide_stances(
     *,
     memorial_id: str | None = None,
     seed: int = 0,
+    proposal_option: str | None = None,
 ) -> list[dict[str, Any]]:
     """确定性地给出每位参与者的立场与理由。
 
@@ -163,7 +164,9 @@ def decide_stances(
             "reason": reason,
         })
     if memorial is not None and [row for row in memorial.get("options", []) or [] if isinstance(row, dict)]:
-        assign_option_targets(state, memorial, result, interests, seed)
+        proposal = assign_option_targets(state, memorial, result, interests, seed, proposal_option)
+        for row in result:
+            row.update(proposal)
     else:
         for row in result:
             row.update({
@@ -177,7 +180,11 @@ def decide_stances(
 
 OPTION_LINE_WEIGHT = 15.0
 OPTION_AFFINITY_WEIGHT = 0.5
+PROPOSAL_MIN_HITS = 2
 _NEGATIVE_SELF = ("不用", "不得", "不许", "罢", "免", "贬", "削", "夺", "诛", "下狱", "流", "拒", "驳", "斥")
+_SEGMENT = re.compile(r"[\s，。、；：！？「」『』（）()\-—·,.!?:;~～+−\d]+")
+# 不指向具体选项的泛泛理由（忠诚 / 种子决断）：议无定案时不能说成「附议所议之案」
+GENERIC_REASONS = frozenset({"忠谨，唯上意是从", "素怀异见", "持两端，未肯表态", "揣度上意，姑且附议", "以为未可轻动"})
 
 
 def _option_text(option: dict[str, Any]) -> str:
@@ -185,6 +192,90 @@ def _option_text(option: dict[str, Any]) -> str:
     rows = memory if isinstance(memory, list) else [memory] if isinstance(memory, dict) else []
     notes = "；".join(str(row.get("text") or "") for row in rows if isinstance(row, dict))
     return f"{option.get('label', option.get('id', ''))}；{option.get('hint', '')}；{notes}"
+
+
+def _tokens(text: str) -> set[str]:
+    """按标点 / 数字分句后的二字组（不跨句，免得「考课，不另究」拼出「课不」）。"""
+    grams: set[str] = set()
+    for part in _SEGMENT.split(text):
+        grams.update(part[index:index + 2] for index in range(len(part) - 1))
+    return grams
+
+
+def _option_tokens(option: dict[str, Any]) -> set[str]:
+    reasons = "；".join(str(op.get("reason") or "") for op in option.get("ops", []) or [] if isinstance(op, dict))
+    return _tokens(f"{_option_text(option)}；{reasons}")
+
+
+def distinctive_tokens(memorial: dict[str, Any], options: list[dict[str, Any]]) -> list[set[str]]:
+    """每个选项独有的二字组：去掉别的选项也有的、奏疏标题里的（「考课」「范阳」这类各选项共有的词不算证据）。"""
+    every = [_option_tokens(option) for option in options]
+    title = _tokens(str(memorial.get("title", "")))
+    result = []
+    for index, tokens in enumerate(every):
+        others: set[str] = set()
+        for position, row in enumerate(every):
+            if position != index:
+                others |= row
+        result.append(tokens - others - title)
+    return result
+
+
+def _option_index(options: list[dict[str, Any]], option_id: Any) -> int | None:
+    if not option_id:
+        return None
+    return next((index for index, row in enumerate(options) if str(row.get("id")) == str(option_id)), None)
+
+
+def _unique_best(scores: list[float], minimum: float) -> int | None:
+    if not scores:
+        return None
+    best = max(range(len(scores)), key=lambda index: scores[index])
+    if scores[best] < minimum or sum(1 for value in scores if value == scores[best]) > 1:
+        return None
+    return best
+
+
+def infer_proposal(
+    state: WorldState, memorial: dict[str, Any], options: list[dict[str, Any]], explicit: str | None = None
+) -> tuple[int | None, str]:
+    """「所议之案」（谏言立场 support / oppose 所针对的那个选项）及其来历；定不出时为 (None, "")。
+
+    1. 调用方指定（court_debate 的 option_id）；2. 奏疏写明 `proposal: <option_id>`；
+    3. 在世赞成者写明的 `option`（唯一时）；4. 奏疏摘要与在世赞成者谏言里、各选项独有的二字组命中 ≥ 2 且唯一最多者；
+    5. 选项恰为准驳二议（只有一个选项标题首句不带驳斥 / 罢免之意，其余皆是）时取那一个。其余（多个并列方案）一律无定案，不默认取第一个选项。
+    """
+    index = _option_index(options, explicit)
+    if index is not None:
+        return index, "议题指定"
+    index = _option_index(options, memorial.get("proposal"))
+    if index is not None:
+        return index, "奏疏所请"
+    present = [
+        row for row in memorial.get("advisors", []) or []
+        if isinstance(row, dict) and str(row.get("character")) in state.characters and state.characters[str(row.get("character"))].status == "alive"
+    ]
+    picks = {
+        found
+        for row in present
+        if row.get("stance") == "support" and (found := _option_index(options, row.get("option"))) is not None
+    }
+    if len(picks) == 1:
+        return next(iter(picks)), "赞成者所上之案"
+    unique = distinctive_tokens(memorial, options)
+    evidence = _tokens(str(memorial.get("summary", "")))
+    for row in present:
+        if row.get("stance") == "support":
+            evidence |= _tokens(str(row.get("line", "")))
+    hits = [float(len(tokens & evidence)) for tokens in unique]
+    index = _unique_best(hits, PROPOSAL_MIN_HITS)
+    if index is not None:
+        return index, "奏疏所请"
+    polarity = [_lead_polarity(str(option.get("label", ""))) for option in options]
+    accept = [index for index, value in enumerate(polarity) if value >= 0]
+    if len(options) >= 2 and len(accept) == 1:
+        return accept[0], "准驳二议，以准为案"
+    return None, ""
 
 
 def _self_effect(state: WorldState, character_id: str, option: dict[str, Any]) -> int:
@@ -220,9 +311,12 @@ def _self_effect(state: WorldState, character_id: str, option: dict[str, Any]) -
 
 
 def _option_score(
-    state: WorldState, character_id: str, option: dict[str, Any], interests: Any, line: str
+    state: WorldState, character_id: str, option: dict[str, Any], interests: Any, line_hits: int = 0
 ) -> tuple[float, str]:
-    """某人对某选项的好恶：本人利害 > 亲疏（选项点名的人物、官职在任者、军队统帅）> 派系利益 > 谏言措辞与选项的相合程度。"""
+    """某人对某选项的好恶：本人利害 > 亲疏（选项点名的人物、官职在任者、军队统帅）> 派系利益 > 赞成者谏言与该选项独有措辞的相合。
+
+    谏言措辞只对赞成者计分（反对者、持中者的话常常在复述所反对的方案，计入会把立场倒过来）。
+    """
     character = state.characters[character_id]
     text = _option_text(option)
     label = str(option.get("label", option.get("id", "")))
@@ -251,10 +345,8 @@ def _option_score(
             hit = str(key) in mentioned or (len(str(key)) >= 2 and str(key) in text)
             if hit and isinstance(weight, (int, float)) and not isinstance(weight, bool):
                 parts.append((float(weight) * direction, f"{bloc_label(state, character.bloc)}的利益所在"))
-    if line:
-        overlap = len(_bigrams(line) & _bigrams(f"{label}{option.get('hint', '')}"))
-        if overlap:
-            parts.append((OPTION_LINE_WEIGHT * overlap, "与所上之言相合"))
+    if line_hits:
+        parts.append((OPTION_LINE_WEIGHT * line_hits, "与所上之言相合"))
     total = sum(value for value, _ in parts)
     reason = max(parts, key=lambda item: abs(item[0]))[1] if parts else ""
     return total, reason
@@ -267,70 +359,99 @@ def _lead_polarity(label: str) -> int:
 
 
 def assign_option_targets(
-    state: WorldState, memorial: dict[str, Any], rows: list[dict[str, Any]], interests: Any, seed: int
-) -> None:
+    state: WorldState,
+    memorial: dict[str, Any],
+    rows: list[dict[str, Any]],
+    interests: Any,
+    seed: int,
+    proposal_option: str | None = None,
+) -> dict[str, Any]:
     """廷议对应奏疏时，给每个立场定出所主张的选项：target_option_id / target_option_label（+ against_option_*）。
 
-    1. 每人对每个选项按本人利害、亲疏、派系利益、谏言措辞打分（_option_score）。
-    2. 「所议之案」：本场赞成者（廷议立场 support）与奏疏中在世赞成者合计最中意的选项；同分时取标题首句为准许 / 授予的，
-       再取靠前者。与所议之案首句褒贬相同的选项算作「同一方」（准兼、照准同属准许一方）。
-    3. 赞成者在所议之案一方中取自己得分最高者（同分取所议之案）；反对者在另一方中取得分最高者，记 against = 所议之案；
-       持中者与其余人取得分最高者；全无利害时以种子择一（「无所偏倚」）。
+    1. 「所议之案」见 infer_proposal；定不出时**不**默认取第一个选项，而是「诸案并陈」。
+    2. 奏疏谏言人写明 `option` 时即主张该选项；否则赞成者主张所议之案（或同一方中得分最高者）、反对者主张另一方得分最高者
+       （against = 所议之案）、持中者取得分最高者（全无利害时以种子择一）。
+    3. 诸案并陈时：各人按利害打分（赞成者另计其谏言与各选项独有措辞的相合）取最高者；全无利害者不主一议（target 为 None）。
+       非谏言人的泛泛立场（忠诚、种子）此时改为持中「议无定案，候上裁决」，不再说「唯上意是从」。
+    返回 {proposal_id, proposal_label, proposal_basis}（无定案时 proposal_id 为 None）。
     """
     options = [row for row in memorial.get("options", []) or [] if isinstance(row, dict)]
     advisors = {str(row.get("character")): row for row in memorial.get("advisors", []) or [] if isinstance(row, dict)}
     title = str(memorial.get("title", memorial.get("id", "")))
     polarity = [_lead_polarity(str(option.get("label", ""))) for option in options]
+    unique = distinctive_tokens(memorial, options)
+    proposal, basis = infer_proposal(state, memorial, options, proposal_option)
 
     def scores_for(character_id: str) -> list[tuple[float, str]]:
-        line = str(advisors.get(character_id, {}).get("line", ""))
-        return [_option_score(state, character_id, option, interests, line) for option in options]
+        # 赞成者的谏言措辞计入各选项；反对者的话或复述所驳之案（「恐骤加黜陟」）、或道出所主之案（「减其半亦足」），
+        # 故只计入所议之案以外的选项；持中者与诸案并陈时的反对者不计措辞。
+        advisor = advisors.get(character_id, {})
+        stance = advisor.get("stance")
+        line = _tokens(str(advisor.get("line", ""))) if stance == "support" or (stance == "oppose" and proposal is not None) else set()
+        hits = [0 if stance == "oppose" and index == proposal else len(unique[index] & line) for index in range(len(options))]
+        return [_option_score(state, character_id, option, interests, hits[index]) for index, option in enumerate(options)]
 
-    supporters = list(dict.fromkeys([
-        *(row["character"] for row in rows if row["stance"] == "support"),
-        *(
-            character_id
-            for character_id, row in advisors.items()
-            if row.get("stance") == "support" and character_id in state.characters and state.characters[character_id].status == "alive"
-        ),
-    ]))
-    totals = [0.0] * len(options)
-    for character_id in supporters:
-        for index, (value, _) in enumerate(scores_for(character_id)):
-            totals[index] += value
-    proposal = max(range(len(options)), key=lambda index: (totals[index], polarity[index], -index))
-    same_side = [index for index in range(len(options)) if index == proposal or (polarity[proposal] != 0 and polarity[index] == polarity[proposal])]
-    other_side = [index for index in range(len(options)) if index not in same_side] or [index for index in range(len(options)) if index != proposal]
+    def roll(character_id: str, candidates: list[int]) -> int:
+        return candidates[random.Random(f"debate-option:{seed}:{state.turn}:{memorial.get('id')}:{character_id}").randrange(len(candidates))]
+
+    same_side: list[int] = []
+    other_side: list[int] = []
+    if proposal is not None:
+        same_side = [index for index in range(len(options)) if index == proposal or (polarity[proposal] != 0 and polarity[index] == polarity[proposal])]
+        other_side = [index for index in range(len(options)) if index not in same_side] or [index for index in range(len(options)) if index != proposal]
     for row in rows:
-        scores = scores_for(row["character"])
+        character_id = row["character"]
+        scores = scores_for(character_id)
         stance = row["stance"]
         against: int | None = None
-        if stance == "support":
-            pick = max(same_side, key=lambda index: (scores[index][0], index == proposal, -index))
-            why = scores[pick][1] or "附议所议之案"
-        else:
-            candidates = list(range(len(options)))
-            if stance == "oppose" and other_side:
-                candidates = other_side
+        pick: int | None
+        explicit = _option_index(options, advisors[character_id].get("option")) if character_id in advisors else None
+        if explicit is not None:
+            pick, why = explicit, "所上之言即主此案"
+            if stance == "oppose" and proposal is not None and proposal != explicit:
                 against = proposal
-            best = max(candidates, key=lambda index: (scores[index][0], -index))
-            if all(abs(scores[index][0]) < 1e-9 for index in candidates):
-                roll = random.Random(f"debate-option:{seed}:{state.turn}:{memorial.get('id')}:{row['character']}")
-                pick, why = candidates[roll.randrange(len(candidates))], ("力驳所议之案" if against is not None else "无所偏倚，姑从此议")
+        elif proposal is not None and stance == "support":
+            pick = max(same_side, key=lambda index: (scores[index][0], index == proposal, -index))
+            why = scores[pick][1] or ("附议所议之案" if pick == proposal else "同为一方之议")
+        elif proposal is not None and stance == "oppose":
+            against = proposal
+            if all(abs(scores[index][0]) < 1e-9 for index in other_side):
+                pick, why = roll(character_id, other_side), "力驳所议之案"
             else:
+                pick = max(other_side, key=lambda index: (scores[index][0], -index))
+                why = scores[pick][1]
+        else:
+            best = max(range(len(options)), key=lambda index: (scores[index][0], -index))
+            if scores[best][0] > 1e-9:
                 pick, why = best, scores[best][1]
+            elif proposal is not None:
+                pick, why = roll(character_id, list(range(len(options)))), "无所偏倚，姑从此议"
+            else:
+                pick, why = None, ""
+            if proposal is None and character_id not in advisors and row.get("reason") in GENERIC_REASONS:
+                row.update({"stance": "neutral", "stance_label": STANCE_LABELS["neutral"], "reason": "议无定案，候上裁决"})
+        row["proposition"] = f"就「{title}」诸选项择一"
+        if pick is None:
+            row.update({"target_option_id": None, "target_option_label": None, "target_reason": "", "position": "未主一议，候圣裁"})
+            continue
         option = options[pick]
         label = str(option.get("label", option.get("id")))
         row["target_option_id"] = option.get("id")
         row["target_option_label"] = label
         row["target_reason"] = why
-        row["proposition"] = f"就「{title}」诸选项择一"
         position = f"主张「{label}」（{option.get('id')}）"
         if against is not None:
             row["against_option_id"] = options[against].get("id")
             row["against_option_label"] = str(options[against].get("label", options[against].get("id")))
             position += f"，反对「{row['against_option_label']}」（{row['against_option_id']}）"
         row["position"] = position
+    if proposal is None:
+        return {"proposal_id": None, "proposal_label": None, "proposal_basis": ""}
+    return {
+        "proposal_id": options[proposal].get("id"),
+        "proposal_label": str(options[proposal].get("label", options[proposal].get("id"))),
+        "proposal_basis": basis,
+    }
 
 
 def bloc_label(state: WorldState, bloc: str) -> str:
@@ -471,15 +592,18 @@ def persona_card(state: WorldState, character_id: str, scenario: dict[str, Any] 
     character = state.characters[character_id]
     card = character_card(scenario, character_id) if scenario else {}
     extra: dict[str, Any] = {}
+    title, former = current_title(state, character_id, scenario)
+    if former:
+        extra["former_title"] = former
     if card.get("greeting"):
-        extra["greeting"] = str(card["greeting"])
+        extra["greeting"] = refresh_greeting(str(card["greeting"]), state, character_id, scenario)
     if card.get("examples"):
         extra["examples"] = [str(item) for item in card["examples"]]
     return {
         **extra,
         "character": character.id,
         "name": character.name,
-        "title": character.title,
+        "title": title,
         "offices": [state.offices[office].name for office in held_offices(character) if office in state.offices],
         "bloc": character.bloc,
         "status": character.status,

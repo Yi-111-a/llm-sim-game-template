@@ -28,7 +28,10 @@ INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP serve
 1. list_scenarios → new_game(scenario, seed) 得到 session_id 与开局简报（或 list_saves → load_game 继续存档）。
 2. 每季先读 briefing(session_id)：目标、公开国势、危机计分项、本季奏疏（含选项与 ops 摘要）、待决事件、上季事实。
 3. 需要时 audience 召见人物（你按返回的人设卡与事实摘要扮演），court_debate 举行廷议（立场由引擎给定），save_advice 把有用谏言存入谏言库。
-4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，ops 直接给出 StateOp（格式见 op_reference）；看回执中每条 applied / rejected / delayed，再 confirm_edict。
+4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，ops 直接给出 StateOp（格式见 op_reference）；
+   看回执中每条 applied（本季即行）/ rejected / delayed（下季结算时执行），再 confirm_edict。
+   草案不确认不施行：本季有未确认草案时 end_turn 会以 DRAFT_UNCONFIRMED 拒绝（确要放弃则 discard_drafts: true）。
+   确认诏书或处置抉择后若出现「本季新出奏疏」，可在 end_turn 前继续拟诏处理。
 5. 用 choose 处置待决事件；然后 end_turn 结算本季，读取事实、战报、危机分项与终局。
 6. 终局后（outcome 非空）不能再推进；可用 history / rewind 回到更早的节点另开分支。
 数字只能引用简报与工具返回中给出的值；「风闻」数值只有区间。"""
@@ -59,8 +62,9 @@ DESCRIPTIONS: dict[str, str] = {
         "Audience with a character: returns a persona card and what they know (client mode) or their reply (server mode)."
     ),
     "court_debate": (
-        "廷议：topic 为议题，participants 为 1–6 个人物 id，memorial_id 可选（就某条本季奏疏廷议；给了它 topic 可留空）。"
-        "议题对应奏疏时用奏疏中的谏言立场，否则引擎按议题点名的人物/势力/官职/地区/军队与各人的亲疏、派系利益与忠诚给出立场"
+        "廷议：topic 为议题，participants 为 1–6 个人物 id，memorial_id 可选（就某条本季奏疏廷议；给了它 topic 可留空），"
+        "option_id 可选（指定「所议之案」：赞成即主此案、反对即主他案；不给时引擎按奏疏所请 / 谏言推定，推定不出则诸案并陈、不以首个选项为案）。"
+        "议题对应奏疏时用奏疏中的谏言立场（谏言人主张其谏言所指的选项），否则引擎按议题点名的人物/势力/官职/地区/军队与各人的亲疏、派系利益与忠诚给出立场"
         "（support/oppose/neutral），并列出 topic_entities；client 模式返回立场 + 人设，由你写台词；server 模式返回各人台词。"
         "廷议结论只能存为谏言，不直接改变状态。Court debate: engine-decided, topic-dependent stances; you (client mode) write the speeches."
     ),
@@ -68,18 +72,24 @@ DESCRIPTIONS: dict[str, str] = {
     "draft_edict": (
         "拟诏书草案（不改变状态）。sections 为 {类别: 诏令文本}（client 模式仅作记录，server 模式由模型解释）；"
         "adopted 为 [{memorial_id, option_id}] 采纳奏疏选项；ops 为 StateOp 列表（见 op_reference）。"
-        "回执逐条给出 applied / rejected（原因与错误码）/ delayed（下季执行），并给出 edict_id。"
+        "回执逐条给出 applied（本季即行：确认即生效）/ rejected（原因与错误码）/ delayed（下季结算时执行，第 n 回合），并给出 edict_id"
+        "（edict_id 只取 edict- 开头的编号本身）。草案须 confirm_edict 才施行。"
         "Draft an edict; returns a per-clause receipt and an edict_id for confirm_edict."
     ),
-    "confirm_edict": "确认诏书草案，使 applied 条款生效、delayed 条款排入下季，并记下已采纳的奏疏。Confirm a drafted edict by edict_id.",
-    "choose": "处置待决事件：choice_id 与 option_id 见 briefing 的「待决事件」。Resolve a pending event choice.",
+    "confirm_edict": (
+        "确认诏书草案，使 applied 条款本季即行、delayed 条款排入下季结算，并记下已采纳的奏疏；因此新出现的奏疏列在「本季新出奏疏」。"
+        "编号不存在时错误信息列出本季可确认的草案编号。Confirm a drafted edict by edict_id."
+    ),
+    "choose": "处置待决事件：choice_id 与 option_id 见 briefing 的「待决事件」；因此新出现的奏疏列在「本季新出奏疏」。Resolve a pending event choice.",
     "end_turn": (
         "结算本季并进入下一季：返回事实、账目汇总、战报、触发事件、新的待决事件、危机分项与终局（若有）。终局后再调用会报 GAME_OVER。"
-        "Resolve the season and return the TurnReport."
+        "本季有拟而未确认的诏书草案时拒绝（DRAFT_UNCONFIRMED，列出编号）；确要放弃这些草案，传 discard_drafts: true。"
+        "Resolve the season and return the TurnReport (refuses with DRAFT_UNCONFIRMED while drafts are unconfirmed unless discard_drafts)."
     ),
     "history": "存档时间线（含全部分支）：每个节点的 id、类型、回合、说明、父节点，标出当前所在。List the session timeline.",
     "export_log": (
-        "结构化复盘日志（只读）：按季列出采纳的奏疏选项、客户端 ops、拟诏与确认回执、延期条款、事件抉择、召对与廷议、"
+        "结构化复盘日志（只读）：按季列出采纳的奏疏选项、客户端 ops、拟诏与确认回执、延期条款、事件抉择、"
+        "召对与廷议（client 模式只记人物、方式、议题，不含台词）、"
         "end_turn 的事实 / 事件 / 对账（含经常收支明细）/ 危机计与本季危机变化拆分、终局。from_turn / to_turn 按下诏所在季筛选。"
         "隐藏数值只给风闻区间。Structured per-season log export (public view only)."
     ),
@@ -161,10 +171,13 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
             label = "" if mode["mode"] == "in_person" else f"（{mode['label']}）"
             return f"{card['persona']['name']}{label}：{reply['content']}"
         persona = card["persona"]
+        service.record_call(session_id, "audience", character=character, name=persona["name"], mode=mode["mode"], mode_label=mode["label"])
         return (
             f"# 召对方式：{mode['label']}——{mode['note']}\n"
             f"# 人设卡：{persona['name']}（{persona['character']}）\n"
-            f"官职：{'、'.join(persona['offices']) or '无'}；派系：{persona['bloc'] or '无'}；头衔：{persona['title'] or '无'}\n"
+            f"官职：{'、'.join(persona['offices']) or '无'}；派系：{persona['bloc'] or '无'}；头衔：{persona['title'] or '无'}"
+            + (f"（旧衔：{persona['former_title']}，已非现职）" if persona.get("former_title") else "")
+            + "\n"
             f"人物：{persona['persona']}\n言谈：{persona['speech_style']}\n所知：{'、'.join(persona['knowledge']) or '—'}\n"
             + (f"开场白：{persona['greeting']}\n" if persona.get("greeting") else "")
             + (f"示例台词：{' / '.join(persona['examples'])}\n" if persona.get("examples") else "")
@@ -174,9 +187,9 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         )
 
     @register
-    async def court_debate(session_id: str, participants: list[str], topic: str = "", memorial_id: str = "") -> str:
+    async def court_debate(session_id: str, participants: list[str], topic: str = "", memorial_id: str = "", option_id: str = "") -> str:
         if server_mode:
-            result = await service.debate(session_id, topic, participants, memorial_id or None)
+            result = await service.debate(session_id, topic, participants, memorial_id or None, option_id or None)
             lines = [f"# 廷议：{result['topic']}", *_debate_context(result)]
             lines.extend(
                 f"- {row['name']}（{row['stance']}{'；' + row['position'] if row.get('target_option_id') else ''}）：{row['text']}"
@@ -184,7 +197,15 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
             )
             lines.append(result["summary"])
             return "\n".join(lines)
-        brief = service.debate_brief(session_id, topic, participants, memorial_id or None)
+        brief = service.debate_brief(session_id, topic, participants, memorial_id or None, option_id or None)
+        service.record_call(
+            session_id,
+            "debate",
+            topic=brief["topic"],
+            memorial_id=(brief.get("memorial") or {}).get("id"),
+            option_id=(brief.get("proposal") or {}).get("id"),
+            participants=[row["character"] for row in brief["stances"]],
+        )
         lines = [f"# 廷议：{brief['topic']}", *_debate_context(brief), brief["instructions"], "", "## 立场（引擎给定，不可更改）"]
         for row in brief["stances"]:
             persona = row["persona"]
@@ -212,7 +233,10 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         ops: list[dict[str, Any]] | None = None,
     ) -> str:
         receipt = await service.draft_edict(session_id, sections or {}, adopted or [], ops or [], use_provider=server_mode)
-        lines = [f"诏书草案 edict_id={receipt['id']}（未生效；确认请调用 confirm_edict）"]
+        lines = [
+            f"诏书草案 edict_id={receipt['id']}",
+            f"（未生效：须调用 confirm_edict，edict_id 填 {receipt['id']}；未确认的草案会使 end_turn 被拒）",
+        ]
         lines.extend(_clause_lines(receipt["clauses"]))
         if not receipt["clauses"]:
             lines.append("（草案为空）")
@@ -228,17 +252,18 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         lines.extend(_clause_lines(receipt["clauses"]))
         if receipt.get("adopted"):
             lines.append("已处理奏疏：" + "、".join(f"{row['memorial_id']}→{row['option_id']}" for row in receipt["adopted"]))
+        lines.extend(_new_memorial_lines(receipt.get("new_memorials")))
         return "\n".join(lines)
 
     @register
     async def choose(session_id: str, choice_id: str, option_id: str) -> str:
         result = service.choose(session_id, choice_id, option_id)
         facts = "；".join(fact_line(fact) for fact in result["facts"])
-        return f"已处置 {choice_id} → {option_id}。{facts}"
+        return "\n".join([f"已处置 {choice_id} → {option_id}。{facts}", *_new_memorial_lines(result.get("new_memorials"))])
 
     @register
-    async def end_turn(session_id: str) -> str:
-        result = await service.end_turn(session_id, narrate=server_mode)
+    async def end_turn(session_id: str, discard_drafts: bool = False) -> str:
+        result = await service.end_turn(session_id, narrate=server_mode, discard_drafts=discard_drafts)
         return _turn_text(result, show_memorial=server_mode)
 
     @register
@@ -265,24 +290,41 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
 
 
 STATUS_TAGS = {
-    "applied": "applied 可执行",
+    "applied": "applied 本季即行",
     "rejected": "rejected 被拒",
-    "delayed": "delayed 下季执行",
+    "delayed": "delayed 下季结算时执行",
     "narrative_only": "narrative_only 仅记录",
 }
+
+
+def timing_text(clause: dict[str, Any]) -> str:
+    """条款何时生效：「本季即行」（确认即生效）/「下季结算时执行（第 n 回合）」（本季 end_turn 结算进入第 n 回合时执行）。"""
+    if clause.get("status") == "applied":
+        return "本季即行"
+    if clause.get("status") == "delayed":
+        due = clause.get("due_turn")
+        return f"下季结算时执行（第 {due} 回合）" if due is not None else "下季结算时执行"
+    return ""
+
+
+def _new_memorial_lines(rows: Any) -> list[str]:
+    if not rows:
+        return []
+    listing = "、".join(f"[{row['id']}] {row['title']}" for row in rows)
+    return [f"本季新出奏疏：{listing}（局势有变而出；可在 end_turn 前继续 draft_edict 采纳，详见 briefing）"]
 
 
 def _clause_lines(clauses: list[dict[str, Any]]) -> list[str]:
     lines = []
     for index, clause in enumerate(clauses, start=1):
         status = clause["status"]
-        tag = STATUS_TAGS.get(status, status)
+        tag = timing_text(clause) if status == "delayed" else STATUS_TAGS.get(status, status)
+        tag = f"{status} {tag}" if status == "delayed" else tag
         source = clause.get("source", "text")
         what = clause.get("summary") or clause.get("text") or ""
         reason = f"；原因：{clause.get('reason')}" if clause.get("reason") else ""
         if status == "delayed":
-            due = clause.get("due_turn")
-            reason += f"；延期原因：{clause.get('delay_reason') or '有司稽迟'}" + (f"；预计第{due}回合结算时执行" if due is not None else "")
+            reason += f"；延期原因：{clause.get('delay_reason') or '有司稽迟'}（确认后不即生效，本季 end_turn 结算时执行）"
         code = f" [{clause['code']}]" if clause.get("code") and status == "rejected" else ""
         changed = f"（草案时为 {clause.get('previous_status')}）" if clause.get("changed") else ""
         lines.append(f"{index}. [{tag}]{code} ({source}) {what}{reason}{changed}")
@@ -366,6 +408,8 @@ def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
         lines.append("## 提示：" + "；".join(dict.fromkeys(report["warnings"])))
     if show_memorial and result.get("memorial"):
         lines.append(f"## 纪事\n{result['memorial']}")
+    if result.get("discarded_drafts"):
+        lines.append("## 已放弃的草案（未施行）：" + "、".join(result["discarded_drafts"]))
     if result.get("final_notice"):
         lines.append(f"## 注意：{result['final_notice']['text']}")
     outcome = result.get("outcome")
