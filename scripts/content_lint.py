@@ -30,6 +30,9 @@ Warnings:
   W12 an event and a memorial option write the same flag, the event can fire no later than the memorial
       appears, and the event does not look at `memorial:<id>` -- the event may pre-empt the decision
       (memorials must precede the events they decide)
+  W13 turn codes ("T19", "至 T23") in player-facing text -- write the calendar date instead
+  W14 an option / choice changes an army by >= settings.troop_hint_min (default 2000) but its label / hint /
+      text does not give that number (5000 / 5,000 / 五千 / 0.5万 all count)
 
 The rules are deliberately conservative; scenario-specific checks (named historical events, faction
 politics) belong in the game's own lint, cf. tianbao's tools/content_lint.py.
@@ -143,6 +146,32 @@ def memory_rows(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         return [value]
     return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+
+TURN_CODE = re.compile(r"(?<![A-Za-z_\d])T\d{1,2}(?!\d)")
+CN_DIGITS = "零一二三四五六七八九"
+
+
+def troop_forms(amount: float) -> set[str]:
+    """How a troop number may be written: 5000 / 5,000 / 五千 / 0.5万; 15000 / 一万五千 / 1.5万; 20000 / 二万 / 两万."""
+    n = int(abs(amount))
+    forms = {str(n), f"{n:,}"}
+    if n % 1000 == 0 and n < 100000:
+        wan, qian = divmod(n // 1000, 10)
+        for two in ("二", "两"):
+            digits = CN_DIGITS[:2] + two + CN_DIGITS[3:]
+            forms.add((digits[wan] + "万" if wan else "") + (digits[qian] + "千" if qian else ""))
+        forms.add(f"{n / 10000:g}万")
+    return forms
+
+
+def troop_changes(value: Any, minimum: float) -> Iterator[tuple[str, float]]:
+    """(army, delta) for ops that change an army's strength by at least `minimum`: adjust_army, and the troops a detach takes."""
+    for op in ops_in(value):
+        if op.get("op") == "adjust_army" and isinstance(op.get("delta"), (int, float)) and abs(op["delta"]) >= minimum:
+            yield str(op.get("army")), float(op["delta"])
+        elif op.get("op") == "detach" and isinstance(op.get("strength"), (int, float)) and op["strength"] >= minimum:
+            yield str(op.get("army")), -float(op["strength"])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -514,6 +543,37 @@ class Linter:
             if not isinstance(region.get("courier_days"), int):
                 self.warn("W11", f"地区 {rid}", "未写 courier_days（引擎会按行程估算 3 / 15 / 40 / 70 日，显式写出更可控）")
 
+    # ---- W13 turn codes / W14 troop numbers -------------------------------------------------
+    def check_turn_codes(self) -> None:
+        texts = list(self.player_texts())
+        for objective in self.scenario.get("objectives") or []:
+            if isinstance(objective, dict):
+                for key in ("title", "detail"):
+                    if objective.get(key):
+                        texts.append((f"目标 {objective.get('id')}.{key}", str(objective[key]), None))
+        for where, text, _ in texts:
+            match = TURN_CODE.search(text)
+            if match:
+                self.warn("W13", where, f"玩家可见文字写了回合代号「{match.group(0)}」，应写成历法（某年某季）")
+
+    def check_troop_hints(self) -> None:
+        minimum = float(self.settings.get("troop_hint_min", 2000) or 2000)
+        for mid, item in self.memorials.items():
+            for option in item.get("options") or []:
+                if not isinstance(option, dict):
+                    continue
+                text = f"{option.get('label', '')}｜{option.get('hint', '')}"
+                for army, delta in troop_changes(option.get("ops"), minimum):
+                    if not any(form in text for form in troop_forms(delta)):
+                        self.warn("W14", f"奏疏 {mid}.{option.get('id')}", f"使 {army} 兵额变动 {delta:+g}，选项与提示未写这一数目")
+        for eid, event in self.events.items():
+            for choice in event.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                for army, delta in troop_changes(choice.get("effects"), minimum):
+                    if not any(form in str(choice.get("text", "")) for form in troop_forms(delta)):
+                        self.warn("W14", f"事件 {eid}.{choice.get('id')}", f"使 {army} 兵额变动 {delta:+g}，选项文字未写这一数目")
+
     def run(self) -> None:
         self.check_texts()
         self.check_memorials()
@@ -522,6 +582,8 @@ class Linter:
         self.check_cards()
         self.check_tutorial()
         self.check_courier()
+        self.check_turn_codes()
+        self.check_troop_hints()
 
 
 def resolve_pack(target: str) -> Path:

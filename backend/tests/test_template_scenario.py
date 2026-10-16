@@ -95,3 +95,25 @@ def test_template_plays_to_an_outcome_via_mcp_with_first_options(monkeypatch, tm
             assert not log.is_error and '"outcome"' in text_of(log)
 
     asyncio.run(run())
+
+
+def test_content_lint_flags_turn_codes_and_unstated_troop_changes() -> None:
+    # 《天宝》第 10 轮：结局写「至 T23」；「九曲出击」漏写陇右军 −5000（W13 / W14）
+    spec = importlib.util.spec_from_file_location("content_lint", ENGINE / "scripts" / "content_lint.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    data = module.load_pack(SCENARIOS / "_template")
+    memorial = data["memorials"][0]
+    army = next(iter(module.Linter(data).armies))
+    memorial["options"][0]["hint"] = "守至 T23 再议"
+    memorial["options"][0].setdefault("ops", []).append({"op": "adjust_army", "army": army, "delta": -5000})
+    linter = module.Linter(data)
+    linter.run()
+    codes = {line.split("]")[0].lstrip("[") for line in linter.warnings}
+    assert {"W13", "W14"} <= codes
+    memorial["options"][0]["hint"] = "守至新纪元三年冬再议；折兵五千"  # stating the number (in any common form) clears W14
+    linter = module.Linter(data)
+    linter.run()
+    assert not any(line.startswith("[W13]") or line.startswith("[W14]") for line in linter.warnings)
+    assert module.troop_forms(15000) >= {"15000", "15,000", "一万五千", "1.5万"} and "两万" in module.troop_forms(20000)
