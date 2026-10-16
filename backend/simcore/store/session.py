@@ -13,6 +13,7 @@ from typing import Any
 from simcore.domain.apply import apply, queue_delayed
 from simcore.domain.models import TurnReport, WorldState, clone, clone_data
 from simcore.domain.ops import parse_op
+from simcore.domain.rules import delay_phrase
 from simcore.domain.turn import resolve_turn
 
 
@@ -636,7 +637,7 @@ def _entry_label(entry: dict[str, Any]) -> str:
         suffix = f"·终局：{outcome.get('title')}" if isinstance(outcome, dict) else ""
         return f"推进至第{report.get('turn')}回合{suffix}"
     if kind == "pending":
-        return f"延期条款（第{payload.get('due_turn')}回合执行）"
+        return f"延期条款：{delay_phrase(payload.get('due_turn'))}"
     if kind == "edict":
         action = "拟诏" if payload.get("action") == "draft" else "确认诏书"
         return f"{action} {payload.get('edict_id', '')}"

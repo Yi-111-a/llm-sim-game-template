@@ -24,7 +24,7 @@ from simcore.domain.models import (
     clone,
 )
 from simcore.domain.ops import memory_ops, parse_op
-from simcore.domain.rules import coalesce_postings
+from simcore.domain.rules import coalesce_postings, turn_label
 from simcore.domain.visibility import format_number
 
 
@@ -73,7 +73,7 @@ def resolve_turn(
                 updated, facts = apply(op, updated, turn=target, inplace=True, source=label)
                 report.facts.extend(facts)
             except ValueError as exc:
-                report.warnings.append(f"延期条款未执行：{exc}")
+                report.warnings.append(f"延期条款未能执行（原延至第 {clause.due_turn} 回合结算时执行）：{exc}")
                 continue
             for memory in memories:
                 updated, facts = apply(memory, updated, turn=target, inplace=True)
@@ -422,7 +422,8 @@ def judge_outcome(state: WorldState, scenario_definition: dict[str, Any], turn: 
         if ending.get("conditions") in (None, {}, []):
             continue
         if matches(ending["conditions"], state, turn):
-            return _outcome(ending, turn, stamp(describe_satisfied(ending["conditions"], state, turn), turn), extension_hint(ending, scenario_definition))
+            satisfied_lines = stamp(describe_satisfied(ending["conditions"], state, turn), turn, state)
+            return _outcome(ending, turn, satisfied_lines, extension_hint(ending, scenario_definition))
     length = scenario_definition.get("game_length") or {}
     if not length or length.get("last_turn") is None:
         return None
@@ -432,10 +433,10 @@ def judge_outcome(state: WorldState, scenario_definition: dict[str, Any], turn: 
         last_turn = int(length.get("overtime_last_turn", last_turn))
     if turn < last_turn:
         return None
-    satisfied = [f"T{turn} 时已至终局时限 T{last_turn}，其他结局条件均未满足"]
+    satisfied = [f"{turn_label(state, turn)}已至终局时限，其他结局条件均未满足"]
     if last_turn != int(length["last_turn"]):
         flag = describe_satisfied({"kind": "flag", "key": overtime_flag, "value": True}, state, turn)
-        satisfied.insert(0, f"{flag[0] if flag else overtime_flag}，时限由 T{int(length['last_turn'])} 延至 T{last_turn}")
+        satisfied.insert(0, f"{flag[0] if flag else overtime_flag}，时限由 {turn_label(state, int(length['last_turn']))} 延至 {turn_label(state, last_turn)}")
     fallback = length.get("fallback_ending")
     ending = next((row for row in endings if row.get("id") == fallback), None)
     if ending is not None:
@@ -461,12 +462,15 @@ def final_season_notice(state: WorldState, scenario_definition: dict[str, Any]) 
         last_turn = int(length.get("overtime_last_turn", last_turn))
     if state.turn + 1 < last_turn:
         return None
-    text = f"下次结算即终局：本季（T{state.turn}）结算后即到 T{last_turn} 时限，此后不能再下诏、处置事件或推进回合；本季是最后的决策窗口。"
+    text = (
+        f"下次结算即终局：本季（{turn_label(state, state.turn, short=True)}）结算后即到终局时限 {turn_label(state, last_turn)}，"
+        "此后不能再下诏、处置事件或推进回合；本季是最后的决策窗口。"
+    )
     overtime_possible = bool(overtime_flag) and not overtime_on and length.get("overtime_last_turn") is not None
     if overtime_possible:
         labels = state.rules.get("flag_labels") or {}
         name = labels.get(str(overtime_flag), str(overtime_flag)) if isinstance(labels, dict) else str(overtime_flag)
-        text += f"（唯若结算之中「{name}」成立，时限延至 T{int(length['overtime_last_turn'])}。）"
+        text += f"（唯若结算之中「{name}」成立，时限延至 {turn_label(state, int(length['overtime_last_turn']))}。）"
     return {"next_is_final": True, "last_turn": last_turn, "overtime_possible": overtime_possible, "text": text}
 
 

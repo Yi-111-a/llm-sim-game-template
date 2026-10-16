@@ -617,6 +617,9 @@ def build_initial_state(data: dict[str, Any], difficulty: str | None = None) -> 
             start_season_index(data["scenario"]),
             fallback_year=start.year,
         )
+    if scenario.calendar.eras and start_season_index(data["scenario"]) is not None:
+        rules.setdefault("calendar_config", calendar_config)  # 供 turn_label 推算任意回合的历法标签
+        rules.setdefault("calendar_start_index", start_season_index(data["scenario"]))
     state = WorldState(
         scenario_id=scenario.id,
         turn=0,

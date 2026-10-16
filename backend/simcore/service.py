@@ -30,6 +30,7 @@ from simcore.domain.models import TurnReport, WorldState, clone
 from simcore.domain.reference import ReferenceError, build_reference
 from simcore.domain.rules import (
     audience_mode,
+    delay_phrase,
     entity_name,
     find_route,
     held_offices,
@@ -37,7 +38,8 @@ from simcore.domain.rules import (
     office_army,
     player_character_id,
     travel_note,
-    traveller_label,
+    turn_label,
+    turn_unit_label,
 )
 from simcore.domain.turn import GameOver, choice_option_id, final_season_notice, upkeep_label, upkeep_rows
 from simcore.domain.visibility import (
@@ -391,6 +393,7 @@ class GameService:
         chosen = chosen[: max(self.REVIEW_LIMIT, sum(1 for row in rows if row[0] >= 3))]
         return {
             "outcome": state.outcome.model_dump(mode="json"),
+            "outcome_when": turn_label(state, state.outcome.turn),
             "satisfied": list(state.outcome.satisfied),
             "objectives": self.objectives(session, state),
             "stats": stats,
@@ -434,17 +437,17 @@ class GameService:
                     choice = next((row for row in before.pending_choices if row.id == op.get("choice_id")), None)
                     option = next((row for row in choice.options if row.id == op.get("option_id")), None) if choice else None
                     if choice is not None:
-                        add(2, f"T{turn} {label}：抉择「{choice.title}」→ {option.text if option else op.get('option_id')}")
+                        add(2, f"{label}（第{turn}回合）：抉择「{choice.title}」→ {option.text if option else op.get('option_id')}")
                 elif name == "appoint" and office_army(before, str(op.get("office"))):
                     army = before.armies[str(office_army(before, str(op.get("office"))))]
-                    add(2, f"T{turn} {label}：{source}——{entity_name(before, op.get('character'))}任{entity_name(before, op.get('office'))}，统{army.name}")
+                    add(2, f"{label}（第{turn}回合）：{source}——{entity_name(before, op.get('character'))}任{entity_name(before, op.get('office'))}，统{army.name}")  # noqa: E501
                 elif name == "set_army_commander" and op.get("character") and before.armies.get(str(op.get("army"))) is not None:
                     if before.armies[str(op.get("army"))].commander != op.get("character"):
-                        add(2, f"T{turn} {label}：{source}——{entity_name(before, op.get('army'))}由{entity_name(before, op.get('character'))}统领")
+                        add(2, f"{label}（第{turn}回合）：{source}——{entity_name(before, op.get('army'))}由{entity_name(before, op.get('character'))}统领")
                 elif name == "detach":
                     strength = format_number(float(op.get("strength", 0) or 0))
-                    add(1, f"T{turn} {label}：{source}——{entity_name(before, op.get('army'))}分兵 {strength} 赴{entity_name(before, op.get('to_region'))}")
-                self._note_crossings(thresholds, before, after, turn, f"T{turn} {label}：{source}", crossings, order)
+                    add(1, f"{label}（第{turn}回合）：{source}——{entity_name(before, op.get('army'))}分兵 {strength} 赴{entity_name(before, op.get('to_region'))}")  # noqa: E501
+                self._note_crossings(thresholds, before, after, turn, f"{label}（第{turn}回合）：{source}", crossings, order)
             elif kind == "turn":
                 report = payload.get("report") or {}
                 snapshot_label = str((after.calendar.label if after else "") or f"第{report.get('turn')}回合")
@@ -462,29 +465,29 @@ class GameService:
                             flagged.add(str(fact.get("entity")))
                         pending_flags = []
                     elif fact_kind == "choice_default":
-                        add(2, f"T{at} {snapshot_label}：{fact.get('text')}", at)
+                        add(2, f"{snapshot_label}（第{at}回合）：{fact.get('text')}", at)
                     elif fact_kind in {"appointment", "army_commander"} and not fact.get("internal") and "统" in str(fact.get("text", "")):
-                        add(2, f"T{at} {snapshot_label}：{fact.get('text')}", at)
+                        add(2, f"{snapshot_label}（第{at}回合）：{fact.get('text')}", at)
                     elif fact_kind == "arrival":
                         who = str(fact.get("entity"))
                         commands = [row.name for row in after.armies.values() if row.commander == who and row.region == fact.get("after")]
                         if who in after.characters and commands:
-                            add(2, f"T{at} {snapshot_label}：{fact.get('text')}，到军统{'、'.join(commands)}", at)
+                            add(2, f"{snapshot_label}（第{at}回合）：{fact.get('text')}，到军统{'、'.join(commands)}", at)
                 for event in report.get("events", []) or []:
                     if event.get("internal"):
                         continue
                     if event.get("outcome"):
-                        add(3, f"T{at} {snapshot_label}：终局「{event.get('title')}」", at)
+                        add(3, f"{snapshot_label}（第{at}回合）：终局「{event.get('title')}」", at)
                         continue
                     importance = int(event.get("importance", 0) or 0)
                     if final_turn or str(event.get("id")) in flagged:
                         priority = 3
                     else:
                         priority = 2 if importance >= 2 else importance
-                    add(priority, f"T{at} {snapshot_label}：{event.get('title')}", at)
+                    add(priority, f"{snapshot_label}（第{at}回合）：{event.get('title')}", at)
                 for battle in report.get("battles", []) or []:
-                    add(2, f"T{at} {snapshot_label}：{battle.get('region_name', '')}之战，{battle_text(battle, state)}", at)
-                self._note_crossings(thresholds, before, after, at, f"T{at} {snapshot_label}", crossings, order, report)
+                    add(2, f"{snapshot_label}（第{at}回合）：{battle.get('region_name', '')}之战，{battle_text(battle, state)}", at)
+                self._note_crossings(thresholds, before, after, at, f"{snapshot_label}（第{at}回合）", crossings, order, report)
                 turn, label = after.turn, after.calendar.label
             before = after
         for priority, at, text in crossings.values():
@@ -611,7 +614,7 @@ class GameService:
         if found is None:
             return ""
         eta = state.turn + max(1, found[1])
-        return f"（预计第 {eta} 回合抵达，晚于终局时限 T{last_turn}，本局内到不了）" if eta > last_turn else ""
+        return f"（预计{turn_label(state, eta)}抵达，晚于终局时限 {turn_label(state, last_turn)}，本局内到不了）" if eta > last_turn else ""
 
     def abort(self, session_id: str) -> dict[str, bool]:
         self.session(session_id)
@@ -1154,15 +1157,10 @@ class GameService:
                 lines.append("提醒：" + "；".join(table["alerts"]))
         if view.get("review"):
             lines.extend(self._review_lines(view["review"]))
-        travellers = self._traveller_lines(state)
-        if travellers:
-            lines.append("\n## 在途")
-            lines.extend(f"- {line}" for line in travellers)
-        if state.pending_clauses and state.outcome is None:
-            lines.append("\n## 待执行的延期条款")
-            for clause in state.pending_clauses:
-                summary = "；".join(summarize_ops(clause.ops, state))
-                lines.append(f"- {clause.label or '延期诏令'}：{summary}（第{clause.due_turn}回合结算时执行）")
+        waits = self._pending_waits(state)
+        if waits:
+            lines.append("\n## 待办与在途（引擎已知的排期：延期条款、在途人军、工程、常设令、账目、待决事件期限）")
+            lines.extend(f"- {line}" for line in waits)
         if view["memorials"]:
             lines.append("\n## 本季奏疏（可在 draft_edict 的 adopted 中采纳：{memorial_id, option_id}）")
             for item in view["memorials"]:
@@ -1212,7 +1210,7 @@ class GameService:
         outcome = review["outcome"]
         lines = [
             "\n## 终局复盘",
-            f"结局：{outcome['title']}（{'失败' if outcome['kind'] == 'fail' else '结局'}，T{outcome['turn']}）；共历 {review['turns_played']} 回合。",
+            f"结局：{outcome['title']}（{'失败' if outcome['kind'] == 'fail' else '结局'}，{review['outcome_when']}）；共历 {review['turns_played']} 回合。",
         ]
         if review["satisfied"]:
             lines.append("判定条件：" + "；".join(f"「{line}」" for line in review["satisfied"]))
@@ -1230,14 +1228,39 @@ class GameService:
 
     @staticmethod
     def _traveller_lines(state: WorldState) -> list[str]:
-        """在途的人物与本方军队：「某某（自A赴B，约n季后到）」。"""
+        """在途的人物与本方军队：「某某（自A赴B，约n季后到；预计某年某季（第n回合）抵达）」。"""
         own = mover_faction(state, None)
-        rows = [traveller_label(state, row) for row in state.characters.values() if row.in_transit and row.status == "alive"]
-        rows.extend(
-            traveller_label(state, row)
-            for row in state.armies.values()
-            if row.in_transit and (own is None or row.faction == own) and row.strength > 0
-        )
+        movers: list[Any] = [row for row in state.characters.values() if row.in_transit and row.status == "alive"]
+        movers.extend(row for row in state.armies.values() if row.in_transit and (own is None or row.faction == own) and row.strength > 0)
+        rows = []
+        for row in movers:
+            eta = row.in_transit.get("eta_turn") if row.in_transit else None
+            when = f"；预计{turn_label(state, eta)}抵达" if eta is not None else ""
+            rows.append(f"{row.name}（{travel_note(state, row)}{when}）")
+        return rows
+
+    @staticmethod
+    def _pending_waits(state: WorldState) -> list[str]:
+        """简报「待办与在途」：引擎已知、将在某回合发生的事，每条带到期回合。"""
+        if state.outcome is not None:
+            return []
+        rows: list[str] = []
+        for clause in state.pending_clauses:
+            summary = "；".join(summarize_ops(clause.ops, state))
+            rows.append(f"延期条款「{clause.label or '延期诏令'}」：{summary}——{delay_phrase(clause.due_turn)}")
+        rows.extend(f"在途：{line}" for line in GameService._traveller_lines(state))
+        for project in state.projects:
+            left = max(1, project.turns - project.progress)
+            eta = "资金不足已停工，竣工时间待定" if project.stalled else f"预计{turn_label(state, state.turn + left)}竣工"
+            rows.append(f"工程「{project.name}」：进度 {project.progress}/{project.turns}，{eta}")
+        for order in state.standing_orders:
+            if order.until_turn is not None:
+                rows.append(f"常设令「{order.text}」：有效至{turn_label(state, order.until_turn)}")
+        for entry in state.ledger:
+            if entry.kind == "recurring" and entry.turns is not None:
+                rows.append(f"经常账目「{entry.name}」：尚余 {entry.turns} {turn_unit_label(state)}，期满自动终止")
+        for choice in state.pending_choices:
+            rows.append(f"待决事件「{choice.title}」：{turn_label(state, choice.deadline_turn)}结算前未决则依默认处置")
         return rows
 
     def op_reference(

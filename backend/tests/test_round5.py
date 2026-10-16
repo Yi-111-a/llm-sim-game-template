@@ -268,7 +268,7 @@ def test_final_season_notice_and_overtime_caveat(mech_env, mech_scenario) -> Non
     assert final_season_notice(state, definition) is None
     state.turn = 7
     notice = final_season_notice(state, definition)
-    assert notice["next_is_final"] and notice["last_turn"] == 8 and "下次结算即终局" in notice["text"] and "延至 T10" in notice["text"]
+    assert notice["next_is_final"] and notice["last_turn"] == 8 and "下次结算即终局" in notice["text"] and "延至 至德二年秋（第10回合）" in notice["text"]
     state.flags["uprising"] = True
     assert final_season_notice(state, definition) is None  # 加时：时限延至 T10
     state.turn = 9

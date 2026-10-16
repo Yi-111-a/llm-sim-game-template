@@ -347,7 +347,7 @@ def test_condition_rendering_in_chinese(mech_scenario) -> None:
     assert describe_condition({"not": {"kind": "flag", "key": "uprising", "value": True}}, state) == "「范阳起兵」未成"
     either = {"any": [{"kind": "flag", "key": "uprising"}, {"kind": "resource", "id": "risk", "operator": "lt", "value": 60}]}
     lines = describe_satisfied({"all": [{"kind": "turn", "operator": "gte", "value": 0}, either]}, state, 0)
-    assert lines == ["回合 ≥ T0", "危机 < 60"]
+    assert lines[1:] == ["危机 < 60"] and lines[0].startswith("时间 ≥ ") and "T0" not in lines[0]
 
 
 def test_outcome_lists_conditions_and_review_replaces_memorials(mech_env) -> None:
@@ -355,13 +355,13 @@ def test_outcome_lists_conditions_and_review_replaces_memorials(mech_env) -> Non
     session_id, session = service.create_session("mech_test", 1)
     session.append_op({"op": "set_region_controller", "region": "capital", "faction": "rebels"})
     result = asyncio.run(service.end_turn(session_id, narrate=False))
-    assert result["outcome"]["satisfied"] == ["T1 时京畿归叛军"]
-    assert "判定条件：「T1 时京畿归叛军」" in _turn_text(result, show_memorial=False)
+    assert result["outcome"]["satisfied"] == ["天宝十载夏时京畿归叛军"]
+    assert "判定条件：「天宝十载夏时京畿归叛军」" in _turn_text(result, show_memorial=False)
     view = service.view(session_id)
     assert view["memorials"] == [] and view["pending_choices"] == []
     review = view["review"]
-    assert review["satisfied"] == ["T1 时京畿归叛军"] and review["objectives"] and review["stats"]
-    assert all(line.startswith("T") for line in review["highlights"])
+    assert review["satisfied"] == ["天宝十载夏时京畿归叛军"] and review["objectives"] and review["stats"]
+    assert all("（第" in line.split("：")[0] and not re.search(r"T\d", line) for line in review["highlights"])
     briefing = service.briefing(session_id)
     assert "## 终局复盘" in briefing and "## 本季奏疏" not in briefing and "## 待决事件" not in briefing
 
@@ -371,7 +371,7 @@ def test_time_up_outcome_explains_deadline(mech_scenario) -> None:
 
     state = build_initial_state(mech_scenario)
     outcome = judge_outcome(state, mech_scenario["scenario"], 8)
-    assert outcome is not None and outcome.id == "open_storm" and "终局时限 T8" in outcome.satisfied[0]
+    assert outcome is not None and outcome.id == "open_storm" and "第8回合" in outcome.satisfied[0] and "T8" not in outcome.satisfied[0]
 
 
 # ---- 离线文本润色 --------------------------------------------------------------------------------------

@@ -10,7 +10,8 @@ from typing import Any
 
 from simcore.domain.events import matches
 from simcore.domain.models import WorldState
-from simcore.domain.rules import STATUS_NAMES, entity_name, stat_name, trait_name
+from simcore.domain.rules import STATUS_NAMES, entity_name, stat_name, trait_name, turn_label
+from simcore.domain.visibility import format_number
 
 SYMBOLS = {"eq": "=", "gt": ">", "gte": "≥", "lt": "<", "lte": "≤"}
 NEGATED = {"eq": "ne", "gt": "lte", "gte": "lt", "lt": "gte", "lte": "gt"}
@@ -27,6 +28,8 @@ def _number(value: Any) -> str:
         number = float(value)
     except (TypeError, ValueError):
         return str(value)
+    if abs(number) >= 100000:
+        return format_number(number)  # 十万以上写作「54.79万」
     return str(int(number)) if number == int(number) else f"{number:g}"
 
 
@@ -68,7 +71,7 @@ def _leaf(condition: dict[str, Any], state: WorldState, negate: bool) -> str:
     if kind == "resource":
         return f"{entity_name(state, condition.get('id'))} {_symbol(operator, negate)} {_number(value)}"
     if kind == "turn":
-        return f"回合 {_symbol(operator, negate)} T{_number(value)}"
+        return f"时间 {_symbol(operator, negate)} {turn_label(state, value)}"
     if kind == "flag":
         label = _label(state, "flag_labels", str(condition.get("key")))
         expected = condition.get("value", True)
@@ -141,6 +144,7 @@ def describe_satisfied(condition: Any, state: WorldState, turn: int) -> list[str
     return [describe_condition(condition, state)]
 
 
-def stamp(lines: list[str], turn: int) -> list[str]:
-    """「T20 时…」。"""
-    return [f"T{turn} 时{line}" for line in lines]
+def stamp(lines: list[str], turn: int, state: WorldState | None = None) -> list[str]:
+    """「天宝十四载冬时…」（无历法可推时为「第20回合时…」）。"""
+    when = turn_label(state, turn, short=True) if state is not None else f"第{turn}回合"
+    return [f"{when}时{line}" for line in lines]

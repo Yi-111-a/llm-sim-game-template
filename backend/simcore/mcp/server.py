@@ -19,6 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from simcore.agent.debate import ENTITY_KIND_LABELS
 from simcore.domain.apply import OpRejected
+from simcore.domain.rules import delay_phrase
 from simcore.domain.visibility import battle_text, fact_line, format_number
 from simcore.service import ENGINE_VERSION, ROLEPLAY_RULES, GameError, GameService
 
@@ -29,7 +30,7 @@ INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP serve
 2. 每季先读 briefing(session_id)：目标、公开国势、危机计分项、本季奏疏（含选项与 ops 摘要）、待决事件、上季事实。
 3. 需要时 audience 召见人物（你按返回的人设卡与事实摘要扮演），court_debate 举行廷议（立场由引擎给定），save_advice 把有用谏言存入谏言库。
 4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，ops 直接给出 StateOp（格式见 op_reference）；
-   看回执中每条 applied（本季即行）/ rejected / delayed（下季结算时执行），再 confirm_edict。
+   看回执中每条 applied（可行：确认后本季即行）/ rejected / delayed（确认后延至下季结算时执行），再 confirm_edict。
    草案不确认不施行：本季有未确认草案时 end_turn 会以 DRAFT_UNCONFIRMED 拒绝（确要放弃则 discard_drafts: true）。
    确认诏书或处置抉择后若出现「本季新出奏疏」，可在 end_turn 前继续拟诏处理。
 5. 用 choose 处置待决事件；然后 end_turn 结算本季，读取事实、战报、危机分项与终局。
@@ -72,12 +73,14 @@ DESCRIPTIONS: dict[str, str] = {
     "draft_edict": (
         "拟诏书草案（不改变状态）。sections 为 {类别: 诏令文本}（client 模式仅作记录，server 模式由模型解释）；"
         "adopted 为 [{memorial_id, option_id}] 采纳奏疏选项；ops 为 StateOp 列表（见 op_reference）。"
-        "回执逐条给出 applied（本季即行：确认即生效）/ rejected（原因与错误码）/ delayed（下季结算时执行，第 n 回合），并给出 edict_id"
+        "回执逐条给出 applied（可行：确认后本季即行；确认后记「已行」）/ rejected（原因与错误码）"
+        "/ delayed（确认后延至下季结算时执行（第 n 回合）；确认后记「已延至…」），并给出 edict_id"
         "（edict_id 只取 edict- 开头的编号本身）。草案须 confirm_edict 才施行。"
         "Draft an edict; returns a per-clause receipt and an edict_id for confirm_edict."
     ),
     "confirm_edict": (
-        "确认诏书草案，使 applied 条款本季即行、delayed 条款排入下季结算，并记下已采纳的奏疏；因此新出现的奏疏列在「本季新出奏疏」。"
+        "确认诏书草案，使 applied 条款本季即行（回执记「已行」）、delayed 条款排入下季结算（回执记「已延至下季结算时执行（第 n 回合）」），"
+        "并记下已采纳的奏疏；因此新出现的奏疏列在「本季新出奏疏」。"
         "编号不存在时错误信息列出本季可确认的草案编号。Confirm a drafted edict by edict_id."
     ),
     "choose": "处置待决事件：choice_id 与 option_id 见 briefing 的「待决事件」；因此新出现的奏疏列在「本季新出奏疏」。Resolve a pending event choice.",
@@ -237,7 +240,7 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
             f"诏书草案 edict_id={receipt['id']}",
             f"（未生效：须调用 confirm_edict，edict_id 填 {receipt['id']}；未确认的草案会使 end_turn 被拒）",
         ]
-        lines.extend(_clause_lines(receipt["clauses"]))
+        lines.extend(_clause_lines(receipt["clauses"], confirmed=False))
         if not receipt["clauses"]:
             lines.append("（草案为空）")
         return "\n".join(lines)
@@ -249,7 +252,7 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
         if receipt.get("changed_clauses"):
             numbers = "、".join(str(index) for index in receipt["changed_clauses"])
             lines.append(f"注意：拟诏之后局势有变，已按当前状态重新校验；第 {numbers} 条的结果与草案不同（见下）。")
-        lines.extend(_clause_lines(receipt["clauses"]))
+        lines.extend(_clause_lines(receipt["clauses"], confirmed=True))
         if receipt.get("adopted"):
             lines.append("已处理奏疏：" + "、".join(f"{row['memorial_id']}→{row['option_id']}" for row in receipt["adopted"]))
         lines.extend(_new_memorial_lines(receipt.get("new_memorials")))
@@ -289,22 +292,21 @@ def build_server(service: GameService | None = None, mode: str | None = None) ->
     return server
 
 
+def timing_text(clause: dict[str, Any], confirmed: bool = False) -> str:
+    """条款何时生效。草案（未确认）：「可行（确认后本季即行）」/「确认后延至下季结算时执行（第 n 回合）」；
+    确认后：「已行」/「已延至下季结算时执行（第 n 回合）」。"""
+    status = clause.get("status")
+    if status == "applied":
+        return "已行" if confirmed else "可行（确认后本季即行）"
+    if status == "delayed":
+        return ("已" if confirmed else "确认后") + delay_phrase(clause.get("due_turn"))
+    return ""
+
+
 STATUS_TAGS = {
-    "applied": "applied 本季即行",
     "rejected": "rejected 被拒",
-    "delayed": "delayed 下季结算时执行",
     "narrative_only": "narrative_only 仅记录",
 }
-
-
-def timing_text(clause: dict[str, Any]) -> str:
-    """条款何时生效：「本季即行」（确认即生效）/「下季结算时执行（第 n 回合）」（本季 end_turn 结算进入第 n 回合时执行）。"""
-    if clause.get("status") == "applied":
-        return "本季即行"
-    if clause.get("status") == "delayed":
-        due = clause.get("due_turn")
-        return f"下季结算时执行（第 {due} 回合）" if due is not None else "下季结算时执行"
-    return ""
 
 
 def _new_memorial_lines(rows: Any) -> list[str]:
@@ -314,17 +316,16 @@ def _new_memorial_lines(rows: Any) -> list[str]:
     return [f"本季新出奏疏：{listing}（局势有变而出；可在 end_turn 前继续 draft_edict 采纳，详见 briefing）"]
 
 
-def _clause_lines(clauses: list[dict[str, Any]]) -> list[str]:
+def _clause_lines(clauses: list[dict[str, Any]], confirmed: bool = False) -> list[str]:
     lines = []
     for index, clause in enumerate(clauses, start=1):
         status = clause["status"]
-        tag = timing_text(clause) if status == "delayed" else STATUS_TAGS.get(status, status)
-        tag = f"{status} {tag}" if status == "delayed" else tag
+        tag = f"{status} {timing_text(clause, confirmed)}" if status in {"applied", "delayed"} else STATUS_TAGS.get(status, status)
         source = clause.get("source", "text")
         what = clause.get("summary") or clause.get("text") or ""
         reason = f"；原因：{clause.get('reason')}" if clause.get("reason") else ""
         if status == "delayed":
-            reason += f"；延期原因：{clause.get('delay_reason') or '有司稽迟'}（确认后不即生效，本季 end_turn 结算时执行）"
+            reason += f"；延期原因：{clause.get('delay_reason') or '有司稽迟'}"
         code = f" [{clause['code']}]" if clause.get("code") and status == "rejected" else ""
         changed = f"（草案时为 {clause.get('previous_status')}）" if clause.get("changed") else ""
         lines.append(f"{index}. [{tag}]{code} ({source}) {what}{reason}{changed}")

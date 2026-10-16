@@ -2,6 +2,7 @@ import heapq
 from dataclasses import dataclass
 from typing import Any
 
+from simcore.domain.calendar import format_calendar
 from simcore.domain.events import matches
 from simcore.domain.models import Character, WorldState
 from simcore.domain.ops import StateOp, describe_op_error, parse_op
@@ -126,6 +127,34 @@ def turn_unit_label(state: WorldState) -> str:
     if label:
         return str(label)
     return TURN_UNIT_LABELS.get(str(state.rules.get("turn_unit", "")), "回合")
+
+
+def turn_label(state: WorldState, turn: Any, short: bool = False) -> str:
+    """玩家可见的回合标签：「天宝十四载冬（第19回合）」；short 只给历法（「天宝十四载冬」）。
+
+    历法由 rules.calendar_config / calendar_start_index（开局写入）推算；推算不了（无年号、非按季计时、旧存档）时退回「第19回合」。
+    """
+    number = int(float(turn))
+    base = ""
+    if number == state.turn and state.calendar.label:
+        base = state.calendar.label
+    else:
+        config = state.rules.get("calendar_config")
+        index = state.rules.get("calendar_start_index")
+        if isinstance(config, dict) and config.get("eras") and isinstance(index, int):
+            seasons = config.get("seasons") or ["春", "夏", "秋", "冬"]
+            try:
+                base = format_calendar(number, seasons[(index + number) % len(seasons)], config, index)
+            except (KeyError, ValueError, IndexError):
+                base = ""
+    if not base:
+        return f"第{number}回合"
+    return base if short else f"{base}（第{number}回合）"
+
+
+def delay_phrase(due_turn: Any = None) -> str:
+    """延期条款的统一说法：「延至下季结算时执行（第 n 回合）」（回执、事实、简报、复盘日志都用它）。"""
+    return f"延至下季结算时执行（第 {due_turn} 回合）" if due_turn is not None else "延至下季结算时执行"
 
 
 def mover_faction(state: WorldState, faction: str | None) -> str | None:

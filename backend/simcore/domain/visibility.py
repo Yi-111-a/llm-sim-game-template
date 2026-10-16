@@ -511,7 +511,11 @@ def format_number(value: float | int, signed: bool = False) -> str:
     rounded = round(float(value), 1)
     if rounded == 0:
         rounded = 0.0  # 避免 -0
-    text = str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}"
+    if abs(rounded) >= 100000:  # 十万以上用「万」，如 547900 → 54.79万（玩家文本不出现六位以上的裸数）
+        wan = f"{abs(rounded) / 10000:.2f}".rstrip("0").rstrip(".")
+        text = f"{'-' if rounded < 0 else ''}{wan}万"
+    else:
+        text = str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}"
     return f"+{text}" if signed and rounded > 0 else text
 
 

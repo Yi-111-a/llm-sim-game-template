@@ -17,7 +17,7 @@ from simcore.domain.apply import OpRejected, apply
 from simcore.domain.digest import render_digest
 from simcore.domain.memorials import adopted_ops, summarize_ops
 from simcore.domain.turn import resolve_turn
-from simcore.mcp.server import _clause_lines, build_server
+from simcore.mcp.server import build_server
 from simcore.scenario.loader import build_initial_state, load_scenario, validate_scenario
 from simcore.service import GameError, GameService
 
@@ -282,7 +282,7 @@ def test_confirm_and_choose_report_newly_unlocked_memorials(mech_env) -> None:
             return draft.content[0].text + "\n" + done.content[0].text
 
     text = asyncio.run(run())
-    assert "[applied 本季即行] (memorial)" in text and "本季新出奏疏：[m_aftermath] 善后" in text
+    assert "[applied 可行（确认后本季即行）] (memorial)" in text and "[applied 已行] (memorial)" in text and "本季新出奏疏：[m_aftermath] 善后" in text
 
 
 # ---- 6. 分兵 detach 与调兵摘要 ------------------------------------------------------------------------------
@@ -408,7 +408,7 @@ def test_final_review_keeps_decisive_events(mech_env) -> None:
     assert receipt["clauses"][0]["status"] == "applied"
     assert "关军由高内侍统领" in text and "高内侍抵达雄关，到军统关军" in text
     assert review["omitted"] > 0 and len(review["highlights"]) <= GameService.REVIEW_LIMIT
-    assert all(line.startswith("T") for line in review["highlights"])
+    assert all("（第" in line.split("：")[0] and not re.search(r"T\d", line) for line in review["highlights"])
     assert "另有" in service.briefing(session_id)
 
 
@@ -453,17 +453,6 @@ def test_export_log_records_client_audience_and_debate(mech_env) -> None:
     assert "speeches" not in debate and "text" not in debate
 
 
-def test_receipt_timing_labels_distinguish_now_and_next_settlement() -> None:
-    lines = _clause_lines(
-        [
-            {"status": "applied", "source": "client", "summary": "禁军 移驻 雄关"},
-            {"status": "delayed", "source": "memorial", "summary": "国库 −50", "due_turn": 3, "delay_reason": "有司稽迟"},
-        ]
-    )
-    assert lines[0].startswith("1. [applied 本季即行]")
-    assert lines[1].startswith("2. [delayed 下季结算时执行（第 3 回合）]") and "本季 end_turn 结算时执行" in lines[1]
-
-
 def test_moves_arriving_after_the_time_limit_are_flagged(mech_env) -> None:
     service = GameService()
     session_id, _ = service.create_session("mech_test", 1)
@@ -473,7 +462,7 @@ def test_moves_arriving_after_the_time_limit_are_flagged(mech_env) -> None:
     receipt = _draft(
         service, session_id, ops=[{"op": "move_army", "army": "guard", "to_region": "north"}, {"op": "move_army", "army": "pass_army", "to_region": "capital"}]
     )
-    assert "（预计第 9 回合抵达，晚于终局时限 T8，本局内到不了）" in receipt["clauses"][0]["summary"]
+    assert "（预计至德二年夏（第9回合）抵达，晚于终局时限 至德二年春（第8回合），本局内到不了）" in receipt["clauses"][0]["summary"]
     assert "晚于终局时限" not in receipt["clauses"][1]["summary"]
     assert session.head_state().turn == 6
 

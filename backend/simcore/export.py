@@ -5,7 +5,7 @@
 - client_ops：客户端 / 诏令文本条款的 op 与回执结果（玩家自拟，原样给出）；
 - drafts / confirms：拟诏回执（旁路文件 <session>.receipts.jsonl）与确认回执（日志中的 edict 条目）：逐条 status、source、
   摘要、错误码、延期原因与执行回合；
-- delayed：排入下季的延期条款（摘要、执行回合、来源）；
+- delayed：排入下季的延期条款（摘要、执行回合、timing「延至下季结算时执行（第 n 回合）」、来源）；
 - choices：事件抉择 {choice_id, option_id, title, option}；
 - audiences / debates / advice：召对（人物与方式）、廷议议题、谏言；client 模式的召对 / 廷议另有轻量记录（旁路文件
   <session>.calls.jsonl：人物、方式、议题、参与者、回合，via: "client"，不含台词）；
@@ -20,6 +20,7 @@ from typing import Any
 
 from simcore.domain.memorials import memorial_item, summarize_ops
 from simcore.domain.models import WorldState
+from simcore.domain.rules import delay_phrase
 from simcore.domain.visibility import fact_line, public_report, resource_display
 
 CLAUSE_KEYS = ("status", "source", "summary", "text", "code", "reason", "delay_reason", "due_turn", "memorial_id", "option_id", "changed", "previous_status")
@@ -31,6 +32,8 @@ def compact_clauses(clauses: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for index, clause in enumerate(clauses, start=1):
         row: dict[str, Any] = {"index": index}
         row.update({key: clause[key] for key in CLAUSE_KEYS if clause.get(key) not in (None, "", False)})
+        if clause.get("status") == "delayed":
+            row["timing"] = delay_phrase(clause.get("due_turn"))
         if clause.get("source") in {"client", "text"} and clause.get("op"):
             row["op"] = clause["op"]
         rows.append(row)
@@ -98,6 +101,7 @@ def build_export(
             current["delayed"].append({
                 "label": payload.get("label") or "延期诏令",
                 "due_turn": payload.get("due_turn"),
+                "timing": delay_phrase(payload.get("due_turn")),
                 "summary": summarize_ops(payload.get("ops") or [], state),
             })
         elif kind == "edict":
