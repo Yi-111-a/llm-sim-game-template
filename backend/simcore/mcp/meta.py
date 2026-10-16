@@ -75,7 +75,8 @@ DESCRIPTIONS: dict[str, str] = {
         "Draft an edict; returns a per-clause receipt and an edict_id for confirm_edict."
     ),
     "confirm_edict": (
-        "确认诏书草案，使 applied 条款本季即行（回执记「已行」）、delayed 条款排入下季结算（回执记「已延至本季末结算时执行（进入第 n 回合时生效）」），"
+        "确认诏书草案，使 applied 条款本季即行（回执记「已行」）、delayed 条款排入本次 end_turn 的结算"
+        "（回执记「已延至本季末结算时执行（进入第 n 回合时生效）」），"
         "并记下已采纳的奏疏；因此新出现的奏疏列在「本季新出奏疏」。"
         "编号不存在时错误信息列出本季可确认的草案编号。Confirm a drafted edict by edict_id."
     ),

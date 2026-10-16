@@ -94,6 +94,8 @@ async def interpret_edict(
 
     delay = delay_explanation(execution, state)
 
+    prior = {"state": state}  # 本组之前各组条款施行后的状态（风险预览用）
+
     def add_clauses(receipt: list[dict[str, Any]], base: dict[str, Any]) -> None:
         """一组条款（一个奏疏选项 / 一条客户端 op / 一段诏令文本）只掷一次延期骰，组内 ops 同进同退。"""
         nonlocal group_counter
@@ -114,7 +116,8 @@ async def interpret_edict(
                 "code": item.get("code"),
             }
             if status == "applied" and isinstance(item.get("op"), dict):
-                risk = autonomy_preview(state, item["op"])
+                # 按本诏书前序各组条款施行后的状态评估（同一诏书先易帅、后下军令时，风险按新帅计）
+                risk = autonomy_preview(prior["state"], item["op"])
                 if risk is not None:
                     row.update({"autonomy_risk": risk["level"], "autonomy_note": risk["text"]})
             if status == "applied" and far is not None:
@@ -127,6 +130,7 @@ async def interpret_edict(
             elif status == "applied" and delayed:
                 row.update({"status": "delayed", "delay_kind": "bureaucratic", "delay_reason": delay["reason"], "due_turn": state.turn + 1})
             clauses.append(row)
+        prior["state"] = tools.state
 
     memorial_items = {str(row.get("id")): row for row in scenario.get("memorials") or [] if isinstance(row, dict)}
     for choice in adopted or []:

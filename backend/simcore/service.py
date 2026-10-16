@@ -843,10 +843,11 @@ class GameService:
         clauses: list[dict[str, Any]] = receipt["clauses"]
         # 将领自主：有统帅之军的军令按种子随机判定拒命或擅动，命中者改为下季结算时执行（见 domain.military）
         autonomy: list[dict[str, Any]] = []
+        working = state  # 逐条施行前序可行条款后的状态：同一诏书先易帅、后下军令时按新帅判定
         for clause in clauses:
             op = clause.get("op")
             if clause["status"] in {"applied", "delayed"} and isinstance(op, dict) and op.get("op") in MILITARY_ORDERS:
-                roll = roll_autonomy(state, op, session.seed)
+                roll = roll_autonomy(working, op, session.seed)
                 if roll is not None:
                     clause.update({
                         "status": "delayed",
@@ -856,6 +857,11 @@ class GameService:
                         "autonomy": roll["result"],
                     })
                     autonomy.append(roll)
+            if clause["status"] == "applied" and isinstance(op, dict) and op:
+                try:
+                    working, _ = apply(op, working)
+                except ValueError:
+                    pass
         if autonomy:
             cascade_delays(state, clauses)  # 军令被将领延宕后，倚赖它的条款随之延期
         runnable = [clause for clause in clauses if clause["status"] == "applied" and clause.get("op")]

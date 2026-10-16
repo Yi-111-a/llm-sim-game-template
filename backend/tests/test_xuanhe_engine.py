@@ -452,3 +452,21 @@ def test_relations_line_skips_states_without_land_or_army(mech_env) -> None:
         session.append_op({"op": "adjust_army", "army": army.id, "delta": -army.strength})
     line = next((row for row in service.briefing(session_id).splitlines() if "诸国关系" in row), "")
     assert name not in line
+
+
+def test_order_risk_after_a_commander_change_in_the_same_edict_names_the_new_commander(mech_env) -> None:
+    """同一诏书先易帅、后下军令：军令的将领自主风险按新帅评估（以前沿用旧帅之名）。"""
+    import asyncio
+
+    from test_round9 import new_game
+
+    service, session_id = new_game(4)
+    state = service.session(session_id).head_state()
+    old = state.characters[state.armies["west_army"].commander].name
+    receipt = asyncio.run(service.draft_edict(session_id, ops=[
+        {"op": "set_army_commander", "army": "west_army", "character": "general", "dispatch": False},
+        {"op": "set_army_posture", "army": "west_army", "posture": "hold"},
+    ]))
+    posture = receipt["clauses"][1]
+    assert posture["status"] in {"applied", "delayed"}
+    assert old not in str(posture.get("autonomy_note") or "")
