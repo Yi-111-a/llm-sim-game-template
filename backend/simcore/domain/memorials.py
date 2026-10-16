@@ -283,7 +283,12 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
     if op == "add_ledger":
         return f"账目「{raw['name']}」{signed(raw['amount'])}"
     if op == "adjust_army":
-        return f"{name('army', raw['army'])} {signed(raw['delta'])}"
+        parts = []
+        if raw.get("delta") or not raw.get("quality_delta"):
+            parts.append(signed(raw.get("delta", 0)))
+        if raw.get("quality_delta"):
+            parts.append(f"素质 {'+' if float(raw['quality_delta']) >= 0 else '−'}{abs(float(raw['quality_delta'])):g}")
+        return f"{name('army', raw['army'])} {'，'.join(parts)}"
     if op in {"move_army", "march"}:
         army = state.armies.get(str(raw["army"]))
         route = _route_note(state, army.region if army else None, raw["to_region"], army.faction if army else None)
@@ -311,6 +316,8 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
         character = state.characters.get(str(raw["character"]))
         route = _route_note(state, character.region if character else None, raw["to_region"], character.faction if character else None)
         return f"{name('character', raw['character'])} 赴 {name('region', raw['to_region'])}{route}"
+    if op == "merge_army":
+        return f"{name('army', raw['army'])}并入{name('army', raw['into'])}"
     if op == "set_army_faction":
         return f"{name('army', raw['army'])} 改隶 {name('faction', raw['faction'])}"
     if op == "set_character_faction":

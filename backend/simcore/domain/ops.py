@@ -25,6 +25,7 @@ class AddLedger(OpModel):
     turns: int | None = None
     reason: str = ""
     cancellable: bool = True  # False：玩家不能以 cancel_ledger 撤销（剧本 / 事件设的固定开支）
+    id: str | None = None  # 剧本可指定 id（便于之后 cancel_ledger）；同 id 已存在则替换，不重复计入
 
 
 class CancelLedger(OpModel):
@@ -147,7 +148,17 @@ class Remember(OpModel):
 class AdjustArmy(OpModel):
     op: Literal["adjust_army"]
     army: str
-    delta: float
+    delta: float = 0.0
+    quality_delta: float = 0.0  # 素质增减（整训、括虚额、器甲）；结果截在 [0.1, 3.0]
+    reason: str = ""
+
+
+class MergeArmy(OpModel):
+    """并军（剧本层）：army 的兵并入 into（素质按兵额加权），army 兵额归零。用于偏师归建、分兵复合。"""
+
+    op: Literal["merge_army"]
+    army: str
+    into: str
     reason: str = ""
 
 
@@ -225,6 +236,7 @@ StateOp: TypeAlias = Annotated[
     | SetFlag
     | Remember
     | AdjustArmy
+    | MergeArmy
     | SetArmyFaction
     | SetArmyCommander
     | SetArmyPosture
@@ -256,6 +268,7 @@ OP_NAMES: tuple[str, ...] = (
     "set_flag",
     "remember",
     "adjust_army",
+    "merge_army",
     "set_army_faction",
     "set_army_commander",
     "set_army_posture",

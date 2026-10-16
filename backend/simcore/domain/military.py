@@ -1,6 +1,7 @@
 """军令与将领自主（第 9 轮，CONTRACT §7.5）。
 
-军令姿态（`set_army_posture`：hold 坚守 / attack 进击 / scorch 坚壁清野；可由 `settings.postures` 覆盖系数）：
+军令姿态（`set_army_posture`：hold 坚守 / attack 进击 / scorch 坚壁清野；可由 `settings.postures` 覆盖系数）
+与将才（`settings.battle.commander_factor`：统帅亲在军中时按其特质乘战力，见 commander_factor）：
 - hold：作守方时战力 +20%；守方得胜不追击（败方只折二成）；作攻方时按兵不动，不主动交战。
 - attack：作攻方时战力 +10%；败则多损（折四成）。
 - scorch：驻地（本方控制）每季指标下降（缺省 繁荣 −5、粮产 −3，只作用于地区已有的指标）；
@@ -73,7 +74,38 @@ def power_modifier(state: WorldState, army: Army, role: str, region_id: str, war
         supply = float(effects["scorch"].get("enemy_supply", 0) or 0)
         factor *= 1 - supply
         notes.append(f"坚壁清野，补给受损−{supply * 100:g}%")
+    command = commander_factor(state, army)
+    if command is not None:
+        value, name = command
+        factor *= value
+        notes.append(f"将才（{name}）{'+' if value >= 1 else '−'}{abs(value - 1) * 100:.0f}%")
     return factor, notes
+
+
+def commander_factor(state: WorldState, army: Army) -> tuple[float, str] | None:
+    """统帅才干系数（`settings.battle.commander_factor`，公式，变量为统帅的全部特质，未写的特质按 5）。
+
+    只在统帅亲在军中时生效；副将暂摄、无统帅时不计（系数 1，不出说明）。结果截在 [0.5, 1.5]；恰为 1 时不出说明。
+    未配置时返回 None：旧剧本的战力公式不变。
+    """
+    config = state.rules.get("battle")
+    formula = config.get("commander_factor") if isinstance(config, dict) else None
+    if not formula or not army.commander:
+        return None
+    presence = commander_presence(state, army)
+    commander = state.characters.get(army.commander)
+    if commander is None or not presence["present"]:
+        return None
+    values: dict[str, Any] = {key: 5.0 for key in ("ability", "loyalty", "ambition", "favor", "fear", "rashness")}
+    values.update({key: float(value) for key, value in (commander.traits or {}).items() if isinstance(value, (int, float))})
+    try:
+        value = evaluate(str(formula), values)
+    except (ValueError, ZeroDivisionError):
+        return None
+    value = max(0.5, min(1.5, value))
+    if abs(value - 1) < 1e-9:
+        return None
+    return value, commander.name
 
 
 def scorched_against(state: WorldState, army: Army, region_id: str, wars: list[Any] | None = None) -> bool:

@@ -274,7 +274,7 @@ ai_routes:
     conditions: {kind: flag, key: raid_started, value: true}
 ```
 
-战斗：同区敌对军队交战。战力 = 兵 × 素质 ×（守方 1 + 防务%）× 军令系数 × 天时（±15%）；败方折三成并退往相邻己方地区（无路则溃散），胜方折一成；攻方得胜且守军尽去则易主。战报给出全部因素。
+战斗：同区敌对军队交战。战力 = 兵 × 素质 ×（守方 1 + 防务%）× 军令系数 × 将才（`settings.battle.commander_factor`，可选）× 天时（±15%）；败方折三成并退往相邻己方地区（无路则溃散），胜方折一成；攻方得胜且守军尽去则易主。战报给出全部因素。
 
 ### 2.14 廷议议题
 
@@ -308,6 +308,7 @@ settings:
     outcomes: {delay: 0.5, alter: 0.3, sortie: 0.2}            # 迁延一季 / 改作他令 / 擅自出战
     levels: [0.08, 0.2]                                         # 风险「低 / 中 / 高」的分界（回执只给等级，不给概率）
   postures: {hold: {defense_bonus: 0.2}}                    # 覆盖军令姿态系数（hold / attack / scorch）
+  battle: {commander_factor: "1 + 0.04*(ability - 5)"}     # 将才：统帅亲在军中时战力乘此式（变量为统帅特质，缺省 5；截在 0.5–1.5）
   player_ops: {allow: [], deny: [], statuses: [imprisoned, exiled, retired]}   # 玩家层白名单的调整，见 §7
   intel_min_width: 2                                        # 情报精度下限（半宽）；不写则情报只减半一次
   flag_labels: {raid_started: 北狄寇边}                     # 结局条件与复盘里的旗标显示名
@@ -408,9 +409,11 @@ settings:
 |---|---|---|
 | `adjust_resource` | `resource, delta, reason` | 否 |
 | `adjust_region` | `region, stat, delta` | 否（工程竣工可） |
-| `adjust_relation` / `adjust_trait` / `adjust_army` | — | 否 |
+| `adjust_relation` / `adjust_trait` | — | 否 |
+| `adjust_army` | `army, delta?, quality_delta?, reason` | 否（`quality_delta` 调素质，截在 0.1–3.0；整训、括虚额、器甲用它） |
+| `merge_army` | `army, into, reason` | 否（偏师归建：兵并入同势力的 `into`，素质按兵额加权，原军归零） |
 | `set_flag` / `adjust_counter` / `set_counter` | — | 否 |
-| `add_ledger` | `name, category, amount, kind: one_off\|recurring, turns?, cancellable?` | 否 |
+| `add_ledger` | `name, category, amount, kind: one_off\|recurring, turns?, cancellable?, id?` | 否（写 `id` 则同 id 替换、可被 `cancel_ledger` 指名撤销） |
 | `cancel_ledger` | `ledger_id` | 是（不可撤销的除外） |
 | `appoint` / `dismiss` | `character, office, dispatch?` | 是 |
 | `set_character_status` | `character, status, cause` | 是（仅系狱 / 流放 / 致仕，对象须为本方或在本方控制之地；`HOSTILE_TARGET`） |

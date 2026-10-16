@@ -61,6 +61,7 @@ OP_LABELS: dict[str, str] = {
     "set_flag": "设旗标",
     "remember": "人物记忆",
     "adjust_army": "调整兵力",
+    "merge_army": "并军",
     "set_army_faction": "军队改隶",
     "set_army_commander": "军队易帅",
     "set_army_posture": "军令姿态",

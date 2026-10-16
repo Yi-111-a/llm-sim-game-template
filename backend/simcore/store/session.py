@@ -616,6 +616,7 @@ _OP_LABELS = {
     "set_flag": "旗标",
     "remember": "人物记忆",
     "adjust_army": "兵力调整",
+    "merge_army": "并军",
     "set_army_faction": "军队改隶",
     "set_army_commander": "军队易帅",
     "set_army_posture": "军令姿态",

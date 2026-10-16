@@ -6,6 +6,12 @@
 
 ## [未发布]
 
+### 新增（《宣和》制作中回写，见 `backend/tests/test_xuanhe_engine.py`）
+- `adjust_army.quality_delta`：军队素质可由 op 调整（截在 0.1–3.0），事实与选项摘要写「素质 a→b」「素质 ±x」。`delta` 改为可缺省（只调素质时不写兵额）。
+- `settings.battle.commander_factor`：统帅亲在军中时按其特质乘战力（公式，未写的特质按 5，截在 0.5–1.5）；战报因素写「将才（某人）±x%」，战力算法写「×将才」。未配置的剧本战力公式不变。
+- `add_ledger.id`：剧本可给账目命名 id；同 id 再设即替换（不重复计入），之后可以 `cancel_ledger` 指名撤销（如「复置应奉司」后再罢）。
+- `merge_army {army, into}`：偏师归建——兵额并入同一势力的另一军，素质按兵额加权，原军归零、在途与军令清空。剧本层操作，不在玩家白名单内。
+
 ### 新增
 - 本机 CLI 模型服务 `claude_cli` / `codex_cli`（`simcore/llm/cli_agent.py`）：用本机已登录的 Claude Code / Codex 扮演群臣、写史笔、解释诏令，**不需要 API key**。每次调用起一个无头子进程：在空的临时目录运行、关掉 CLI 自带的工具与 MCP、提示词走 stdin、回复按 UTF-8 读取；Claude 支持流式答话，Codex 读 `-o` 输出的最后一条消息。没有原生函数调用，诏令解析自动退回「只返回 JSON」路径。找不到 / 未登录时给玩家看的中文提示。
 - `guarded_chat` 的单次超时不低于 provider 声明的 `min_call_timeout`（穿过计费包装层），CLI 冷启动不会被 30 秒超时截断。

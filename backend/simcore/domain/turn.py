@@ -414,7 +414,7 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
 
 
 BOOKKEEPING_FACT_KINDS = frozenset({"ledger", "flag", "counter", "memory", "standing_order"})
-WAR_OPS = frozenset({"move_army", "adjust_army", "set_army_faction", "set_army_commander", "set_region_controller", "set_character_faction"})
+WAR_OPS = frozenset({"move_army", "adjust_army", "merge_army", "set_army_faction", "set_army_commander", "set_region_controller", "set_character_faction"})
 WAR_FACT_KINDS = frozenset({"battle", "army", "army_faction", "character_faction", "region_controller", "retreat"})
 IMPORTANCE_LEVELS = {"outcome": 3, "war": 2, "battle": 2, "choice": 1, "normal": 0, "other": 0}
 

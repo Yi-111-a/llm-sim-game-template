@@ -25,6 +25,7 @@ from simcore.domain.ops import (
     Detach,
     Dismiss,
     March,
+    MergeArmy,
     MoveArmy,
     MoveCharacter,
     Remember,
@@ -117,9 +118,11 @@ def apply(
             Fact(kind="resource", text=f"{row.name} {signed_number(amount - before)}{suffix}", entity=op.resource, before=before, after=amount)
         )
     elif isinstance(op, AddLedger):
+        if op.id:
+            updated.ledger = [row for row in updated.ledger if row.id != op.id]
         updated.ledger.append(
             LedgerEntry(
-                id=_next_id(updated, "ledger"),
+                id=op.id or _next_id(updated, "ledger"),
                 name=op.name,
                 category=op.category,
                 amount=op.amount,
@@ -287,14 +290,35 @@ def apply(
         army = updated.armies[op.army]
         before = army.strength
         army.strength = max(0.0, before + op.delta)
-        text = reason if reason and army.name in reason else f"{army.name}兵力 {signed_number(army.strength - before)}{suffix}"
-        facts.append(Fact(kind="army", text=text, entity=op.army, before=before, after=army.strength))
+        if op.delta or not op.quality_delta:
+            text = reason if reason and army.name in reason else f"{army.name}兵力 {signed_number(army.strength - before)}{suffix}"
+            facts.append(Fact(kind="army", text=text, entity=op.army, before=before, after=army.strength))
+        if op.quality_delta:
+            quality_before = army.quality
+            army.quality = round(max(0.1, min(3.0, quality_before + op.quality_delta)), 3)
+            text = f"{army.name}素质 {quality_before:g}→{army.quality:g}{suffix}"
+            facts.append(Fact(kind="army_quality", text=text, entity=op.army, before=quality_before, after=army.quality))
     elif isinstance(op, SetCharacterFaction):
         character = updated.characters[op.character]
         before = character.faction
         character.faction = op.faction
         faction_name = updated.factions[op.faction].name
         facts.append(Fact(kind="character_faction", text=f"{character.name}改属{faction_name}", entity=op.character, before=before, after=op.faction))
+    elif isinstance(op, MergeArmy):
+        source = updated.armies[op.army]
+        target = updated.armies[op.into]
+        moved = source.strength
+        before = target.strength
+        if moved > 0:
+            total = before + moved
+            target.quality = round((target.quality * before + source.quality * moved) / total, 3) if total else target.quality
+            target.strength = total
+        source.strength = 0.0
+        source.in_transit = None
+        source.posture = None
+        text = f"{source.name}{format_number(moved)}并入{target.name}{suffix}"
+        facts.append(Fact(kind="army", text=text, entity=op.into, before=before, after=target.strength))
+        facts.append(Fact(kind="army", text=f"{source.name}归建", entity=op.army, before=moved, after=0.0, internal=True))
     elif isinstance(op, SetArmyFaction):
         army = updated.armies[op.army]
         before = army.faction

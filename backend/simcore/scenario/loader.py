@@ -469,6 +469,15 @@ def round9_errors(data: dict[str, Any], region_ids: set[str]) -> list[str]:
     postures = settings.get("postures")
     if postures is not None and (not isinstance(postures, dict) or any(key not in {"hold", "attack", "scorch"} for key in postures)):
         errors.append("settings.postures 只能覆盖 hold / attack / scorch 的系数")
+    battle = settings.get("battle")
+    if battle is not None:
+        if not isinstance(battle, dict) or any(key != "commander_factor" for key in battle):
+            errors.append("settings.battle 只支持 {commander_factor}")
+        elif battle.get("commander_factor") is not None:
+            try:
+                ast.parse(str(battle["commander_factor"]), mode="eval")
+            except SyntaxError:
+                errors.append(f"settings.battle.commander_factor 公式无效：{battle['commander_factor']}")
     for region in data.get("regions") or []:
         if isinstance(region, dict) and "courier_days" in region:
             value = region.get("courier_days")
