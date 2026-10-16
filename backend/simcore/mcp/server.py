@@ -355,9 +355,11 @@ def _debate_context(result: dict[str, Any]) -> list[str]:
 def _turn_text(result: dict[str, Any], show_memorial: bool = True) -> str:
     """回合结果文本。终局只在末尾的「终局」段出现一次；事实逐条去重；client 模式的纪事就是事实拼接，不再重复。"""
     report = result["report"]
-    lines = [f"# 已结算至 {result['calendar_label']}（第{report.get('turn')}回合）"]
+    settled = result.get("settled_label") or ""
+    head = f"{settled}结算毕，进入" if settled else "已结算至"
+    lines = [f"# {head} {result['calendar_label']}（第{report.get('turn')}回合）"]
     facts = list(dict.fromkeys(fact_line(fact) for fact in report.get("facts", []) if fact.get("kind") != "outcome"))
-    lines.append("## 事实")
+    lines.append(f"## 事实（{settled}之事）" if settled else "## 事实")
     lines.extend(f"- {fact}" for fact in facts) if facts else lines.append("- （无）")
     reconciliation = report.get("reconciliation") or []
     if reconciliation:

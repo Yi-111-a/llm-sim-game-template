@@ -1059,6 +1059,8 @@ class GameService:
             "memorial": memorial,
             "outcome": state.outcome.model_dump(mode="json") if state.outcome else None,
             "calendar_label": state.calendar.label,
+            # 刚结算完的那一季（事实、事件都发生在这一季里），供「某季结算毕，进入某季」的标题
+            "settled_label": turn_label(state, state.turn - 1, short=True) if state.turn > 0 else "",
             "final_notice": final_season_notice(state, self.definition(session)),
             "discarded_drafts": [row["edict_id"] for row in pending],
         }

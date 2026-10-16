@@ -367,3 +367,16 @@ def test_far_reports_still_on_the_road_are_delivered_when_the_game_ends(mech_env
     events = result["report"]["events"]
     assert any(row.get("id") == "west_raid" and row.get("arrived_late") for row in events)
     assert not any("下季送达" in str(fact.get("text", "")) for fact in result["report"]["facts"])
+
+
+def test_end_turn_text_names_the_season_just_settled(mech_env) -> None:
+    """end_turn 标题写「某季结算毕，进入某季」，事实标明是刚结算那一季之事（以前「已结算至夏」常被读成夏季之事）。"""
+    from test_round9 import end_turn, new_game
+
+    from simcore.mcp.server import _turn_text
+
+    service, session_id = new_game(5)
+    result = end_turn(service, session_id)
+    text = _turn_text(result)
+    assert result["settled_label"] and text.startswith(f"# {result['settled_label']}结算毕，进入 {result['calendar_label']}")
+    assert f"## 事实（{result['settled_label']}之事）" in text
