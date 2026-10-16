@@ -4,6 +4,13 @@
 
 0.2 与 0.3 的引擎扩展都是在制作《天宝》（[Yi-111-a/tianbao](https://github.com/Yi-111-a/tianbao)）的九轮迭代中完成的：每一轮都由 Claude 与 GPT（Codex）经 MCP 整局试玩、写报告，再按报告修复。所有机制保持场景无关，由剧本 YAML 配置；旧剧本无需改动即可继续运行。
 
+## [未发布]
+
+### 新增
+- 本机 CLI 模型服务 `claude_cli` / `codex_cli`（`simcore/llm/cli_agent.py`）：用本机已登录的 Claude Code / Codex 扮演群臣、写史笔、解释诏令，**不需要 API key**。每次调用起一个无头子进程：在空的临时目录运行、关掉 CLI 自带的工具与 MCP、提示词走 stdin、回复按 UTF-8 读取；Claude 支持流式答话，Codex 读 `-o` 输出的最后一条消息。没有原生函数调用，诏令解析自动退回「只返回 JSON」路径。找不到 / 未登录时给玩家看的中文提示。
+- `guarded_chat` 的单次超时不低于 provider 声明的 `min_call_timeout`（穿过计费包装层），CLI 冷启动不会被 30 秒超时截断。
+- `/api/settings/test` 对本机 CLI 真发一句话检查已登录、能回复，而不是只探测工具调用。
+
 ## [0.3.0] — 2026-10-16
 
 模板与文档的整理版，引擎运行行为与 0.2 系列最后一轮相同。

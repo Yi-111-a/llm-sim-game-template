@@ -1,4 +1,22 @@
 providers:
+  claude_cli:
+    label: Claude（本机 Claude Code，免 API key）
+    local_cli: true
+    base_url: ""
+    model: default
+    api_key_env: ""
+    api_key_url: ""
+    extra_headers: {}
+    params_override: {}
+  codex_cli:
+    label: Codex（本机 Codex CLI，免 API key）
+    local_cli: true
+    base_url: ""
+    model: default
+    api_key_env: ""
+    api_key_url: ""
+    extra_headers: {}
+    params_override: {}
   openai:
     base_url: https://api.openai.com/v1
     model: gpt-4o-mini

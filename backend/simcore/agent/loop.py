@@ -23,7 +23,9 @@ async def guarded_chat(
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
         raise TimeoutError("Agent total timeout exceeded")
-    timeout = min(call_timeout, remaining)
+    # 本机 CLI 模型（cli_agent）冷启动慢：单次超时不低于它声明的下限
+    floor = max(float(getattr(layer, "min_call_timeout", 0) or 0) for layer in (provider, getattr(provider, "provider", None)))
+    timeout = min(max(call_timeout, floor), remaining)
     call = asyncio.create_task(provider.chat(messages, tools=tools, response_format=response_format))
     abort = asyncio.create_task(abort_event.wait()) if abort_event else None
     try:

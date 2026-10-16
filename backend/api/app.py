@@ -27,6 +27,7 @@ from simcore.config import (
 )
 from simcore.images.manifest import asset_path, placeholder_for, read_manifest
 from simcore.llm.base import ChatResult, LLMProvider, ToolCallingUnsupported
+from simcore.llm.cli_agent import CliAgentProvider
 from simcore.llm.factory import create_provider
 from simcore.prompts.loader import render_prompt
 from simcore.service import (
@@ -591,6 +592,14 @@ def create_app() -> FastAPI:
     @app.post("/api/settings/test")
     async def test_settings() -> dict[str, Any]:
         provider = runtime.provider({}, "edict_interpreter")
+        inner = getattr(provider, "provider", provider)
+        if isinstance(inner, CliAgentProvider):
+            # 本机 CLI 没有函数调用，探测工具会直接退回 JSON 路径；改为真发一句话，确认已登录、能回复
+            try:
+                message = await inner.check()
+            except Exception as exc:
+                raise GameError("PROVIDER_ERROR", f"模型连接失败：{exc}") from exc
+            return {"ok": True, "tool_calling": False, "json_fallback": True, "model": inner.label, "message": message}
         probe = [{
             "type": "function",
             "function": {

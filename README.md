@@ -19,7 +19,7 @@
 - **叙事只来自已执行的事实**：纪事、召对、廷议都以引擎渲染的事实摘要（StateDigest）为唯一数值来源，隐藏数值只给区间。
 - **事件溯源存档**：JSONL 事件树 + 每回合状态快照，可回放、回退（rewind）、分叉（fork），剧本改动不会追溯改写已结算的回合。
 - **离线可玩**：缺省 Mock provider 与 SVG 占位图，无需任何密钥即可从开局玩到结局（含离线纪事、离线召对与廷议）。
-- **BYOK**：任何 OpenAI 兼容服务（OpenAI、DeepSeek、Qwen、GLM、Ollama……），可按角色分别路由模型。
+- **BYOK**：任何 OpenAI 兼容服务（OpenAI、DeepSeek、Qwen、GLM、Ollama……），可按角色分别路由模型；也可以直接用本机已登录的 Claude Code / Codex（`claude_cli` / `codex_cli`），免 API key。
 - **MCP 服务**：Claude Code / Codex 可以直接开局、读简报、召对、廷议、下诏、处置事件、推进回合、导出复盘日志。
 
 ## 功能一览
