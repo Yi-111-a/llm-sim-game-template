@@ -148,3 +148,16 @@ def test_advisors_of_another_faction_do_not_speak(r9_state) -> None:
     assert advisor_present(advisor, state) == (False, False)
     state.rules.pop("player_faction")
     assert advisor_present(advisor, state) == (True, False)  # 未写 player_faction 的剧本不变
+
+
+def test_character_region_arrived_excludes_officials_on_the_road(r9_state) -> None:
+    """character_region 加 arrived: true：启程赴任者（region 仍是出发地）不算「在此地」。"""
+    from simcore.domain.describe import describe_condition
+    from simcore.domain.events import matches
+
+    cond = {"kind": "character_region", "character": "plotter", "region": "north"}
+    state, _ = apply({"op": "appoint", "character": "plotter", "office": "censor", "dispatch": True}, r9_state)
+    assert matches(cond, state)
+    assert not matches({**cond, "arrived": True}, state)
+    assert matches({**cond, "arrived": True}, r9_state)
+    assert "不在途中" in describe_condition({**cond, "arrived": True}, r9_state)

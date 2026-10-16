@@ -394,7 +394,7 @@ settings:
 | `region_controller` | `region, faction` | `{kind: region_controller, region: capital, faction: raiders}` |
 | `character_status` | `character, value` | `{kind: character_status, character: scholar, value: alive}` |
 | `character_trait` | `character, trait, operator, value` | `{kind: character_trait, character: general, trait: loyalty, operator: lte, value: 3}` |
-| `character_region` | `character, region` | `{kind: character_region, character: general, region: frontier}` |
+| `character_region` | `character, region, arrived?` | `{kind: character_region, character: general, region: frontier}`；`arrived: true` 时在途者不算（启程赴任者的 region 仍是出发地，要对他下 `move_character` 之类的令就加这一条） |
 | `office_holder` | `office, character`（`null` = 出缺） | `{kind: office_holder, office: censor, character: null}` |
 | `army_strength` | `army` 或 `faction`，`operator, value` | `{kind: army_strength, faction: raiders, operator: lte, value: 7000}` |
 | `army_commander` | `army, character`（`null` = 无统帅），`operator: eq / ne` | `{kind: army_commander, army: capital_guard, character: null}` |

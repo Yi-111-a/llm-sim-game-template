@@ -101,7 +101,8 @@ def _leaf(condition: dict[str, Any], state: WorldState, negate: bool) -> str:
         return f"{entity_name(state, condition.get('character'))}{trait} {_symbol(operator, negate)} {_number(value)}"
     if kind == "character_region":
         verb = "不在" if negate else "在"
-        return f"{entity_name(state, condition.get('character'))}{verb}{entity_name(state, condition.get('region'))}"
+        settled = "（不在途中）" if condition.get("arrived") and not negate else ""
+        return f"{entity_name(state, condition.get('character'))}{verb}{entity_name(state, condition.get('region'))}{settled}"
     if kind == "office_holder":
         office = entity_name(state, condition.get("office"))
         if condition.get("character") is None:

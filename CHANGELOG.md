@@ -14,6 +14,7 @@
 - 京城本地的奏疏写「某月某日奏上」，不再写「自京城奏到」（`courier.arrival_text`；远地与晚到的照旧）。
 - 京官（无任所、不统兵之职）的任命写了 `dispatch: true` 时，此人启程赴御前（召外官入朝）；以前京官无任所，`dispatch` 被忽略，人留在原地。玩家层任命缺省即 `dispatch: true`，故玩家任远地之人为京官也会召其入京；剧本层缺省 `false`，只授职不动人。
 - 奏疏谏言人此刻势力不同于 `player_faction`（降而复叛的将领、敌国君臣）时不显示、不进言，与召对、廷议一致。
+- 条件 `character_region` 可加 `arrived: true`：人须在此地且不在途中。启程赴任者的 region 仍是出发地，旧写法会把「已上路的人」当作仍在原地，随后对他的 `move_character` 被拒（CHARACTER_UNAVAILABLE）。
 - `merge_army {army, into}`：偏师归建——兵额并入同一势力的另一军，素质按兵额加权，原军归零、在途与军令清空。剧本层操作，不在玩家白名单内。
 
 ### 新增

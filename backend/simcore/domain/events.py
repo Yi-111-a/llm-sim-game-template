@@ -103,7 +103,10 @@ def _match_kind(conditions: dict[str, Any], state: WorldState, turn: int) -> boo
         return _compare(character.traits.get(conditions["trait"], 0), operator, float(conditions["value"]))
     if kind == "character_region":
         character = state.characters.get(conditions["character"])
-        return character is not None and character.region == conditions.get("region")
+        if character is None or character.region != conditions.get("region"):
+            return False
+        # arrived: true —— 人在此地且不在途中（启程赴任者的 region 仍是出发地）
+        return not (conditions.get("arrived") and character.in_transit)
     if kind == "office_holder":
         office = state.offices.get(conditions["office"])
         return office is not None and office.holder == conditions.get("character")
