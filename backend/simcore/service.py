@@ -1488,11 +1488,12 @@ class GameService:
             lines.append("\n## 政令卡（policy_cards 查看参数与可选值；draft_edict 的 cards: [{card_id, params}] 使用）")
             lines.append("；".join(f"[{row['id']}] {row['title']}（{row['category']}）" for row in cards))
         player = self.player_character(session, state)
+        own = state.rules.get("player_faction")  # 他国、敌方之人不能召对（见 _reject_player），不列
         people = [
             f"{row.name}（`{row.id}`{'，' + role if (role := _role_label(state, row)) else ''}"
             f"{'，' + note if (note := travel_note(state, row)) else ''}）"
             for row in state.characters.values()
-            if row.status == "alive" and row.id != player
+            if row.status == "alive" and row.id != player and (not own or not row.faction or row.faction == own)
         ]
         lines.append("\n## 可召对人物\n" + "；".join(people))
         lines.append("\n" + ROLEPLAY_RULES)

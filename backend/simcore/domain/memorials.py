@@ -35,14 +35,29 @@ def memorial_flag(memorial_id: str) -> str:
     return f"memorial:{memorial_id}"
 
 
+def handled(item: dict[str, Any], state: WorldState, turn: int | None = None) -> bool:
+    """此条已处理、眼下不再呈上：写了 memorial:<id> 旗标即算处理过。
+
+    常设条目可写 `cooldown: N`（回合数）：处理满 N 季后重新呈上（旗标保留上次的批答，事件仍可读取；再批即重新计时）。
+    """
+    key = memorial_flag(str(item.get("id")))
+    if state.flags.get(key) is None:
+        return False
+    cooldown = int(item.get("cooldown", 0) or 0)
+    if cooldown > 0 and key in state.flag_turns:
+        at = state.turn if turn is None else turn
+        return at - state.flag_turns[key] < cooldown
+    return True
+
+
 def base_visible(item: dict[str, Any], state: WorldState, turn: int | None = None) -> bool:
-    """不计驿程的可见性：未处理，且 turn 窗口（按 turn，缺省当前回合）与 conditions 均满足。
+    """不计驿程的可见性：未处理（见 handled，含 cooldown），且 turn 窗口（按 turn，缺省当前回合）与 conditions 均满足。
 
     - 写 turn：可见回合为 [turn, turn + expires_after]（expires_after 缺省 0）。
     - 写 conditions：条件满足时可见；与 turn 同写时二者都须满足。
-    - 二者都不写：始终可见，直到被处理。
+    - 二者都不写：始终可见，直到被处理（写了 cooldown 的处理满 N 季后再现）。
     """
-    if state.flags.get(memorial_flag(str(item.get("id")))) is not None:
+    if handled(item, state, turn):
         return False
     at = state.turn if turn is None else turn
     window = item.get("turn")
@@ -61,7 +76,7 @@ def is_visible(item: dict[str, Any], state: WorldState) -> bool:
     写了 conditions 的须在上季结算时已记下发出（内部旗标），且此刻条件仍成立。"""
     if not memorial_is_far(item, state):
         return base_visible(item, state)
-    if state.flags.get(memorial_flag(str(item.get("id")))) is not None:
+    if handled(item, state):
         return False
     window = item.get("turn")
     if window is not None:

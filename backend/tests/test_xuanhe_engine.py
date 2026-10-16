@@ -118,6 +118,7 @@ def test_foreign_characters_cannot_be_summoned_or_join_debate(mech_env) -> None:
     foreign = session.head_state().characters["plotter"]
     listed = {row["character"] for row in [*service.present(session_id)["present"], *service.present(session_id)["absent"]]}
     assert foreign.id not in listed
+    assert f"`{foreign.id}`" not in service.briefing(session_id)  # 简报的「可召对人物」也不列
     with pytest.raises(GameError) as err:
         service.begin_audience(session_id, foreign.id)
     assert err.value.code == "CHARACTER_UNAVAILABLE" and "非本朝臣属" in err.value.message
@@ -182,3 +183,22 @@ def test_commander_in_camp_retreats_with_the_beaten_army(r9_state) -> None:
     remote.characters[commander.id].region, remote.armies["guard"].commander = far, commander.id
     resolve_battles(remote, random.Random(9), WARS)
     assert remote.characters[commander.id].region == far
+
+
+def test_memorial_cooldown_brings_a_standing_item_back(r9_state) -> None:
+    """常设条目写 cooldown: N：处理满 N 季后再呈上，旗标保留上次批答；不写 cooldown 的处理后不再出现。"""
+    from simcore.domain.memorials import is_visible, memorial_flag
+
+    item = {"id": "s_test", "title": "常设", "cooldown": 3, "options": [{"id": "a", "label": "甲", "ops": []}]}
+    plain = {**item, "id": "s_once"}
+    plain.pop("cooldown")
+    state = r9_state.model_copy(deep=True)
+    assert is_visible(item, state) and is_visible(plain, state)
+    for row in (item, plain):
+        state, _ = apply({"op": "set_flag", "key": memorial_flag(row["id"]), "value": "a"}, state)
+    start = state.turn
+    for turn, shown in ((start + 1, False), (start + 2, False), (start + 3, True), (start + 4, True)):
+        state.turn = turn
+        assert is_visible(item, state) is shown, turn
+        assert not is_visible(plain, state)
+    assert state.flags[memorial_flag("s_test")] == "a"  # 事件仍可读上次的批答
