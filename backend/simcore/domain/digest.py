@@ -86,6 +86,8 @@ def render_digest(
         lines.append("【他处】" + "；".join(f"{label}：{'、'.join(names)}" for label, names in groups.items()))
     army_rows = []
     for army in state.armies.values():
+        if army.strength <= 0 and not army.in_transit:
+            continue  # 兵额为零的军号（未成军的预备番号、已溃之军）不列，免得读成某地驻有某军
         if character is not None and army.commander != character.id and army.region not in visible_regions:
             continue
         faction = state.factions.get(army.faction) if army.faction else None

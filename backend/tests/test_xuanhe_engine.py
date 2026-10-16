@@ -380,3 +380,14 @@ def test_end_turn_text_names_the_season_just_settled(mech_env) -> None:
     text = _turn_text(result)
     assert result["settled_label"] and text.startswith(f"# {result['settled_label']}结算毕，进入 {result['calendar_label']}")
     assert f"## 事实（{result['settled_label']}之事）" in text
+
+
+def test_digest_skips_empty_armies(r9_state) -> None:
+    from simcore.domain.digest import render_digest
+
+    state = r9_state.model_copy(deep=True)
+    army = state.armies["guard"]
+    assert army.name in render_digest(state, 1)
+    army.strength = 0
+    line = next((row for row in render_digest(state, 1).splitlines() if row.startswith("【军队】")), "")
+    assert f"{army.name} 0" not in line
