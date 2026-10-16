@@ -376,7 +376,7 @@ class GameService:
             "crisis": public_crisis(crisis, state, session.seed),
             # 终局后不再列奏疏与待决事件，改给终局复盘（review）
             "memorials": [] if over else visible_memorials(session.scenario, state),
-            "pending_choices": [] if over else [row.model_dump(mode="json") for row in state.pending_choices],
+            "pending_choices": [] if over else [choice_view(row, state) for row in state.pending_choices],
             "outcome": state.outcome.model_dump(mode="json") if state.outcome else None,
             "review": self.final_review(session, state) if over else None,
             "last_report": public_report(report, state, session.seed, crisis),
@@ -1479,7 +1479,10 @@ class GameService:
         if view["pending_choices"]:
             lines.append("\n## 待决事件（用 choose 处置：choice_id + option_id）")
             for choice in state.pending_choices:
-                options = "；".join(f"`{option.id}`「{option.text}」" for option in choice.options)
+                options = "；".join(
+                    f"`{option.id}`「{option.text}」" + (f"〔{'；'.join(summary)}〕" if (summary := summarize_ops(option.effects, state)) else "")
+                    for option in choice.options
+                )
                 lines.append(
                     f"- [{choice.id}] {choice.title}：{choice.text} 选项：{options}。"
                     f"默认 `{choice.default_option}`，若第{choice.deadline_turn}回合结算前未决则依默认执行。"
@@ -1635,3 +1638,11 @@ def _condition_leaves(conditions: Any) -> list[dict[str, Any]]:
     if "not" in conditions:
         return []
     return [conditions] if conditions.get("kind") else []
+
+
+def choice_view(choice: Any, state: WorldState) -> dict[str, Any]:
+    """待决事件的公开视图：每个选项另带 summary（效果摘要，与奏疏选项同一写法；风闻数值只写方向）。"""
+    row = choice.model_dump(mode="json")
+    for option, raw in zip(row.get("options") or [], choice.options, strict=False):
+        option["summary"] = summarize_ops(raw.effects, state)
+    return row

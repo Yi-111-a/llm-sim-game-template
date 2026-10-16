@@ -322,3 +322,19 @@ def test_stamp_does_not_prefix_the_time_condition(r9_state) -> None:
     lines = stamp(["时间 ≥ 第3回合", "国库 ≥ 10"], 3, r9_state)
     assert lines[0] == "时间 ≥ 第3回合" or not lines[0].startswith(lines[1].split("时")[0] + "时时间")
     assert "时时间" not in "".join(lines) and lines[1].endswith("时国库 ≥ 10")
+
+
+def test_pending_choice_options_carry_effect_summaries(r9_state) -> None:
+    """待决事件的选项与奏疏选项一样给出效果摘要（简报与 /view 的 summary）。"""
+    from simcore.domain.models import ChoiceOption, PendingChoice
+    from simcore.service import choice_view
+
+    resource = next(key for key, row in r9_state.resources.items() if not row.hidden)
+    choice = PendingChoice(
+        id="choice-x-1", event_id="x", title="议", text="", default_option="a", created_turn=r9_state.turn, deadline_turn=r9_state.turn + 1,
+        options=[ChoiceOption(id="a", text="甲", effects=[{"op": "adjust_resource", "resource": resource, "delta": -10, "reason": "费"}]),
+                 ChoiceOption(id="b", text="乙", effects=[])],
+    )
+    row = choice_view(choice, r9_state)
+    assert row["options"][0]["summary"] and "−10" in row["options"][0]["summary"][0]
+    assert row["options"][1]["summary"] == []
