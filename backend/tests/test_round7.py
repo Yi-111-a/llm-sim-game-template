@@ -9,7 +9,8 @@ from simcore.domain.rules import delay_phrase, turn_label
 from simcore.mcp.server import _clause_lines, _turn_text
 from simcore.service import GameService
 
-BARE_BIG_NUMBER = re.compile(r"(?<![\d.,])\d{6,}(?![\d.,])")
+# Digits glued to letters belong to hex ids (session/entry/edict ids), not to player-facing amounts.
+BARE_BIG_NUMBER = re.compile(r"(?<![\w.,])\d{6,}(?![\w.,])")
 TURN_CODE = re.compile(r"(?<![A-Za-z0-9])T\d+")
 
 
