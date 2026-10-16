@@ -401,3 +401,54 @@ def test_resource_change_clipped_at_a_bound_says_so(r9_state) -> None:
     assert f"（已至下限 {row.minimum:g}，原拟 −100）" in facts[0].text
     state, facts = apply({"op": "adjust_resource", "resource": key, "delta": 5}, state)
     assert "已至" not in facts[0].text
+
+
+def test_role_label_marks_a_former_office_title(r9_state) -> None:
+    from simcore.service import _role_label
+
+    state = r9_state.model_copy(deep=True)
+    office = state.offices["chancellor"]
+    person = state.characters["chancellor"]
+    person.title = office.name
+    assert _role_label(state, person) == office.name  # 在任：官职名
+    state, _ = apply({"op": "dismiss", "character": "chancellor", "office": "chancellor"}, state)
+    assert _role_label(state, state.characters["chancellor"]) == f"旧衔{office.name}，今无官职"
+
+
+def test_immediate_option_is_never_delayed_by_officials(mech_scenario) -> None:
+    """奏疏选项写 immediate: true（放任的后果）不掷有司稽迟；其余选项照常延期。"""
+    import asyncio
+    import copy
+
+    from simcore.agent.roles import interpret_edict
+
+    scenario = copy.deepcopy(mech_scenario)
+    definition = scenario.get("scenario", scenario)
+    definition.setdefault("formulas", {})["execution"] = {"base_delay": 1.0}  # 必然稽迟
+    resource = next(key for key in build_initial_state(scenario).resources)
+    scenario["memorials"].append({
+        "id": "m_now", "turn": 0, "title": "放任", "options": [
+            {"id": "keep", "label": "依旧", "immediate": True, "ops": [{"op": "adjust_resource", "resource": resource, "delta": -1}]},
+            {"id": "act", "label": "施行", "ops": [{"op": "adjust_resource", "resource": resource, "delta": 1}]},
+        ],
+    })
+    state = build_initial_state(scenario)
+    keep = asyncio.run(interpret_edict({}, scenario, state, None, 1, adopted=[{"memorial_id": "m_now", "option_id": "keep"}]))
+    act = asyncio.run(interpret_edict({}, scenario, state, None, 1, adopted=[{"memorial_id": "m_now", "option_id": "act"}]))
+    assert keep["clauses"][0]["status"] == "applied"
+    assert act["clauses"][0]["status"] == "delayed" and act["clauses"][0]["delay_kind"] == "bureaucratic"
+
+
+def test_relations_line_skips_states_without_land_or_army(mech_env) -> None:
+    from test_round9 import new_game
+
+    service, session_id = new_game(3)
+    session = service.session(session_id)
+    state = session.head_state()
+    name = state.factions["rebels"].name
+    for region in [row.id for row in state.regions.values() if row.controller == "rebels"]:
+        session.append_op({"op": "set_region_controller", "region": region, "faction": "court"})
+    for army in [row for row in state.armies.values() if row.faction == "rebels" and row.strength > 0]:
+        session.append_op({"op": "adjust_army", "army": army.id, "delta": -army.strength})
+    line = next((row for row in service.briefing(session_id).splitlines() if "诸国关系" in row), "")
+    assert name not in line

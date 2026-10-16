@@ -119,7 +119,13 @@ WRITTEN_SOURCE = "书面议状"
 def _role_label(state: WorldState, character: Any) -> str:
     """人物的身份标签：有官职列官职名，否则用头衔（如 高力士 骠骑大将军、知内侍省事）。"""
     offices = [state.offices[office].name for office in held_offices(character) if office in state.offices]
-    return "、".join(offices) if offices else str(character.title or "")
+    if offices:
+        return "、".join(offices)
+    title = str(character.title or "")
+    # 头衔即某一官职之名而此人已不在其位（罢官、致仕）：注明旧衔，免得读成现任
+    if title and any(row.name == title for row in state.offices.values()):
+        return f"旧衔{title}，今无官职"
+    return title
 
 
 class GameError(Exception):
@@ -1422,10 +1428,11 @@ class GameService:
             lines.append(f"- 地区指标量程：{legend}（到上下限即止，结算事实注明「已至上限 / 下限」）")
         own = state.rules.get("player_faction")
         if own in state.factions and state.factions[own].relations:
+            alive = {row.controller for row in state.regions.values()} | {row.faction for row in state.armies.values() if row.strength > 0}
             ties = [
                 f"{state.factions[other].name} {format_number(value)}"
                 for other, value in state.factions[own].relations.items()
-                if other in state.factions and other != own
+                if other in state.factions and other != own and other in alive  # 已亡之国（无地无兵）不列
             ]
             if ties:
                 lines.append(f"- 诸国关系（{state.factions[own].name}对各方，正为亲睦、负为敌对）：" + "；".join(ties))

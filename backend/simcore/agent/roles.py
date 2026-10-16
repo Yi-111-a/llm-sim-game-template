@@ -98,7 +98,10 @@ async def interpret_edict(
         """一组条款（一个奏疏选项 / 一条客户端 op / 一段诏令文本）只掷一次延期骰，组内 ops 同进同退。"""
         nonlocal group_counter
         group_counter += 1
-        delayed = any(item["status"] == "applied" for item in receipt) and rng.random() < delay["probability"]
+        # 有司稽迟只及于朝廷主动施行之事；选项写 immediate: true（「依旧」「不问」之类只是放任的后果）不掷延期骰
+        applied = any(item["status"] == "applied" for item in receipt)
+        roll = rng.random() if applied else 1.0  # 与以前同样只在有可行条款时取随机数，种子重放不变
+        delayed = applied and not base.get("immediate") and roll < delay["probability"]
         far = far_target(state, [item["op"] for item in receipt if item["status"] == "applied" and isinstance(item.get("op"), dict)])
         for item in receipt:
             status = item["status"]
@@ -138,6 +141,7 @@ async def interpret_edict(
             "memorial_id": memorial_id,
             "option_id": option_id,
             "label": str(item.get("title", memorial_id)),
+            **({"immediate": True} if option.get("immediate") else {}),
         }
         if any(row["memorial_id"] == memorial_id for row in accepted_memorials):
             clauses.append({**base, "status": "rejected", "op": None, "reason": "同一奏疏只能采纳一个选项", "code": "DUPLICATE_MEMORIAL"})
