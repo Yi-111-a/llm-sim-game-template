@@ -1413,9 +1413,20 @@ class GameService:
         for key, row in state.resources.items():
             precision = f"——{precision_text(state, key)}" if row.hidden else ""
             lines.append(f"- {resource_display(state, key, session.seed)}{precision}")
+        if any(row.hidden for row in state.resources.values()):
+            lines.append("- 风闻区间每季按真值重新估测，前后两季的区间不宜直接相比来看趋势；趋势看「上季危机变化」。")
         legend = stat_legend(state)
         if legend:
             lines.append(f"- 地区指标量程：{legend}（到上下限即止，结算事实注明「已至上限 / 下限」）")
+        own = state.rules.get("player_faction")
+        if own in state.factions and state.factions[own].relations:
+            ties = [
+                f"{state.factions[other].name} {format_number(value)}"
+                for other, value in state.factions[own].relations.items()
+                if other in state.factions and other != own
+            ]
+            if ties:
+                lines.append(f"- 诸国关系（{state.factions[own].name}对各方，正为亲睦、负为敌对）：" + "；".join(ties))
         upkeep = upkeep_rows(state, (definition.get("formulas") or {}).get("upkeep") or [])
         if upkeep and state.outcome is None:
             lines.append("\n## 养兵经常开支（按现兵额，每季结算时计入经常收支；增兵即增此项）")

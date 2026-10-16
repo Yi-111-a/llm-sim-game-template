@@ -21,6 +21,7 @@ CONDITION_KINDS = (
     "army_commander",
     "army_region",
     "relation",
+    "season",
 )
 # 只比较相等与否的条件（operator 为 eq 或 ne）
 IDENTITY_KINDS = frozenset({"army_commander", "army_region"})
@@ -62,6 +63,11 @@ def _match_kind(conditions: dict[str, Any], state: WorldState, turn: int) -> boo
         return amount is not None and _compare(
             amount.amount, conditions.get("operator", "gte"), float(conditions["value"])
         )
+    if kind == "season":
+        # 当前季（回合结算中即正在结算的这一季）：value 写一季或一组季名，如 冬 / [春, 冬]
+        wanted = conditions.get("value")
+        names = {str(item) for item in wanted} if isinstance(wanted, list) else {str(wanted)}
+        return (state.calendar.season in names) != (operator == "ne")
     if kind == "flag":
         key = conditions["key"]
         if operator == "exists":
@@ -168,11 +174,13 @@ def condition_errors(conditions: Any, location: str) -> list[str]:
     if kind not in CONDITION_KINDS:
         return [f"{location} 未知条件类型：{kind}"]
     operator = conditions.get("operator")
-    allowed = (*OPERATORS, "exists", "absent") if kind == "flag" else ("eq", "ne") if kind in IDENTITY_KINDS else OPERATORS
+    allowed = (*OPERATORS, "exists", "absent") if kind == "flag" else ("eq", "ne") if kind in IDENTITY_KINDS or kind == "season" else OPERATORS
     if kind in IDENTITY_KINDS and not conditions.get("army"):
         return [f"{location} 缺少 army"]
     if kind == "army_commander" and "character" not in conditions:
         return [f"{location} 缺少 character（无统帅写 null）"]
+    if kind == "season" and not conditions.get("value"):
+        return [f"{location} 缺少 value（季名或季名列表）"]
     if kind == "army_region" and not conditions.get("region"):
         return [f"{location} 缺少 region"]
     if operator is not None and operator not in allowed:

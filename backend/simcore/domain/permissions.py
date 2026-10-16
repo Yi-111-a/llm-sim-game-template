@@ -73,7 +73,7 @@ OP_LABELS: dict[str, str] = {
 }
 
 # 不在玩家白名单中的操作从哪里来（op_reference 的用法提示）。
-SCENARIO_ONLY_HINT = "只能经奏疏选项（draft_edict 的 adopted）、事件抉择（choose）、工程竣工效果或剧本事件产生"
+SCENARIO_ONLY_HINT = "只能经奏疏选项（draft_edict 的 adopted）、事件抉择（choose）、剧本预设的工程竣工效果或剧本事件产生"
 OP_ROUTES: dict[str, str] = {
     "choose_event_option": "请用 choose 工具处置待决事件",
 }

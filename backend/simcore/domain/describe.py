@@ -99,6 +99,11 @@ def _leaf(condition: dict[str, Any], state: WorldState, negate: bool) -> str:
     if kind == "character_trait":
         trait = trait_name(state, str(condition.get("trait")))
         return f"{entity_name(state, condition.get('character'))}{trait} {_symbol(operator, negate)} {_number(value)}"
+    if kind == "season":
+        wanted = condition.get("value")
+        names = "、".join(str(item) for item in wanted) if isinstance(wanted, list) else str(wanted)
+        negative = negate != (condition.get("operator") == "ne")
+        return f"时令{'不在' if negative else '在'}{names}"
     if kind == "character_region":
         verb = "不在" if negate else "在"
         settled = "（不在途中）" if condition.get("arrived") and not negate else ""

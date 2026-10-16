@@ -132,7 +132,7 @@ def make_tools(service: GameService | None = None, mode: str | None = None) -> d
                 if server_mode
                 else "下季 briefing「回奏」一节给出此人的人设卡与事实摘要，届时由你扮演其书面回奏（本季不得代其作答）"
             )
-            asked = f"，所问「{question.strip()}」" if question.strip() else ""
+            asked = f"，所问「{question.strip()}」" if question.strip() else "（未写 question：回奏只泛论时事；要问具体之事，召对时在 question 里写明）"
             return f"# 召对方式：{how['label']}——{how['note']}\n{ENVOY_SENT}：{name}{asked}。{follow}。\n朝会日程（本季）：{agenda}"
         card = service.audience_card(session_id, character)
         if server_mode and question.strip():

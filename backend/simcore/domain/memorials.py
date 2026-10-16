@@ -168,12 +168,15 @@ def _public_item(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
     advisors = []
     for advisor in present_advisors(item, state):
         character = state.characters[str(advisor.get("character"))]
+        retired = character.status == "retired" and not advisor["_old"]
         advisors.append({
             "character": advisor.get("character"),
-            "name": character.name + ("（旧议）" if advisor["_old"] else ""),
+            # 致仕者仍可上书，但不再是在朝之臣：名下注明，免得读来像现任宰执在议
+            "name": character.name + ("（旧议）" if advisor["_old"] else "（致仕在家，上书言）" if retired else ""),
             "stance": advisor.get("stance", "neutral"),
             "line": advisor.get("line", ""),
             **({"old": True} if advisor["_old"] else {}),
+            **({"retired": True} if retired else {}),
         })
     options = [
         {

@@ -171,6 +171,8 @@ def release_late_reports(state: WorldState, turn: int) -> tuple[list[dict[str, A
             fact.origin_turn = origin
             if fact.kind == "event" and arrival:
                 fact.text = f"{fact.text}（军报晚到：{arrival}）"
+            elif fact.kind == "resource":
+                fact.text = f"{fact.text}（已计入上季对账，军报今到）"
             facts.append(fact)
     return events, facts
 

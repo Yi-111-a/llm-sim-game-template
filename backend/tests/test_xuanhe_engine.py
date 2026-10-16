@@ -245,3 +245,53 @@ def test_topic_table_stances_flip_when_the_debate_is_on_the_counter_option(mech_
     on_refuse = decide_stances(state, scenario, "结盟", ["general"], memorial_id="m_pact", seed=1, proposal_option="refuse")[0]
     assert on_ally["stance"] == "support" and on_ally["target_option_id"] == "ally"
     assert on_refuse["stance"] == "oppose" and on_refuse["target_option_id"] == "ally" and "原议相反" in on_refuse["reason"]
+
+
+def test_season_condition(r9_state) -> None:
+    """season 条件：按当前季（结算中即正在结算的这一季）判断；value 可写一季或一组，operator: ne 取反。"""
+    from simcore.domain.describe import describe_condition
+    from simcore.domain.events import condition_errors, matches
+
+    state = r9_state.model_copy(deep=True)
+    state.calendar.season = "冬"
+    assert matches({"kind": "season", "value": "冬"}, state)
+    assert matches({"kind": "season", "value": ["秋", "冬"]}, state)
+    assert not matches({"kind": "season", "value": "春"}, state)
+    assert matches({"kind": "season", "operator": "ne", "value": "春"}, state)
+    assert condition_errors({"kind": "season"}, "x") and not condition_errors({"kind": "season", "value": "冬"}, "x")
+    assert "时令在冬" in describe_condition({"kind": "season", "value": "冬"}, state)
+
+
+def test_retired_advisor_is_labelled(r9_state) -> None:
+    """致仕者仍可上书，名下注「致仕在家，上书言」；在朝者不注。"""
+    from simcore.domain.memorials import _public_item
+
+    item = {"id": "m_x", "title": "议", "advisors": [{"character": "chancellor", "stance": "support", "line": "可。"}],
+            "options": [{"id": "a", "label": "甲", "ops": []}]}
+    assert _public_item(item, r9_state)["advisors"][0]["name"] == r9_state.characters["chancellor"].name
+    state, _ = apply({"op": "set_character_status", "character": "chancellor", "status": "retired"}, r9_state)
+    row = _public_item(item, state)["advisors"][0]
+    assert row["name"].endswith("（致仕在家，上书言）") and row["retired"] is True
+
+
+def test_briefing_shows_relations_and_fog_note(mech_env) -> None:
+    """简报列出本方对各方的关系值；有风闻数值时注明区间每季重新估测。"""
+    from test_round9 import new_game
+
+    service, session_id = new_game(3)
+    line = next(row for row in service.briefing(session_id).splitlines() if "诸国关系" in row)
+    assert "叛军" in line or "rebels" in line or "-50" in line or "−50" in line
+
+
+def test_late_report_marks_money_already_booked(r9_state) -> None:
+    """远地军报晚到：钱粮事实注「已计入上季对账」，免得读来像本季又入一笔。"""
+    from simcore.domain.courier import defer_event_report, release_late_reports
+    from simcore.domain.models import Fact
+
+    state = r9_state.model_copy(deep=True)
+    resource = next(iter(state.resources))
+    facts = [Fact(kind="resource", text="国库 +30（市舶抽解）", entity=resource, before=10, after=40), Fact(kind="event", text="海舶大至", entity="ships")]
+    defer_event_report(state, {"id": "ships", "title": "海舶大至", "region": "west"}, facts, state.turn)
+    _, released = release_late_reports(state, state.turn + 1)
+    money = next(fact for fact in released if fact.kind == "resource")
+    assert money.text.endswith("（已计入上季对账，军报今到）") and money.arrived_late

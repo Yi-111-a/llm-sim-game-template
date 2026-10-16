@@ -383,6 +383,9 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         visible = [fact for fact in effect_facts if not fact.internal]
         report.facts.extend(fact for fact in effect_facts if fact.internal)
         defer_event_report(updated, entry, [*visible, event_fact], target)
+        if any(fact.kind == "resource" for fact in visible):
+            # 数目已在本季对账（事件/选择）里，详情随军报下季到：先说一声，免得对账里有数而事实里无据
+            report.facts.append(Fact(kind="note", text="远地有事，军报未到：其钱粮等数目已计入本季对账「事件/选择」，详情下季送达"))
     else:
         report.facts.extend(effect_facts)
         report.facts.append(event_fact)
