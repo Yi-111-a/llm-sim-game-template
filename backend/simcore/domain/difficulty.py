@@ -1,7 +1,8 @@
 """难度档（scenario.yaml `difficulties` / `default_difficulty`）。
 
-每档：{id, label, description, drift_scale: {resource_id: factor}, gravity_scale: {event_id 或 *: factor},
-start: {resource_id: value}, delay_scale: factor}。开局时写入 WorldState.rules["difficulty"]，
+每档：{id, label, description, drift_scale: {resource_id: factor}, drift_bias: {resource_id: 每回合加数},
+gravity_scale: {event_id 或 *: factor}, start: {resource_id: value}, delay_scale: factor}。
+drift_scale 乘整段漂移：玩家把漂移压成负数时，乘大反而帮了玩家；要让难档对善治者也更难，用 drift_bias（先乘后加）。开局时写入 WorldState.rules["difficulty"]，
 此后回合结算（漂移、事件概率）与拟诏（延期概率）都从 state.rules 读取，存档快照与重放都不依赖剧本当前内容。
 """
 
@@ -62,6 +63,7 @@ def apply_difficulty(state: WorldState, row: dict[str, Any] | None) -> WorldStat
         "label": str(row.get("label", row.get("id"))),
         "description": str(row.get("description", "")),
         "drift_scale": {str(key): float(value) for key, value in (row.get("drift_scale") or {}).items()},
+        "drift_bias": {str(key): float(value) for key, value in (row.get("drift_bias") or {}).items()},
         "gravity_scale": {str(key): float(value) for key, value in (row.get("gravity_scale") or {}).items()},
         "delay_scale": float(row.get("delay_scale", 1.0)),
     }
@@ -89,6 +91,14 @@ def drift_factor(state: WorldState, resource_id: str) -> float:
         return 1.0
     scales = row.get("drift_scale") or {}
     return float(scales.get(resource_id, scales.get("*", 1.0)))
+
+
+def drift_bias(state: WorldState, resource_id: str) -> float:
+    """难度档对某资源每回合漂移的加数（drift_bias，缺省 0）：在 drift_scale 乘过之后再加。"""
+    row = current_difficulty(state)
+    if row is None:
+        return 0.0
+    return float((row.get("drift_bias") or {}).get(resource_id, 0.0))
 
 
 def gravity_factor(state: WorldState, event_id: str) -> float:
@@ -125,7 +135,7 @@ def difficulty_errors(definition: dict[str, Any], resource_ids: set[str], event_
         seen.add(str(row["id"]))
         if not row.get("label"):
             errors.append(f"{location} 缺少 label")
-        for key in ("drift_scale", "gravity_scale", "start"):
+        for key in ("drift_scale", "drift_bias", "gravity_scale", "start"):
             value = row.get(key)
             if value is not None and not isinstance(value, dict):
                 errors.append(f"{location}.{key} 必须是映射")
@@ -133,6 +143,11 @@ def difficulty_errors(definition: dict[str, Any], resource_ids: set[str], event_
             if str(resource_id) != "*" and str(resource_id) not in resource_ids:
                 errors.append(f"{location}.drift_scale 资源不存在：{resource_id}")
             errors.extend(_factor_error(factor, f"{location}.drift_scale.{resource_id}"))
+        for resource_id, value in (row.get("drift_bias") or {}).items():
+            if str(resource_id) not in resource_ids:
+                errors.append(f"{location}.drift_bias 资源不存在：{resource_id}")
+            elif not _is_number(value):
+                errors.append(f"{location}.drift_bias.{resource_id} 必须是数字")
         for event_id, factor in (row.get("gravity_scale") or {}).items():
             if str(event_id) != "*" and str(event_id) not in event_ids:
                 errors.append(f"{location}.gravity_scale 事件不存在：{event_id}")

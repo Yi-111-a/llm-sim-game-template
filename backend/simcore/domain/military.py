@@ -10,7 +10,7 @@
 将领自主（`settings.autonomy: {formula, by_order?, outcomes?, levels?}`）：对有统帅之军下的军令（march / move_army / detach /
 set_army_posture），按公式算出「拒命或擅动」概率（统帅的特质为变量，另有 is_march / is_detach / is_hold / is_attack /
 is_scorch / is_move、present、strength（万））。拟诏回执只给风险等级（低 / 中 / 高）；确认时以种子随机判定，命中则该条款
-延至下季结算时执行（delay：迁延一季照行；alter：改作他令；sortie：擅自出战），结算时写成事实（kind: autonomy）。
+延至本季末结算时执行（delay：迁延一季照行；alter：改作他令；sortie：擅自出战），结算时写成事实（kind: autonomy）。
 """
 
 from __future__ import annotations

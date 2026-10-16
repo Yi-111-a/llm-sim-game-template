@@ -18,7 +18,7 @@ INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP serve
    不在京者不能当场廷议（NOT_PRESENT），可列入 court_debate 的 written 递书面议状，下季入谏言库。
 4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，cards 使用政令卡（policy_cards 查看），ops 直接给出 StateOp（格式见 op_reference）；
    作用于远地的条款「驿程遥远，令达于下季」；军令（出征、分兵、set_army_posture）附将领自主风险等级；
-   看回执中每条 applied（可行：确认后本季即行）/ rejected / delayed（确认后延至下季结算时执行），再 confirm_edict。
+   看回执中每条 applied（可行：确认后本季即行）/ rejected / delayed（确认后延至本季末结算时执行），再 confirm_edict。
    草案不确认不施行：本季有未确认草案时 end_turn 会以 DRAFT_UNCONFIRMED 拒绝（确要放弃则 discard_drafts: true）。
    确认诏书或处置抉择后若出现「本季新出奏疏」，可在 end_turn 前继续拟诏处理。
 5. 用 choose 处置待决事件；然后 end_turn 结算本季，读取事实、战报、危机分项与终局。
@@ -70,12 +70,12 @@ DESCRIPTIONS: dict[str, str] = {
         "adopted 为 [{memorial_id, option_id}] 采纳奏疏选项；cards 为 [{card_id, params}] 政令卡（见 policy_cards）；"
         "ops 为 StateOp 列表（见 op_reference）。作用于远地者「驿程遥远，令达于下季」（delayed，延期原因注明驿程 / 有司稽迟 / 将领自主）；"
         "回执逐条给出 applied（可行：确认后本季即行；确认后记「已行」）/ rejected（原因与错误码）"
-        "/ delayed（确认后延至下季结算时执行（第 n 回合）；确认后记「已延至…」），并给出 edict_id"
+        "/ delayed（确认后延至本季末结算时执行（进入第 n 回合时生效）；确认后记「已延至…」），并给出 edict_id"
         "（edict_id 只取 edict- 开头的编号本身）。草案须 confirm_edict 才施行。"
         "Draft an edict; returns a per-clause receipt and an edict_id for confirm_edict."
     ),
     "confirm_edict": (
-        "确认诏书草案，使 applied 条款本季即行（回执记「已行」）、delayed 条款排入下季结算（回执记「已延至下季结算时执行（第 n 回合）」），"
+        "确认诏书草案，使 applied 条款本季即行（回执记「已行」）、delayed 条款排入下季结算（回执记「已延至本季末结算时执行（进入第 n 回合时生效）」），"
         "并记下已采纳的奏疏；因此新出现的奏疏列在「本季新出奏疏」。"
         "编号不存在时错误信息列出本季可确认的草案编号。Confirm a drafted edict by edict_id."
     ),

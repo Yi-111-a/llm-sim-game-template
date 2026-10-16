@@ -314,6 +314,7 @@ def test_memory_when_placeholder_is_the_season_it_happens(r9_state) -> None:
     state.calendar.label = "宣和三年秋"
     state, _ = apply({"op": "remember", "character": "general", "fact": "{when}，奉命出镇"}, state)
     assert state.characters["general"].memories[-1] == "宣和三年秋，奉命出镇"
+    assert summarize_ops([{"op": "remember", "character": "general", "fact": "{when}，奉命出镇"}], state)[0].endswith("宣和三年秋，奉命出镇")
 
 
 def test_stamp_does_not_prefix_the_time_condition(r9_state) -> None:
@@ -338,3 +339,31 @@ def test_pending_choice_options_carry_effect_summaries(r9_state) -> None:
     row = choice_view(choice, r9_state)
     assert row["options"][0]["summary"] and "−10" in row["options"][0]["summary"][0]
     assert row["options"][1]["summary"] == []
+
+
+def test_difficulty_drift_bias_is_added_after_scaling(r9_state) -> None:
+    """drift_bias：难档每回合的加数（先乘 drift_scale 再加），玩家把漂移压成负数时难档照样更难。"""
+    from simcore.domain.difficulty import apply_difficulty, difficulty_errors, drift_bias
+
+    state = r9_state.model_copy(deep=True)
+    resource = next(iter(state.resources))
+    apply_difficulty(state, {"id": "hard", "label": "难", "drift_scale": {resource: 1.2}, "drift_bias": {resource: 0.5}})
+    assert drift_bias(state, resource) == 0.5 and drift_bias(state, "nope") == 0.0
+    errors = difficulty_errors({"difficulties": [{"id": "x", "label": "x", "drift_bias": {"ghost": 1, resource: "a"}}]}, {resource}, set())
+    assert any("ghost" in row for row in errors) and any("必须是数字" in row for row in errors)
+
+
+def test_far_reports_still_on_the_road_are_delivered_when_the_game_ends(mech_env) -> None:
+    """终局之后没有下一季：当季存下的远地军报在终局那次结算一并送达，不再许诺「下季送达」。"""
+    from test_round9 import end_turn, new_game
+
+    service, session_id = new_game(5)
+    session = service.session(session_id)
+    while session.head_state().turn < 7:
+        end_turn(service, session_id)
+    session.append_op({"op": "set_flag", "key": "force_west", "value": True})
+    result = end_turn(service, session_id)
+    assert session.head_state().outcome is not None
+    events = result["report"]["events"]
+    assert any(row.get("id") == "west_raid" and row.get("arrived_late") for row in events)
+    assert not any("下季送达" in str(fact.get("text", "")) for fact in result["report"]["facts"])

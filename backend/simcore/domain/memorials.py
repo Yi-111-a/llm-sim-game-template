@@ -365,7 +365,8 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
     if op == "adjust_relation":
         return f"{entity_name(state, raw['a'])}↔{entity_name(state, raw['b'])} 关系 {signed(raw['delta'])}"
     if op == "remember":
-        return f"{name('character', raw['character'])} 记下：{raw['fact']}"
+        fact = str(raw["fact"]).replace("{when}", state.calendar.label or "")  # 回执与预览里也填上「某季」，与人物记忆一致
+        return f"{name('character', raw['character'])} 记下：{fact}"
     if op == "set_character_status":
         return f"{name('character', raw['character'])} {STATUS_NAMES.get(raw['status'], raw['status'])}"
     if op == "cancel_ledger":

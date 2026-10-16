@@ -5,7 +5,7 @@
 - client_ops：客户端 / 诏令文本条款的 op 与回执结果（玩家自拟，原样给出）；
 - drafts / confirms：拟诏回执（旁路文件 <session>.receipts.jsonl）与确认回执（日志中的 edict 条目）：逐条 status、source、
   摘要、错误码、延期原因与执行回合；
-- delayed：排入下季的延期条款（摘要、执行回合、timing「延至下季结算时执行（第 n 回合）」、来源）；
+- delayed：排入下季的延期条款（摘要、执行回合、timing「延至本季末结算时执行（进入第 n 回合时生效）」、来源）；
 - choices：事件抉择 {choice_id, option_id, title, option}；
 - audiences / debates / advice：召对（人物与方式）、廷议议题、谏言；client 模式的召对 / 廷议另有轻量记录（旁路文件
   <session>.calls.jsonl：人物、方式、议题、参与者、回合，via: "client"，不含台词）；

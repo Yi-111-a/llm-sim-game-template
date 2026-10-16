@@ -325,7 +325,7 @@ def public_crisis_change(
     for item in items:
         lines.append(f"{item['kind_label']}「{item['label']}」{item['display']}")
     if abs(other) > 1e-9:
-        lines.append(f"其他（取整、到上下限截断等）{format_value(shown(other), signed=True)}")
+        lines.append(f"其他（军报未到之事、取整、到上下限截断等）{format_value(shown(other), signed=True)}")
     return {
         "title": title,
         "hidden": hidden_crisis,

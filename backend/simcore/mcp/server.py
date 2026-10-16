@@ -289,8 +289,8 @@ def make_tools(service: GameService | None = None, mode: str | None = None) -> d
 
 
 def timing_text(clause: dict[str, Any], confirmed: bool = False) -> str:
-    """条款何时生效。草案（未确认）：「可行（确认后本季即行）」/「确认后延至下季结算时执行（第 n 回合）」；
-    确认后：「已行」/「已延至下季结算时执行（第 n 回合）」。"""
+    """条款何时生效。草案（未确认）：「可行（确认后本季即行）」/「确认后延至本季末结算时执行（进入第 n 回合时生效）」；
+    确认后：「已行」/「已延至本季末结算时执行（进入第 n 回合时生效）」。"""
     status = clause.get("status")
     if status == "applied":
         return "已行" if confirmed else "可行（确认后本季即行）"

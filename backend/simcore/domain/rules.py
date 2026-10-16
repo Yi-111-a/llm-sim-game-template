@@ -189,8 +189,8 @@ def turn_label(state: WorldState, turn: Any, short: bool = False) -> str:
 
 
 def delay_phrase(due_turn: Any = None) -> str:
-    """延期条款的统一说法：「延至下季结算时执行（第 n 回合）」（回执、事实、简报、复盘日志都用它）。"""
-    return f"延至下季结算时执行（第 {due_turn} 回合）" if due_turn is not None else "延至下季结算时执行"
+    """延期条款的统一说法：「延至本季末结算时执行（进入第 n 回合时生效）」（回执、事实、简报、复盘日志都用它）。"""
+    return f"延至本季末结算时执行（进入第 {due_turn} 回合时生效）" if due_turn is not None else "延至本季末结算时执行"
 
 
 def mover_faction(state: WorldState, faction: str | None) -> str | None:
@@ -364,8 +364,10 @@ def posting_plan(
             detail = f"自{origin}" + (f"经{'、'.join(via)}" if via else "") + f"，约{turns}{unit}抵{destination}"
             kept, released = left_behind_armies(state, character, army)
             behind = left_behind_text(kept, released) + _elsewhere_text(state, character, army, kept, released)
-            return {"kind": "dispatch", "text": f"已启程赴任（{detail}），到任前由副将暂摄{behind}" if army is not None
-                    else f"已启程赴任（{detail}）{behind}", "route": (path, turns), "release": [row.id for row in released]}
+            # 尚未生效的条款（延期、预览）写「令达后启程」，只有已执行的才写「已启程」
+            go = "令达后启程赴任" if pending else "已启程赴任"
+            return {"kind": "dispatch", "text": f"{go}（{detail}），到任前由副将暂摄{behind}" if army is not None
+                    else f"{go}（{detail}）{behind}", "route": (path, turns), "release": [row.id for row in released]}
         return {"kind": "remote", "text": f"遥领，不赴任（无路可达{destination}）{deputy}", "route": None}
     if transit:
         where = f"正在途中：{travel_note(state, character)}"

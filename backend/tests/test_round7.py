@@ -1,5 +1,5 @@
 """第 7 轮措辞修复（gpt-06 / gpt-07 报告）：草案回执与确认回执分用「可行（确认后本季即行）」/「已行」，延期条款统一说成
-「延至下季结算时执行（第 n 回合）」；简报「待办与在途」；玩家文本不出现回合代号 T\d+ 与六位以上的裸数。"""
+「延至本季末结算时执行（进入第 n 回合时生效）」；简报「待办与在途」；玩家文本不出现回合代号 T\d+ 与六位以上的裸数。"""
 
 import asyncio
 import json
@@ -25,10 +25,10 @@ def test_draft_and_confirmed_receipts_use_different_timing_words() -> None:
     ]
     draft = _clause_lines(clauses, confirmed=False)
     assert draft[0].startswith("1. [applied 可行（确认后本季即行）]")
-    assert draft[1].startswith("2. [delayed 确认后延至下季结算时执行（第 3 回合）]") and "延期原因：有司稽迟" in draft[1]
+    assert draft[1].startswith("2. [delayed 确认后延至本季末结算时执行（进入第 3 回合时生效）]") and "延期原因：有司稽迟" in draft[1]
     confirmed = _clause_lines(clauses, confirmed=True)
     assert confirmed[0].startswith("1. [applied 已行]") and "本季即行" not in confirmed[0]
-    assert confirmed[1].startswith("2. [delayed 已延至下季结算时执行（第 3 回合）]")
+    assert confirmed[1].startswith("2. [delayed 已延至本季末结算时执行（进入第 3 回合时生效）]")
     for line in draft + confirmed:  # 同一件事不混用「下季」与「本季结算」
         assert "本季 end_turn 结算" not in line and "本季结算" not in line
 
@@ -39,7 +39,7 @@ def test_delay_wording_is_shared_by_briefing_and_export(mech_env) -> None:
     session = service.session(session_id)
     session.append_pending([{"op": "adjust_resource", "resource": "treasury", "delta": -10}], 1, label="请减赋")
     phrase = delay_phrase(1)
-    assert phrase == "延至下季结算时执行（第 1 回合）"
+    assert phrase == "延至本季末结算时执行（进入第 1 回合时生效）"
     briefing = service.briefing(session_id)
     assert "## 待办与在途" in briefing and "延期条款「请减赋」" in briefing and phrase in briefing
     assert "待执行的延期条款" not in briefing

@@ -11,7 +11,7 @@ from simcore.domain.courier import defer_event_report, event_is_far, record_memo
 from simcore.domain.court import reset_agenda
 from simcore.domain.crisis import crisis_report, evaluate_terms, formula_values
 from simcore.domain.describe import describe_satisfied, stamp
-from simcore.domain.difficulty import drift_factor, gravity_factor
+from simcore.domain.difficulty import drift_bias, drift_factor, gravity_factor
 from simcore.domain.events import matches
 from simcore.domain.formulas import evaluate
 from simcore.domain.military import posture_attrition, scorch_effects
@@ -206,7 +206,8 @@ def resolve_turn(
         except (ValueError, ZeroDivisionError) as exc:
             report.warnings.append(f"漂移公式无效：{resource_id}: {exc}")
             continue
-        applied = _credit(resource, base * factor)
+        bias = drift_bias(updated, resource_id)
+        applied = _credit(resource, base * factor + bias)
         report.ledger_lines.append(
             LedgerLine(name=f"{resource.name}变动", amount=applied, kind="drift", resource=resource_id, reason="场景漂移公式", group=f"{resource.name}漂移")
         )
@@ -216,9 +217,9 @@ def resolve_turn(
                 "terms": evaluate_terms(crisis, values),
                 "base": base,
                 "factor": factor,
-                "difficulty": base * (factor - 1),
+                "difficulty": base * (factor - 1) + bias,
                 "applied": applied,
-                "clamp": applied - base * factor,
+                "clamp": applied - base * factor - bias,
             }
     marks.append(_amounts(updated))
 
@@ -295,6 +296,15 @@ def resolve_turn(
             report.crisis["change"] = _crisis_change(report, crisis_id, fact_marks, marks, crisis_drift)
     # 远地军报：上季存下的事件条目与事实此时送达（带 arrived_late / origin_turn）；朝会日程计数清零
     late_events, late_facts = release_late_reports(updated, target)
+    if updated.outcome is not None:
+        # 终局之后没有下一季：本季存下的远地军报此刻一并送达，不再说「详情下季送达」
+        final_events, final_facts = release_late_reports(updated, target + 1)
+        for fact in final_facts:
+            if fact.kind == "resource":
+                fact.text = fact.text.replace("（已计入上季对账，军报今到）", "（已计入本季对账，终局时补报）")
+        late_events.extend(final_events)
+        late_facts.extend(final_facts)
+        report.facts = [fact for fact in report.facts if not (fact.kind == "note" and fact.text.startswith(LATE_NOTE))]
     report.facts.extend(late_facts)
     if late_events:
         report.events = sort_events([*report.events, *late_events])
@@ -385,7 +395,7 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         defer_event_report(updated, entry, [*visible, event_fact], target)
         if any(fact.kind == "resource" for fact in visible):
             # 数目已在本季对账（事件/选择）里，详情随军报下季到：先说一声，免得对账里有数而事实里无据
-            report.facts.append(Fact(kind="note", text="远地有事，军报未到：其钱粮等数目已计入本季对账「事件/选择」，详情下季送达"))
+            report.facts.append(Fact(kind="note", text=f"{LATE_NOTE}：其钱粮等数目已计入本季对账「事件/选择」，详情下季送达"))
     else:
         report.facts.extend(effect_facts)
         report.facts.append(event_fact)
@@ -443,6 +453,9 @@ def event_importance(event: dict[str, Any], facts: list[Fact] | None = None) -> 
     if event.get("choices"):
         return 1
     return 0
+
+
+LATE_NOTE = "远地有事，军报未到"
 
 
 def sort_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
