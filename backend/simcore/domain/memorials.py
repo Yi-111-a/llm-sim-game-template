@@ -15,7 +15,7 @@ from simcore.domain.rules import (
     entity_name,
     find_route,
     office_army,
-    office_station,
+    appointment_station,
     posting_plan,
     stat_name,
     trait_name,
@@ -266,7 +266,7 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
         army_id = office_army(state, office_id)
         if army_id:
             text += f"，兼统{state.armies[army_id].name}"
-        station = office_station(state, office_id)
+        station = appointment_station(state, office_id, bool(raw.get("dispatch", False)))
         character = state.characters.get(str(raw["character"]))
         if station is not None and character is not None:
             plan = posting_plan(

@@ -322,6 +322,17 @@ def office_station(state: WorldState, office_id: str) -> str | None:
     return army_station(state.armies[army]) if army else None
 
 
+def appointment_station(state: WorldState, office_id: str, dispatch: bool) -> str | None:
+    """任命后此人应在的地区：有任所之职取任所；京官（无任所）写了 dispatch: true 时取御前所在（召外官入朝任京职）。
+
+    京官未写 dispatch 时为 None（只授职，人不动）。
+    """
+    station = office_station(state, office_id)
+    if station is None and dispatch:
+        return court_region(state)
+    return station
+
+
 def posting_plan(
     state: WorldState, character: Any, station: str, dispatch: bool, *, army: Any = None, pending: bool = False
 ) -> dict[str, Any]:

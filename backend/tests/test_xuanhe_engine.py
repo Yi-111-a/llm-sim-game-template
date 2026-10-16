@@ -121,3 +121,16 @@ def test_foreign_characters_cannot_be_summoned_or_join_debate(mech_env) -> None:
     with pytest.raises(GameError) as err:
         service.begin_audience(session_id, foreign.id)
     assert err.value.code == "CHARACTER_UNAVAILABLE" and "非本朝臣属" in err.value.message
+
+
+def test_dispatch_to_capital_office_brings_the_official_to_court(r9_state) -> None:
+    """京官（无任所）写 dispatch: true：召外官入朝，此人启程赴御前；不写 dispatch 则只授职、人不动。"""
+    assert r9_state.characters["plotter"].region == "north"
+    state, facts = apply({"op": "appoint", "character": "plotter", "office": "censor", "dispatch": True}, r9_state)
+    transit = state.characters["plotter"].in_transit
+    assert transit and transit.get("to_region") == "capital"
+    assert "已启程赴任" in facts[0].text
+    assert "已启程赴任" in summarize_ops([{"op": "appoint", "character": "plotter", "office": "censor", "dispatch": True}], r9_state)[0]
+    state, facts = apply({"op": "appoint", "character": "plotter", "office": "censor"}, r9_state)
+    assert state.characters["plotter"].in_transit is None and state.characters["plotter"].region == "north"
+    assert "启程" not in facts[0].text

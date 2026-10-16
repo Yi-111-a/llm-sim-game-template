@@ -53,7 +53,7 @@ from simcore.domain.rules import (
     left_behind_armies,
     left_behind_text,
     office_army,
-    office_station,
+    appointment_station,
     posting_plan,
     stat_name,
     stat_range,
@@ -153,7 +153,7 @@ def apply(
         if army is not None and army.commander != op.character:
             army.commander = op.character
             text += f"，兼统{army.name}"
-        station = office_station(updated, op.office)
+        station = appointment_station(updated, op.office, op.dispatch)
         if station is not None:
             text += _posting(updated, character, station, op.dispatch, army)[0]
         facts.append(Fact(kind="appointment", text=text, entity=op.character, after=op.office))
