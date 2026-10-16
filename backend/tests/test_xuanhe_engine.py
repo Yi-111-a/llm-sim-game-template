@@ -94,3 +94,14 @@ def test_merge_army_rejects_other_faction_and_self(r9_state) -> None:
 
     assert isinstance(validate({"op": "merge_army", "army": rebel, "into": "guard"}, r9_state), Rejected)
     assert isinstance(validate({"op": "merge_army", "army": "guard", "into": "guard"}, r9_state), Rejected)
+
+
+def test_capital_memorials_are_presented_not_couriered(r9_state) -> None:
+    from simcore.domain.courier import arrival_text
+
+    capital = r9_state.rules.get("capital_region")
+    assert capital, "fixture declares a capital"
+    text = arrival_text(r9_state, str(capital))
+    assert text.endswith("奏上") and "奏到" not in text
+    other = next(region for region in r9_state.regions if region != capital)
+    assert arrival_text(r9_state, other).endswith(f"自{r9_state.regions[other].name}奏到")

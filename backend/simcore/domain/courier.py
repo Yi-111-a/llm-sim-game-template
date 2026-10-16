@@ -97,6 +97,8 @@ def arrival_text(state: WorldState, region_id: str, settings: dict[str, Any] | N
         offset = max(0, 30 + days - months * 30)
     else:
         offset = days
+    if region_id == state.rules.get("capital_region") and not late:
+        return f"{date_text(start, offset)}奏上"  # 京中之奏，不说「自京城奏到」
     return f"{date_text(start, offset)}自{region.name}奏到"
 
 

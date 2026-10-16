@@ -160,8 +160,9 @@ def test_far_memorials_arrive_a_season_late_with_dates(mech_env) -> None:
     ids = [row["id"] for row in view["memorials"]]
     assert "m_tax" in ids and "m_west" not in ids
     tax = next(row for row in view["memorials"] if row["id"] == "m_tax")
-    assert tax["arrival"] == "正月初四日自京畿奏到" and tax["arrived_late"] is False and tax["courier_days"] == 3
-    assert "正月初四日自京畿奏到" in service.briefing(session_id)
+    # 京中之奏写「奏上」，不写「自京畿奏到」（《宣和》界面审读）
+    assert tax["arrival"] == "正月初四日奏上" and tax["arrived_late"] is False and tax["courier_days"] == 3
+    assert "正月初四日奏上" in service.briefing(session_id)
     session = service.session(session_id)
     session.append_op({"op": "set_flag", "key": "force_west", "value": True})
     end_turn(service, session_id)
