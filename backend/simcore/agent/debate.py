@@ -143,6 +143,11 @@ def decide_stances(
                 stance, reason = str(table[character_id]), "素有成见"
             elif character.bloc and character.bloc in table:
                 stance, reason = str(table[character.bloc]), f"{bloc_label(state, character.bloc)}的共同立场"
+            if stance is not None and _counter_proposal(memorial, proposal_option):
+                # 立场表是对奏疏原议（proposal）而言的；所议之案若是原议的反面，赞否随之对调
+                flipped = {"support": "oppose", "oppose": "support"}.get(stance)
+                if flipped:
+                    stance, reason = flipped, f"{reason}（所议之案与原议相反）"
         if stance is None and entities:
             stance, reason = _entity_stance(state, character_id, topic, entities, polarity, interests)
         if stance is None:
@@ -350,6 +355,17 @@ def _option_score(
     total = sum(value for value, _ in parts)
     reason = max(parts, key=lambda item: abs(item[0]))[1] if parts else ""
     return total, reason
+
+
+def _counter_proposal(memorial: dict[str, Any] | None, proposal_option: str | None) -> bool:
+    """廷议所议之案（proposal_option）不是奏疏原议（memorial.proposal），且两者首句褒贬不同或不明：视为原议的反面。"""
+    if not memorial or not proposal_option or not memorial.get("proposal") or proposal_option == memorial.get("proposal"):
+        return False
+    labels = {str(row.get("id")): str(row.get("label", "")) for row in memorial.get("options", []) or [] if isinstance(row, dict)}
+    if proposal_option not in labels or str(memorial["proposal"]) not in labels:
+        return False
+    a, b = _lead_polarity(labels[proposal_option]), _lead_polarity(labels[str(memorial["proposal"])])
+    return not (a != 0 and a == b)
 
 
 def _lead_polarity(label: str) -> int:

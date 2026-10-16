@@ -221,3 +221,27 @@ def test_clause_that_depends_on_a_delayed_clause_is_delayed_too(r9_state) -> Non
     # 没有延期条款时什么也不改
     plain = [{"status": "applied", "op": {"op": "appoint", "character": "general", "office": "chancellor"}}]
     assert cascade_delays(r9_state, plain) == [] and plain[0]["status"] == "applied"
+
+
+def test_topic_table_stances_flip_when_the_debate_is_on_the_counter_option(mech_scenario) -> None:
+    """debate_topics 的派系立场是对奏疏原议（proposal）而言：议「谢绝」时，主「结盟」的一派应是反对。"""
+    import copy
+
+    from simcore.agent.debate import decide_stances
+
+    scenario = copy.deepcopy(mech_scenario)
+    definition = scenario.get("scenario", scenario)
+    definition["debate_topics"] = [{"id": "pact", "keywords": ["结盟"], "stances": {"hawks": "support"}}]
+    scenario["memorials"].append({
+        "id": "m_pact", "turn": 0, "title": "结盟", "proposal": "ally", "keywords": ["结盟"],
+        "options": [
+            {"id": "ally", "label": "遣使结盟", "ops": []},
+            {"id": "refuse", "label": "谢绝来使", "ops": []},
+        ],
+    })
+    state = build_initial_state(scenario)
+    state.characters["general"].bloc = "hawks"
+    on_ally = decide_stances(state, scenario, "结盟", ["general"], memorial_id="m_pact", seed=1, proposal_option="ally")[0]
+    on_refuse = decide_stances(state, scenario, "结盟", ["general"], memorial_id="m_pact", seed=1, proposal_option="refuse")[0]
+    assert on_ally["stance"] == "support" and on_ally["target_option_id"] == "ally"
+    assert on_refuse["stance"] == "oppose" and on_refuse["target_option_id"] == "ally" and "原议相反" in on_refuse["reason"]
