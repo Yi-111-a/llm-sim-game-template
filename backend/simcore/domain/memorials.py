@@ -108,7 +108,8 @@ ADVISOR_REQUIRES = frozenset({"office", "region", "alive"})
 def advisor_present(advisor: dict[str, Any], state: WorldState) -> tuple[bool, bool]:
     """谏言人此刻能否进言：返回 (可显示, 是否为旧议)。
 
-    缺省要求在世且未系狱、流放（致仕者仍可进言）。advisor.requires 可加：
+    缺省要求在世且未系狱、流放（致仕者仍可进言），且是本朝之人：剧本写了 player_faction 时，此刻势力不同者
+    （降而复叛的将领、敌国君臣）不进言。advisor.requires 可加：
     office（官职 id 或列表：须任其一）、region（地区 id 或列表：须身在其一）、
     alive: false（允许引用已不在朝者的旧议，显示时标「旧议」）。
     """
@@ -118,6 +119,9 @@ def advisor_present(advisor: dict[str, Any], state: WorldState) -> tuple[bool, b
     requires = advisor.get("requires") if isinstance(advisor.get("requires"), dict) else {}
     absent = character.status in ADVISOR_ABSENT
     if absent and requires.get("alive", True) is not False:
+        return False, False
+    own = state.rules.get("player_faction")
+    if own and character.faction != own:
         return False, False
     office = requires.get("office")
     if office is not None:

@@ -134,3 +134,17 @@ def test_dispatch_to_capital_office_brings_the_official_to_court(r9_state) -> No
     state, facts = apply({"op": "appoint", "character": "plotter", "office": "censor"}, r9_state)
     assert state.characters["plotter"].in_transit is None and state.characters["plotter"].region == "north"
     assert "启程" not in facts[0].text
+
+
+def test_advisors_of_another_faction_do_not_speak(r9_state) -> None:
+    """降而复叛者、敌国之人不在本朝奏疏下进言（与召对、廷议的「非本朝臣属」一致）。"""
+    from simcore.domain.memorials import advisor_present
+
+    state = r9_state.model_copy(deep=True)
+    state.rules["player_faction"] = "court"
+    advisor = {"character": "plotter", "stance": "support", "option": "a", "line": "臣以为可。"}
+    assert advisor_present(advisor, state) == (True, False)
+    state.characters["plotter"].faction = "rebels"
+    assert advisor_present(advisor, state) == (False, False)
+    state.rules.pop("player_faction")
+    assert advisor_present(advisor, state) == (True, False)  # 未写 player_faction 的剧本不变
