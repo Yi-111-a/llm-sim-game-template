@@ -181,7 +181,7 @@ def release_late_reports(state: WorldState, turn: int) -> tuple[list[dict[str, A
 
 
 def op_target_regions(state: WorldState, op: dict[str, Any]) -> list[str]:
-    """条款作用的地区：军队的驻地（在途为出发地）、人物所在地、工程地区。"""
+    """条款作用的地区：军队的驻地（在途为出发地）、人物所在地、工程地区、地区指标的调整（adjust_region）。"""
     name = op.get("op")
     regions: list[str] = []
     army = state.armies.get(str(op.get("army"))) if op.get("army") else None
@@ -190,7 +190,7 @@ def op_target_regions(state: WorldState, op: dict[str, Any]) -> list[str]:
     character = state.characters.get(str(op.get("character"))) if op.get("character") else None
     if character is not None and name in {"appoint", "dismiss", "move_character", "set_character_status"}:
         regions.append(character.region)
-    if name == "start_project" and op.get("region") in state.regions:
+    if name in {"start_project", "adjust_region"} and op.get("region") in state.regions:
         regions.append(str(op.get("region")))
     return regions
 

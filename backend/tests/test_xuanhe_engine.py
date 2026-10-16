@@ -295,3 +295,15 @@ def test_late_report_marks_money_already_booked(r9_state) -> None:
     _, released = release_late_reports(state, state.turn + 1)
     money = next(fact for fact in released if fact.kind == "resource")
     assert money.text.endswith("（已计入上季对账，军报今到）") and money.arrived_late
+
+
+def test_adjusting_a_far_region_waits_for_the_courier(mech_env) -> None:
+    """adjust_region 作用于远地（驿程超过阈值）时与任免、调兵一样，令达于下季。"""
+    from simcore.domain.courier import far_target, is_far
+
+    state = build_initial_state(load_scenario(FIXTURE_SCENARIOS / "r9_test"))
+    far = next((region for region in state.regions if is_far(state, region)), None)
+    assert far is not None
+    assert far_target(state, [{"op": "adjust_region", "region": far, "stat": "prosperity", "delta": 3}])[0] == far
+    near = next(region for region in state.regions if not is_far(state, region))
+    assert far_target(state, [{"op": "adjust_region", "region": near, "stat": "prosperity", "delta": 3}]) is None
