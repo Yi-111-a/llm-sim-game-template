@@ -44,6 +44,7 @@ from simcore.domain.ops import (
 from simcore.domain.rules import (
     STATUS_NAMES,
     Rejected,
+    appointment_station,
     army_station,
     clamp_stat,
     coalesce_postings,
@@ -53,7 +54,6 @@ from simcore.domain.rules import (
     left_behind_armies,
     left_behind_text,
     office_army,
-    appointment_station,
     posting_plan,
     stat_name,
     stat_range,

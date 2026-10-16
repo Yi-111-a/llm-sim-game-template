@@ -10,12 +10,12 @@ from simcore.domain.models import WorldState
 from simcore.domain.ops import memory_ops, parse_op
 from simcore.domain.rules import (
     STATUS_NAMES,
+    appointment_station,
     army_station,
     coalesce_postings,
     entity_name,
     find_route,
     office_army,
-    appointment_station,
     posting_plan,
     stat_name,
     trait_name,
