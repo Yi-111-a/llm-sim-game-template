@@ -9,7 +9,7 @@ from typing import Any
 
 from simcore.agent.loop import guarded_chat
 from simcore.agent.offline import chronicle_numbers, is_offline, offline_chronicle, offline_minister_reply
-from simcore.agent.tools import PLAYER_TIER, AgentTools
+from simcore.agent.tools import PLAYER_TIER, AgentTools, cascade_delays
 from simcore.domain.cards import CardError, expand_card
 from simcore.domain.courier import courier_delay_reason, far_target
 from simcore.domain.difficulty import delay_factor
@@ -265,6 +265,7 @@ async def interpret_edict(
             clauses.append({"category": category, "text": text, "status": "narrative_only", "ops": [], "reason": "", "source": "text"})
             continue
         add_clauses(proposed, {"category": category, "text": text, "source": "text", "label": f"诏令（{category}）"})
+    cascade_delays(state, clauses)
     return {
         "id": f"edict-{uuid.uuid4().hex[:12]}",
         "turn": state.turn,

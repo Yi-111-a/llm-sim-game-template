@@ -66,3 +66,36 @@ class AgentTools:
 
     def ask_clarification(self, question: str) -> dict[str, str]:
         return {"status": "needs_clarification", "question": question}
+
+
+def cascade_delays(state: WorldState, clauses: list[dict[str, Any]]) -> list[int]:
+    """预览按「全部条款都执行」逐条校验；之后有的条款被判延期（驿程、有司稽迟、将领自主），本季照常执行的条款
+    若倚赖它（如先令某人致仕、再以他人补其官缺，而致仕被延期），确认时就会被拒。
+
+    这里只用本季照常执行的条款重演一遍：其中此刻行不通、而算上延期条款才行得通的，随之延至下季
+    （delay_kind=dependency）；两样都行不通的保持原状（确认时照常报错）。就地修改 clauses，返回改动的条款序号（从 1 起）。
+    """
+    if not any(clause.get("status") == "delayed" for clause in clauses):
+        return []
+    working = state
+    changed: list[int] = []
+    for index, clause in enumerate(clauses, start=1):
+        op = clause.get("op")
+        if clause.get("status") != "applied" or not isinstance(op, dict) or not op:
+            continue
+        try:
+            parsed = parse_op(op)
+            result = validate(parsed, working)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(result, Rejected):
+            clause.update({
+                "status": "delayed",
+                "delay_kind": "dependency",
+                "delay_reason": f"所倚之条款延至下季，此条随之延期（若此刻执行：{result.message}）",
+                "due_turn": state.turn + 1,
+            })
+            changed.append(index)
+            continue
+        working, _ = apply(parsed, working)
+    return changed

@@ -202,3 +202,22 @@ def test_memorial_cooldown_brings_a_standing_item_back(r9_state) -> None:
         assert is_visible(item, state) is shown, turn
         assert not is_visible(plain, state)
     assert state.flags[memorial_flag("s_test")] == "a"  # 事件仍可读上次的批答
+
+
+def test_clause_that_depends_on_a_delayed_clause_is_delayed_too(r9_state) -> None:
+    """先令丞相致仕（被判延期）、再以他人补其官缺：补缺一条此刻会因「已有任职者」被拒，预览却按全部执行写成可行。
+    cascade_delays 让它随前条延至下季；与延期条款无关的条款照常执行。"""
+    from simcore.agent.tools import cascade_delays
+
+    clauses = [
+        {"status": "delayed", "delay_kind": "bureaucratic", "op": {"op": "set_character_status", "character": "chancellor", "status": "retired"}},
+        {"status": "applied", "op": {"op": "appoint", "character": "general", "office": "chancellor"}},
+        {"status": "applied", "op": {"op": "adjust_resource", "resource": next(iter(r9_state.resources)), "delta": 1}},
+    ]
+    assert cascade_delays(r9_state, clauses) == [2]
+    assert clauses[1]["status"] == "delayed" and clauses[1]["delay_kind"] == "dependency" and clauses[1]["due_turn"] == r9_state.turn + 1
+    assert "已有任职者" in clauses[1]["delay_reason"] or "任职" in clauses[1]["delay_reason"]
+    assert clauses[2]["status"] == "applied"
+    # 没有延期条款时什么也不改
+    plain = [{"status": "applied", "op": {"op": "appoint", "character": "general", "office": "chancellor"}}]
+    assert cascade_delays(r9_state, plain) == [] and plain[0]["status"] == "applied"

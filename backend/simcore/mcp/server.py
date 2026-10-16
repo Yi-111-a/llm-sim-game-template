@@ -311,7 +311,7 @@ def _written_lines(rows: Any) -> list[str]:
     return ["## 书面议状（不在京者，不参与当场辩论）", *(f"- {row['name']}（{row['whereabouts']}）：{row['note']}" for row in rows)]
 
 
-DELAY_KIND_LABELS = {"courier": "驿程", "bureaucratic": "有司稽迟", "autonomy": "将领自主"}
+DELAY_KIND_LABELS = {"courier": "驿程", "bureaucratic": "有司稽迟", "autonomy": "将领自主", "dependency": "随前条延期"}
 
 
 def _new_memorial_lines(rows: Any) -> list[str]:

@@ -17,7 +17,7 @@ from simcore.agent.debate import debate_speeches, debate_summary, decide_stances
 from simcore.agent.loop import AgentAborted
 from simcore.agent.offline import is_offline
 from simcore.agent.roles import AUDIENCE_VOICE, chat_availability, interpret_edict, minister_chat_messages, narrator, offline_minister_text
-from simcore.agent.tools import PLAYER_TIER, SCENARIO_TIER, AgentTools
+from simcore.agent.tools import PLAYER_TIER, SCENARIO_TIER, AgentTools, cascade_delays
 from simcore.config import load_settings
 from simcore.domain.apply import OpRejected, apply, edict_memories
 from simcore.domain.cards import card_flag, cards_view
@@ -850,6 +850,8 @@ class GameService:
                         "autonomy": roll["result"],
                     })
                     autonomy.append(roll)
+        if autonomy:
+            cascade_delays(state, clauses)  # 军令被将领延宕后，倚赖它的条款随之延期
         runnable = [clause for clause in clauses if clause["status"] == "applied" and clause.get("op")]
         results = session.append_ops([clause["op"] for clause in runnable], [self._clause_label(clause) for clause in runnable])
         memories: list[dict[str, Any]] = []
