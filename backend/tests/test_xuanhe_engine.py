@@ -513,3 +513,16 @@ def test_chronicle_markdown_is_stripped() -> None:
     text = plain_prose("**起居注** **除授** - 以甲为御史中丞。 - 乙罢职。\n## 边事\n- 金破辽上京。\n1. 上元灯会；国库 -15")
     assert "*" not in text and "#" not in text
     assert text.splitlines() == ["起居注 除授", "以甲为御史中丞。", "乙罢职。", "边事", "金破辽上京。", "上元灯会；国库 -15"]
+
+
+def test_model_thinking_blocks_never_reach_the_player() -> None:
+    """本机 Claude 偶尔把 <thinking>…</thinking> 草稿写进正文：非流式与流式（标签被切在两块之间）都要滤掉。"""
+    from simcore.agent.roles import plain_prose
+    from simcore.llm.cli_agent import ThinkingFilter, strip_thinking
+
+    assert strip_thinking("<thinking>Write concise record.</thinking>起居注：甲。") == "起居注：甲。"
+    assert strip_thinking("正文<think>x</think>尾") == "正文尾"
+    gate = ThinkingFilter()
+    out = "".join(gate.feed(part) for part in ["前<thin", "king>秘密</thi", "nking>后", "<", "b>"]) + gate.flush()
+    assert out == "前后<b>"
+    assert plain_prose("<thinking>draft</thinking>**起居注** 甲。") == "起居注 甲。"

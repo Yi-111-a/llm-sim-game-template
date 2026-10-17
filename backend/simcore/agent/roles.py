@@ -369,6 +369,7 @@ async def narrator(
 def plain_prose(text: str) -> str:
     """模型写的纪事去掉 Markdown 记号（界面按纯文字显示，**、#、行首的「- 」会原样露出）：
     粗体 / 斜体记号删去，标题、列表、引用的行首记号删去，行内「 - 」列表改为分行。"""
+    text = re.sub(r"<(thinking|think)>.*?</\1>", "", text, flags=re.S)  # 模型写进正文的草稿段
     text = re.sub(r"\*\*|__|(?<![\w*])\*(?![\s*])|(?<![\s*])\*(?![\w*])", "", text)
     text = re.sub(r"\s+-\s+(?=\S)", "\n", text)
     lines = [re.sub(r"^\s*(?:#{1,6}\s*|[-*+]\s+|>\s*|\d+[.)]\s+)", "", line).rstrip() for line in text.splitlines()]

@@ -133,6 +133,7 @@ class CliAgentProvider:
             raise ToolCallingUnsupported(f"{self.kind} CLI 没有原生函数调用，请改用只返回 JSON 的路径")
         system, prompt = render_prompt(messages, response_format)
         text = await (self._claude(system, prompt) if self.kind == "claude" else self._codex(system, prompt))
+        text = strip_thinking(text)
         if response_format:
             text = _strip_fence(text)
         return ChatResult(
@@ -146,8 +147,14 @@ class CliAgentProvider:
         if self.kind != "claude":
             yield await self._codex(system, prompt)
             return
+        gate = ThinkingFilter()
         async for piece in self._claude_stream(system, prompt):
-            yield piece
+            visible = gate.feed(piece)
+            if visible:
+                yield visible
+        tail = gate.flush()
+        if tail:
+            yield tail
 
     @property
     def label(self) -> str:
@@ -294,3 +301,57 @@ def _child_env() -> dict[str, str]:
     for key in ("SIM_MCP_MODE", "SIM_MCP_NAME"):
         env.pop(key, None)
     return env
+
+
+_THINK_OPEN = ("<thinking>", "<think>")
+_THINK_CLOSE = {"<thinking>": "</thinking>", "<think>": "</think>"}
+
+
+def strip_thinking(text: str) -> str:
+    """去掉模型写进正文里的 <thinking>…</thinking>（或 <think>…</think>）段：这些是它的草稿，不能给玩家看。"""
+    gate = ThinkingFilter()
+    return (gate.feed(text) + gate.flush()).strip()
+
+
+class ThinkingFilter:
+    """流式过滤 <thinking> 段：标签可能被切在两块之间，故末尾留一小段待下一块拼上再判断。"""
+
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.closing: str | None = None
+
+    def feed(self, piece: str) -> str:
+        self.buffer += piece
+        out: list[str] = []
+        while self.buffer:
+            if self.closing:
+                end = self.buffer.find(self.closing)
+                if end < 0:
+                    keep = len(self.closing) - 1
+                    self.buffer = self.buffer[-keep:] if keep else ""
+                    break
+                self.buffer = self.buffer[end + len(self.closing):]
+                self.closing = None
+                continue
+            starts = [(self.buffer.find(tag), tag) for tag in _THINK_OPEN if self.buffer.find(tag) >= 0]
+            if starts:
+                index, tag = min(starts)
+                out.append(self.buffer[:index])
+                self.buffer = self.buffer[index + len(tag):]
+                self.closing = _THINK_CLOSE[tag]
+                continue
+            hold = max((len(tag) - 1 for tag in _THINK_OPEN), default=0)
+            cut = len(self.buffer)
+            for size in range(min(hold, len(self.buffer)), 0, -1):
+                if any(tag.startswith(self.buffer[-size:]) for tag in _THINK_OPEN):
+                    cut = len(self.buffer) - size
+                    break
+            out.append(self.buffer[:cut])
+            self.buffer = self.buffer[cut:]
+            break
+        return "".join(out)
+
+    def flush(self) -> str:
+        rest = "" if self.closing else self.buffer
+        self.buffer = ""
+        return rest
