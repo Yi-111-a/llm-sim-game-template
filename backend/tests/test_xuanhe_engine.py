@@ -576,3 +576,116 @@ def test_far_event_with_a_choice_is_reported_at_once(mech_env) -> None:
     row = next(row for row in report["events"] if row["id"] == "west_raid")
     assert not row.get("arrived_late")
     assert any(choice["event_id"] == "west_raid" for choice in service.view(session_id)["pending_choices"])
+
+
+def test_destroyed_army_reports_no_empty_losses_or_march(r9_state) -> None:
+    state, _ = apply({"op": "adjust_army", "army": "guard", "delta": -10_000_000}, r9_state)
+    assert state.armies["guard"].strength == 0
+    state, facts = apply({"op": "adjust_army", "army": "guard", "delta": -9000, "reason": "师老粮匮"}, state)
+    assert facts == []
+    target = next(iter(state.regions[state.armies["guard"].region].adjacency))
+    state, facts = apply({"op": "move_army", "army": "guard", "to_region": target}, state)
+    assert state.armies["guard"].in_transit is not None
+    assert facts and all(fact.internal for fact in facts if fact.kind == "movement")
+    # 有兵之军照常报
+    _, facts = apply({"op": "adjust_army", "army": "guard", "delta": 0}, r9_state)
+    assert [fact.kind for fact in facts] == ["army"]
+
+
+def test_choices_opened_in_the_final_season_are_sealed() -> None:
+    from test_mechanics import CHOICE_EVENT, make_world, resolve
+
+    definition = {"endings": [{"id": "storm", "kind": "ending", "title": "山雨欲来"}], "game_length": {"last_turn": 1, "fallback_ending": "storm"}}
+    state, report = resolve(make_world(), {"events": [CHOICE_EVENT], "scenario": definition})
+    assert state.outcome is not None and report.events_fired == ["petition"]
+    assert state.pending_choices == [] and report.choices_opened == []
+    assert any(fact.kind == "note" and "「请饷」随之封存" in fact.text for fact in report.facts)
+
+
+def test_standing_memorial_notes_the_previous_ruling_when_it_returns(r9_state) -> None:
+    from simcore.domain.memorials import _public_item
+
+    item = {"id": "s_x", "title": "常事", "cooldown": 2, "summary": "原奏", "repeat_summary": "又奏",
+            "options": [{"id": "keep", "label": "依旧"}]}
+    assert _public_item(item, r9_state)["summary"] == "原奏"
+    state, _ = apply({"op": "set_flag", "key": "memorial:s_x", "value": "keep"}, r9_state)
+    state.turn += 3
+    assert _public_item(item, state)["summary"] == "（复奏：此事3季前已奏，当时批「依旧」。）又奏"
+    item.pop("repeat_summary")
+    assert _public_item(item, state)["summary"].endswith("。）原奏")
+
+
+def test_advisor_backing_another_appointment_is_counted_against(r9_state) -> None:
+    from simcore.agent.debate import decide_stances
+
+    a, b = [cid for cid, row in r9_state.characters.items() if row.status == "alive"][:2]
+    memorial = {
+        "id": "pick", "title": "择相", "turn": 0, "proposal": "x",
+        "advisors": [{"character": a, "stance": "support", "option": "x"}, {"character": b, "stance": "support", "option": "y"}],
+        "options": [{"id": "x", "label": "擢甲为相"}, {"id": "y", "label": "擢乙为相"}],
+    }
+    rows = decide_stances(r9_state, {"memorials": [memorial]}, "择相", [a, b], memorial_id="pick", proposal_option="x")
+    stances = {row["character"]: row["stance"] for row in rows}
+    assert stances == {a: "support", b: "oppose"}
+    assert next(row for row in rows if row["character"] == b)["target_option_id"] == "y"
+
+
+def test_rewriting_a_named_ledger_reads_as_old_to_new(r9_state) -> None:
+    op = {"op": "add_ledger", "id": "palace", "name": "宫廷用度", "category": "treasury", "amount": -22, "kind": "recurring"}
+    state, facts = apply(op, r9_state)
+    assert facts[0].text == "新增账目：宫廷用度"
+    cut = {**op, "amount": -15}
+    assert summarize_ops([cut], state)[0] == "账目「宫廷用度」改定：−22 → −15"
+    state, facts = apply(cut, state)
+    assert facts[0].text == "账目改定：宫廷用度（−22 → −15）"
+    assert [row.amount for row in state.ledger if row.id == "palace"] == [-15]
+
+
+def test_late_report_note_names_where_it_happened(r9_state) -> None:
+    import random as _random
+
+    from simcore.domain.courier import is_far
+    from simcore.domain.turn import LATE_NOTE, resolve_turn
+
+    far = next(region for region in r9_state.regions if is_far(r9_state, region))
+    resource = next(iter(r9_state.resources))
+    events = [
+        {"id": f"far_{index}", "title": f"远事{index}", "gravity": 1, "region": far,
+         "effects": [{"op": "adjust_resource", "resource": resource, "delta": 5, "reason": "远事"}]}
+        for index in range(2)
+    ]
+    _, report = resolve_turn(r9_state, _random.Random(1), {"events": events})
+    notes = [fact.text for fact in report.facts if fact.kind == "note" and fact.text.startswith(LATE_NOTE)]
+    assert notes == [f"{LATE_NOTE}（{r9_state.regions[far].name}）：其钱粮等数目已计入本季对账「事件/选择」，详情下季送达"]
+
+
+def test_option_memory_replaces_the_automatic_appointment_memory(mech_env, monkeypatch) -> None:
+    import asyncio
+
+    from simcore.service import GameService
+
+    service = GameService()
+    session_id, _ = service.create_session("r9_test", 1)
+    scenario = service.session(session_id).scenario
+    scenario["memorials"].append({
+        "id": "m_pick", "turn": 0, "expires_after": 3, "title": "择御史", "summary": "请择御史。",
+        "options": [{"id": "eunuch", "label": "以宦者为御史",
+                     "memory": {"character": "eunuch", "text": "{when}，陛下以臣为御史"},
+                     "ops": [{"op": "appoint", "character": "eunuch", "office": "censor"}]}],
+    })
+    receipt = asyncio.run(service.draft_edict(session_id, adopted=[{"memorial_id": "m_pick", "option_id": "eunuch"}], use_provider=False))
+    assert all(row["status"] == "applied" for row in receipt["clauses"]), receipt["clauses"]
+    service.confirm_edict(session_id, receipt["id"])
+    memories = service.session(session_id).state.characters["eunuch"].memories
+    assert sum("御史" in row for row in memories) == 1 and memories[-1].endswith("陛下以臣为御史")
+
+
+def test_offices_with_requirements_list_qualified_people(r9_state) -> None:
+    from simcore.domain.reference import build_reference
+
+    rows = {row["id"]: row for row in build_reference(r9_state, entity_kind="offices")["rows"]}
+    chancellor = rows["chancellor"]
+    expected = [cid for cid, row in r9_state.characters.items() if row.status == "alive" and row.traits.get("ability", 0) >= 5
+                and row.faction in (None, r9_state.rules.get("player_faction"))]
+    assert chancellor["qualified"] == expected
+    assert "qualified" not in rows["censor"]

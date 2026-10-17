@@ -123,6 +123,7 @@ def apply(
             Fact(kind="resource", text=f"{row.name} {signed_number(amount - before)}{capped}{suffix}", entity=op.resource, before=before, after=amount)
         )
     elif isinstance(op, AddLedger):
+        replaced = next((row for row in updated.ledger if op.id and row.id == op.id), None)
         if op.id:
             updated.ledger = [row for row in updated.ledger if row.id != op.id]
         updated.ledger.append(
@@ -137,7 +138,11 @@ def apply(
                 cancellable=op.cancellable,
             )
         )
-        facts.append(Fact(kind="ledger", text=f"新增账目：{op.name}", entity=op.category))
+        if replaced is not None:
+            text = f"账目改定：{op.name}（{signed_number(replaced.amount)} → {signed_number(op.amount)}）"
+        else:
+            text = f"新增账目：{op.name}"
+        facts.append(Fact(kind="ledger", text=text, entity=op.category))
     elif isinstance(op, CancelLedger):
         cancelled = next((row.name for row in updated.ledger if row.id == op.ledger_id), op.ledger_id)
         updated.ledger = [row for row in updated.ledger if row.id != op.ledger_id]
@@ -209,8 +214,16 @@ def apply(
         origin = updated.regions[army.region].name
         escort = _escort_commander(updated, army) if op.with_commander else ""
         verb = "出征" if isinstance(op, March) else "开拔"
+        # 兵已打光的空番号照常归营（统帅随行），但不再当作一支军队开拔报给玩家
         facts.append(
-            Fact(kind="movement", text=f"{army.name}自{origin}{verb}，赴{route_text}{escort}", entity=op.army, before=army.region, after=op.to_region)
+            Fact(
+                kind="movement",
+                text=f"{army.name}自{origin}{verb}，赴{route_text}{escort}",
+                entity=op.army,
+                before=army.region,
+                after=op.to_region,
+                internal=army.strength <= 0,
+            )
         )
     elif isinstance(op, Detach):
         facts.append(_detach(updated, op))
@@ -297,7 +310,8 @@ def apply(
         army = updated.armies[op.army]
         before = army.strength
         army.strength = max(0.0, before + op.delta)
-        if op.delta or not op.quality_delta:
+        # 已覆灭之军（0 兵）再折损：数目不变，不出「兵力 +0（0→0）」这样的空事实
+        if army.strength != before or (not op.delta and not op.quality_delta and before > 0):
             text = reason if reason and army.name in reason else f"{army.name}兵力 {signed_number(army.strength - before)}{suffix}"
             facts.append(Fact(kind="army", text=text, entity=op.army, before=before, after=army.strength))
         if op.quality_delta:
@@ -487,7 +501,7 @@ def detach_name(state: WorldState, army: Any, wanted: str | None) -> str:
 
 
 def _detach(state: WorldState, op: Detach) -> Fact:
-    """分兵：新军 id 为「原军 id_d序号」，兵力自原军扣出；去向不同则整段出发（同 move_army 寻路）。"""
+    """分兵：新军 id 为「原军 id_d流水号」（全局流水号），兵力自原军扣出；去向不同则整段出发（同 move_army 寻路）。"""
     source = state.armies[op.army]
     sequence = int(state.flags.get("_internal:id_seq", 0)) + 1
     state.flags["_internal:id_seq"] = sequence

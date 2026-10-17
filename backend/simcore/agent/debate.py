@@ -424,9 +424,10 @@ def assign_option_targets(
         explicit = _option_index(options, advisors[character_id].get("option")) if character_id in advisors else None
         if explicit is not None:
             pick, why = explicit, "所上之言即主此案"
-            # 谏言所主之案与所议之案同一方即为赞成，另一方即为反对：赞否随所主之案，不与之相悖
+            # 谏言所主之案即所议之案为赞成，主张别案即为反对（同为「授官」「准奏」一类的别案也是另一案，
+            # 如议「擢李纲」而主「用蔡攸」）：赞否随所主之案，不与之相悖
             if proposal is not None and stance != "neutral":
-                stance = "support" if explicit in same_side else "oppose"
+                stance = "support" if explicit == proposal else "oppose"
                 row.update({"stance": stance, "stance_label": STANCE_LABELS[stance]})
             if stance == "oppose" and proposal is not None and proposal != explicit:
                 against = proposal

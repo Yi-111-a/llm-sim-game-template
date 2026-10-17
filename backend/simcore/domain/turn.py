@@ -76,8 +76,10 @@ def resolve_turn(
         if clause.source == "autonomy":
             # 将领自主（拒命 / 改作他令 / 擅自出战）：结算时写成事实（见 domain.military）
             report.facts.append(Fact(kind="autonomy", text=label, cause=label))
+        remembered = {str(row.get("character")) for row in clause.ops if isinstance(row, dict) and row.get("op") == "remember"}
         for op in clause.ops:
             memories = edict_memories(op, updated) if clause.source in {"edict", "autonomy"} else []
+            memories = [row for row in memories if row["character"] not in remembered]  # 同组已有剧本记忆，不再一事两记
             blocked = status_target_check(updated, op) if clause.source in {"edict", "autonomy"} else None
             if blocked is not None:
                 report.warnings.append(f"延期条款未能执行（原延至第 {clause.due_turn} 回合结算时执行）：{blocked.message}")
@@ -261,6 +263,12 @@ def resolve_turn(
         updated.outcome = outcome
         report.outcome = outcome
         report.facts.append(Fact(kind="outcome", text=f"终局：{outcome.title}", entity=outcome.id))
+        if updated.pending_choices:
+            # 终局之后没有下一季可供处置：待决之事随局封存，不再列为「新的待决事件」，免得给出到不了的期限
+            titles = "、".join(f"「{row.title}」" for row in updated.pending_choices)
+            report.facts.append(Fact(kind="note", text=f"大局已定，待决之事{titles}随之封存，不再处置"))
+            updated.pending_choices = []
+            report.choices_opened = []
         ending = next(
             (row for row in scenario_definition.get("endings", []) or [] if isinstance(row, dict) and str(row.get("id")) == outcome.id),
             {},
@@ -394,11 +402,18 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         visible = [fact for fact in effect_facts if not fact.internal]
         report.facts.extend(fact for fact in effect_facts if fact.internal)
         defer_event_report(updated, entry, [*visible, event_fact], target)
-        if any(fact.kind == "resource" for fact in visible) and not any(
-            fact.kind == "note" and fact.text.startswith(LATE_NOTE) for fact in report.facts
-        ):
-            # 数目已在本季对账（事件/选择）里，详情随军报下季到：先说一声（一季只说一次），免得对账里有数而事实里无据
-            report.facts.append(Fact(kind="note", text=f"{LATE_NOTE}：其钱粮等数目已计入本季对账「事件/选择」，详情下季送达"))
+        if any(fact.kind == "resource" for fact in visible):
+            # 数目已在本季对账（事件/选择）里，详情随军报下季到：先说一声（一季一条，注明出事之地），免得对账里有数而事实里无据
+            region = updated.regions.get(str(event.get("region")))
+            where = region.name if region is not None else ""
+            note = next((fact for fact in report.facts if fact.kind == "note" and fact.text.startswith(LATE_NOTE)), None)
+            places = [*(note.entity.split("、") if note is not None and note.entity else []), *([where] if where else [])]
+            places = list(dict.fromkeys(places))
+            text = f"{LATE_NOTE}{'（' + '、'.join(places) + '）' if places else ''}：其钱粮等数目已计入本季对账「事件/选择」，详情下季送达"
+            if note is None:
+                report.facts.append(Fact(kind="note", text=text, entity="、".join(places) or None))
+            else:
+                note.text, note.entity = text, "、".join(places) or None
     else:
         report.facts.extend(effect_facts)
         report.facts.append(event_fact)

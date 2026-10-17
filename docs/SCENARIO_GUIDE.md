@@ -496,6 +496,7 @@ settings:
   turn: 0                     # 可见回合 [turn, turn + expires_after]；也可只写 conditions
   expires_after: 1
   # cooldown: 4               # 常设条目：处理满 4 季后再呈上（memorial:<id> 保留上次批答）
+  # repeat_summary: ……         # 常设条目复奏时的正文（缺省沿用 summary）；复奏时自动注明「此事 n 季前已奏，当时批某」
   # 选项可写 immediate: true：放任的后果（「依旧」「不问」）不掷有司稽迟
   title: 北境请饷
   summary: 北境总兵许定边奏：边军冬衣未备，请拨银二十万两。

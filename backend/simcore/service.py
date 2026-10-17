@@ -867,6 +867,12 @@ class GameService:
         runnable = [clause for clause in clauses if clause["status"] == "applied" and clause.get("op")]
         results = session.append_ops([clause["op"] for clause in runnable], [self._clause_label(clause) for clause in runnable])
         memories: list[dict[str, Any]] = []
+        # 同一组条款（同一奏疏选项）已写了当事人的记忆（剧本 memory）时，不再另记一条「陛下任某为某」，免得一事两记
+        remembered = {
+            (clause.get("group"), str(clause["op"].get("character")))
+            for clause in runnable
+            if clause["op"].get("op") == "remember"
+        }
         for clause, result in zip(runnable, results, strict=True):
             if not result["ok"]:
                 clause["status"] = "rejected"
@@ -874,7 +880,9 @@ class GameService:
                 clause["code"] = result["code"]
             else:
                 # 任免、处置人物的条款写入当事人的记忆（延期条款在下季执行时再写，见 resolve_turn）。
-                memories.extend(edict_memories(clause["op"], state))
+                memories.extend(
+                    row for row in edict_memories(clause["op"], state) if (clause.get("group"), row["character"]) not in remembered
+                )
         if memories:
             session.append_ops(memories)
         delayed: dict[Any, tuple[str, list[dict[str, Any]]]] = {}

@@ -537,4 +537,5 @@ def delay_explanation(formula: dict[str, Any], state: WorldState) -> dict[str, A
     if authority is not None and authority_term > 0:
         parts.append(f"{authority.name}（{format_number(authority_value)}）尚能督责")
     terms = {"base": round(base, 4), "corruption": round(corruption_term, 4), "authority": round(-authority_term, 4), "scale": scale}
-    return {"probability": probability, "reason": "；".join(parts) + f"（本季延期概率约 {round(probability * 100)}%）", "terms": terms}
+    note = f"（本季每道奏疏、每组条款各自掷一次，每次延期概率约 {round(probability * 100)}%）"
+    return {"probability": probability, "reason": "；".join(parts) + note, "terms": terms}

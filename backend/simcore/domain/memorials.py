@@ -164,6 +164,22 @@ def present_advisors(item: dict[str, Any], state: WorldState) -> list[dict[str, 
     return rows
 
 
+def _summary(item: dict[str, Any], state: WorldState) -> str:
+    """常设条目（cooldown）再次呈上时注明前次批答，免得读来像同一道奏疏原样重来。
+
+    剧本可写 `repeat_summary` 作为复奏时的正文（缺省沿用 summary）。
+    """
+    summary = str(item.get("summary", ""))
+    key = memorial_flag(str(item.get("id")))
+    last = state.flags.get(key)
+    if not int(item.get("cooldown", 0) or 0) or last is None or key not in state.flag_turns:
+        return summary
+    label = next((str(row.get("label", row.get("id"))) for row in item.get("options", []) or [] if str(row.get("id")) == str(last)), str(last))
+    ago = max(1, state.turn - state.flag_turns[key])
+    body = str(item.get("repeat_summary") or summary)
+    return f"（复奏：此事{ago}季前已奏，当时批「{label}」。）{body}"
+
+
 def _public_item(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
     advisors = []
     for advisor in present_advisors(item, state):
@@ -193,7 +209,7 @@ def _public_item(item: dict[str, Any], state: WorldState) -> dict[str, Any]:
     return {
         "id": item.get("id"),
         "title": item.get("title", item.get("id")),
-        "summary": item.get("summary", ""),
+        "summary": _summary(item, state),
         "region": item.get("region"),
         "region_name": region.name if region else None,
         "advisors": advisors,
@@ -285,9 +301,9 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
         if resource is not None:
             delta = float(raw["delta"])
             if delta < 0 and resource.minimum is not None and resource.amount + delta < resource.minimum - 1e-9:
-                text += f"（今 {resource.amount:g}，至多降到下限 {resource.minimum:g}）"
+                text += f"（今 {round(resource.amount, 1):g}，至多降到下限 {resource.minimum:g}）"
             elif delta > 0 and resource.maximum is not None and resource.amount + delta > resource.maximum + 1e-9:
-                text += f"（今 {resource.amount:g}，至多升到上限 {resource.maximum:g}）"
+                text += f"（今 {round(resource.amount, 1):g}，至多升到上限 {resource.maximum:g}）"
         return text
     if op == "appoint":
         text = f"任 {name('character', raw['character'])} 为 {name('office', raw['office'])}"
@@ -310,6 +326,10 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
     if op == "start_project":
         return f"兴工「{raw['name']}」{raw['turns']} 季"
     if op == "add_ledger":
+        # 有名账目同 id 再写即改定（不是再加一笔）：写出原数与新数，免得「−15」读成「再减 15」
+        old = next((row for row in state.ledger if raw.get("id") and row.id == raw.get("id")), None)
+        if old is not None:
+            return f"账目「{raw['name']}」改定：{signed(old.amount)} → {signed(raw['amount'])}"
         return f"账目「{raw['name']}」{signed(raw['amount'])}"
     if op == "adjust_army":
         parts = []

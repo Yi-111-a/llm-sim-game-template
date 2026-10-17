@@ -26,9 +26,22 @@ APPOINTMENT_RULE = (
 )
 DETACH_RULE = (
     "move_army / march 调动全军；只调一部用 detach（army, strength, to_region, new_army_name?, commander?）：从原军分出 strength 兵力编为新军"
-    "（新 id 为「原军id_d序号」，名缺省「原军名偏师」），自原驻地开拔赴 to_region（与原驻地相同则就地分屯）；strength 须少于原军现有兵力。"
+    "（新 id 为「原军id_d流水号」——流水号全局递增，不是本军第几次分兵，以 op_reference(entity_kind=armies) 查得为准；"
+    "名缺省「原军名偏师」），自原驻地开拔赴 to_region（与原驻地相同则就地分屯）；strength 须少于原军现有兵力。"
     "commander 为新军统帅：与原军同驻者随新军同行（其原统之军依任命规则处置），否则启程赴任；不写则暂无主帅。"
 )
+
+def qualified_for(state: WorldState, office: Any) -> list[str]:
+    """合乎官职 requires（各项属性 ≥ 要求）的本朝在世人物 id（不论眼下是否兼职已满、人在何处）。"""
+    own = mover_faction(state, None)
+    return [
+        character.id
+        for character in state.characters.values()
+        if character.status == "alive"
+        and (own is None or character.faction in (None, own))
+        and all(character.traits.get(key, 0) >= value for key, value in office.requires.items() if isinstance(value, (int, float)))
+    ]
+
 ENTITY_KINDS = ("resources", "characters", "offices", "regions", "armies", "factions", "ledger", "standing_orders", "pending_choices")
 
 
@@ -138,6 +151,8 @@ def _entity_rows(state: WorldState) -> dict[str, list[dict[str, Any]]]:
                 "name": row.name,
                 "holder": row.holder,
                 "requires": row.requires,
+                # 人物能力不公开：有任职条件的官职直接列出本朝在世者中合条件的人，免得任命前只能试错
+                **({"qualified": qualified_for(state, row)} if row.requires else {}),
                 **({"army": office_army(state, row.id)} if office_army(state, row.id) else {}),
                 **({"seat": office_station(state, row.id)} if office_station(state, row.id) else {}),
             }
