@@ -357,13 +357,22 @@ async def narrator(
             return "本回合暂无可记录的确定变化。"
         prompt = render_prompt("narrator", {"facts": facts}, (scenario or {}).get("root"))
         result = await provider.chat([
-            {"role": "system", "content": "只根据已应用事实写简短纪要，不添加事实、数字或推断。"},
+            {"role": "system", "content": "只根据已应用事实写简短纪要，不添加事实、数字或推断。用纯文字成段书写，不用 Markdown 标记（星号、井号、列表符）。"},
             {"role": "user", "content": prompt},
         ])
-        content = result.content
+        content = plain_prose(result.content or "")
     if any(not _number_allowed(number, report) for number in _NUMBER.findall(content)):
         return "；".join(facts)
     return content if content else ("；".join(facts) or "本回合暂无可记录的确定变化。")
+
+
+def plain_prose(text: str) -> str:
+    """模型写的纪事去掉 Markdown 记号（界面按纯文字显示，**、#、行首的「- 」会原样露出）：
+    粗体 / 斜体记号删去，标题、列表、引用的行首记号删去，行内「 - 」列表改为分行。"""
+    text = re.sub(r"\*\*|__|(?<![\w*])\*(?![\s*])|(?<![\s*])\*(?![\w*])", "", text)
+    text = re.sub(r"\s+-\s+(?=\S)", "\n", text)
+    lines = [re.sub(r"^\s*(?:#{1,6}\s*|[-*+]\s+|>\s*|\d+[.)]\s+)", "", line).rstrip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line.strip()).strip()
 
 
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_.])-?\d+(?:\.\d+)?")

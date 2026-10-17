@@ -505,3 +505,11 @@ def test_interpreter_context_lists_regions_and_armies(mech_scenario) -> None:
     text = _entity_context(mech_scenario)
     first_region = mech_scenario["regions"][0]
     assert f"{first_region['name']}={first_region['id']}" in text and "军队" in text
+
+
+def test_chronicle_markdown_is_stripped() -> None:
+    from simcore.agent.roles import plain_prose
+
+    text = plain_prose("**起居注** **除授** - 以甲为御史中丞。 - 乙罢职。\n## 边事\n- 金破辽上京。\n1. 上元灯会；国库 -15")
+    assert "*" not in text and "#" not in text
+    assert text.splitlines() == ["起居注 除授", "以甲为御史中丞。", "乙罢职。", "边事", "金破辽上京。", "上元灯会；国库 -15"]
