@@ -556,3 +556,23 @@ def test_preview_says_when_a_change_will_be_clipped(r9_state) -> None:
     line = summarize_ops([{"op": "adjust_resource", "resource": key, "delta": -6}], state)[0]
     assert f"至多降到下限 {row.minimum:g}" in line
     assert "下限" not in summarize_ops([{"op": "adjust_resource", "resource": key, "delta": -1}], state)[0]
+
+
+def test_far_event_with_a_choice_is_reported_at_once(mech_env) -> None:
+    """远地事件若带抉择，抉择当季就摆到御前，其事由也须同季送到，不能「先断后闻」。"""
+    from test_round9 import end_turn
+
+    from simcore.service import GameService
+
+    service = GameService()
+    scenario = service.scenario("r9_test")
+    raid = next(row for row in scenario["events"] if row["id"] == "west_raid")  # 西陲（远地）事件，加上抉择
+    raid["choices"] = [{"id": "yes", "text": "发兵", "effects": []}, {"id": "no", "text": "不发", "effects": []}]
+    raid["default_choice"] = "yes"
+    raid["choice_deadline"] = 1
+    session_id, _ = service.create_session("r9_test", 8)
+    service.session(session_id).append_op({"op": "set_flag", "key": "force_west", "value": True})
+    report = end_turn(service, session_id)["report"]
+    row = next(row for row in report["events"] if row["id"] == "west_raid")
+    assert not row.get("arrived_late")
+    assert any(choice["event_id"] == "west_raid" for choice in service.view(session_id)["pending_choices"])

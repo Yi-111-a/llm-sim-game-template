@@ -19,7 +19,8 @@ INSTRUCTIONS = """这是一个历史模拟策略游戏的引擎（This MCP serve
 4. 用 draft_edict 拟诏：adopted 采纳奏疏选项，cards 使用政令卡（policy_cards 查看），ops 直接给出 StateOp（格式见 op_reference）；
    作用于远地的条款「驿程遥远，令达于下季」；军令（出征、分兵、set_army_posture）附将领自主风险等级；
    看回执中每条 applied（可行：确认后本季即行）/ rejected / delayed（确认后延至本季末结算时执行），再 confirm_edict。
-   草案不确认不施行：本季有未确认草案时 end_turn 会以 DRAFT_UNCONFIRMED 拒绝（确要放弃则 discard_drafts: true）。
+   草案不确认不施行：本季有未确认草案时 end_turn 会以 DRAFT_UNCONFIRMED 拒绝（确要放弃则 discard_drafts: true；条款全被驳回的草案不算）。
+   一道奏疏只能采纳一个选项，确认之后即算已处理（MEMORIAL_UNAVAILABLE）；要改选，先别确认，另拟一道再确认。
    确认诏书或处置抉择后若出现「本季新出奏疏」，可在 end_turn 前继续拟诏处理。
 5. 用 choose 处置待决事件；然后 end_turn 结算本季，读取事实、战报、危机分项与终局。
 6. 终局后（outcome 非空）不能再推进；可用 history / rewind 回到更早的节点另开分支。

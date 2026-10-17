@@ -315,7 +315,8 @@ def public_crisis_change(
     total = shown(total_raw)
     title = str(crisis.get("title", resource.name))
     suffix = "，风闻" if hidden_crisis else ""
-    lines = [f"{title}变化：{format_value(total, signed=True)}{suffix}（以下为该季结算当时的实际贡献，非下季预计）"]
+    note = "；总数与各分项各自按档位估测，未必恰好相加" if hidden_crisis else ""
+    lines = [f"{title}变化：{format_value(total, signed=True)}{suffix}（以下为该季结算当时的实际贡献，非下季预计{note}）"]
     if drift:
         term_text = "；".join(f"{row['label']} {row['display']}" for row in drift["terms"])
         lines.append(f"漂移 {drift['base_display']}（{term_text}）")

@@ -387,8 +387,9 @@ def _maybe_fire_event(state: WorldState, event: dict[str, Any], target: int, rng
         "importance": event_importance(event, effect_facts),
         "internal": internal,
     }
-    if not internal and event_is_far(event, updated):
-        # 远地事件：状态即时改变，军报（事件条目与可见事实）晚一季送达（见 domain.courier）
+    if not internal and event_is_far(event, updated) and not event.get("choices"):
+        # 远地事件：状态即时改变，军报（事件条目与可见事实）晚一季送达（见 domain.courier）。
+        # 带抉择的远地事件不延：抉择此刻就摆到御前，事由须同时送到，不能先断后闻
         entry["region"] = str(event.get("region"))
         visible = [fact for fact in effect_facts if not fact.internal]
         report.facts.extend(fact for fact in effect_facts if fact.internal)
