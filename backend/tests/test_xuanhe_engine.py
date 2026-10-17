@@ -526,3 +526,33 @@ def test_model_thinking_blocks_never_reach_the_player() -> None:
     out = "".join(gate.feed(part) for part in ["前<thin", "king>秘密</thi", "nking>后", "<", "b>"]) + gate.flush()
     assert out == "前后<b>"
     assert plain_prose("<thinking>draft</thinking>**起居注** 甲。") == "起居注 甲。"
+
+
+def test_difficulty_bias_shows_in_crisis_forecast_and_change(mech_env) -> None:
+    """难度档的 drift_bias 要在危机计的预计漂移与上季变化里都看得见（以前地狱档写「难度加成 0」）。"""
+    from test_round9 import end_turn
+
+    from simcore.service import GameService
+
+    service = GameService()
+    scenario = service.scenario("r9_test")
+    definition = scenario["scenario"]
+    crisis_id = (definition.get("crisis") or {}).get("resource")
+    if not crisis_id:
+        import pytest
+        pytest.skip("fixture has no crisis")
+    definition["difficulties"] = [{"id": "hard", "label": "难", "drift_bias": {crisis_id: 0.5}}]
+    session_id, _ = service.create_session("r9_test", 8, difficulty="hard")
+    assert "- 难度（难）：每季 +0.5" in service.briefing(session_id)
+    result = end_turn(service, session_id)
+    lines = "\n".join(result["report"]["crisis_change"]["lines"])
+    assert "难度加成（难 每季 +0.5）" in lines
+
+
+def test_preview_says_when_a_change_will_be_clipped(r9_state) -> None:
+    state = r9_state.model_copy(deep=True)
+    key, row = next((k, r) for k, r in state.resources.items() if r.minimum is not None and not r.hidden)
+    row.amount = row.minimum + 2
+    line = summarize_ops([{"op": "adjust_resource", "resource": key, "delta": -6}], state)[0]
+    assert f"至多降到下限 {row.minimum:g}" in line
+    assert "下限" not in summarize_ops([{"op": "adjust_resource", "resource": key, "delta": -1}], state)[0]

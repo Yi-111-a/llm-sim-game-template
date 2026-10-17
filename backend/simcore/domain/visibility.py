@@ -8,6 +8,7 @@ import random
 from typing import Any
 
 from simcore.domain.crisis import band_for, evaluate_terms, expression_names, formula_values, interval_evaluate
+from simcore.domain.difficulty import drift_bias
 from simcore.domain.models import TurnReport, WorldState, is_internal_fact
 
 DEFAULT_HIDDEN_WIDTH = 10.0
@@ -288,13 +289,14 @@ def public_crisis_change(
                     high_sum += float(value)
             terms.append({"id": term.get("id"), "label": term.get("label", term.get("id")), "value": value, "display": format_value(value, signed=True)})
         factor = float(drift_raw.get("factor", 1.0) or 1.0)
+        bias = drift_bias(state, str(change["resource"]))  # 难度档的每季加数（drift_bias），先乘后加
         if hidden_crisis and any(isinstance(row["value"], list) for row in terms):
             base: Any = [round(low_sum, 2), round(high_sum, 2)]
-            extra: Any = sorted([round(low_sum * (factor - 1), 2), round(high_sum * (factor - 1), 2)])
+            extra: Any = sorted([round(low_sum * (factor - 1) + bias, 2), round(high_sum * (factor - 1) + bias, 2)])
         else:
             base = round(float(drift_raw.get("base", 0.0) or 0.0), 2)  # 危机值公开时漂移总额本已见于账目行
             extra = round(float(drift_raw.get("difficulty", 0.0) or 0.0), 2)
-        if abs(factor - 1) < 1e-9:
+        if abs(factor - 1) < 1e-9 and abs(bias) < 1e-9:
             extra = 0.0
         difficulty = state.rules.get("difficulty") if isinstance(state.rules.get("difficulty"), dict) else {}
         clamp = float(drift_raw.get("clamp", 0.0) or 0.0)
@@ -317,9 +319,11 @@ def public_crisis_change(
     if drift:
         term_text = "；".join(f"{row['label']} {row['display']}" for row in drift["terms"])
         lines.append(f"漂移 {drift['base_display']}（{term_text}）")
-        if abs(drift["factor"] - 1) > 1e-9:
+        if abs(drift["factor"] - 1) > 1e-9 or drift["difficulty"] not in (0, 0.0):
             label = drift["difficulty_label"] or "难度"
-            lines.append(f"难度加成（{label} ×{drift['factor']:g}）{drift['difficulty_display']}")
+            how = f"×{drift['factor']:g}" if abs(drift["factor"] - 1) > 1e-9 else ""
+            how += f"{'，' if how else ''}每季 {format_value(bias, signed=True)}" if abs(bias) > 1e-9 else ""
+            lines.append(f"难度加成（{label} {how}）{drift['difficulty_display']}")
         if drift["clamp"] not in (0, 0.0):
             lines.append(f"上下限截断 {format_value(drift['clamp'], signed=True)}")
     for item in items:

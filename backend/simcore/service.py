@@ -33,7 +33,7 @@ from simcore.domain.court import (
     remote_reply_mode,
 )
 from simcore.domain.describe import describe_condition
-from simcore.domain.difficulty import DifficultyError, current_difficulty, public_difficulties
+from simcore.domain.difficulty import DifficultyError, current_difficulty, drift_bias, drift_factor, public_difficulties
 from simcore.domain.digest import render_digest
 from simcore.domain.events import matches
 from simcore.domain.memorials import MemorialError, is_visible, memorial_flag, summarize_ops, visible_memorials
@@ -1453,6 +1453,14 @@ class GameService:
             lines.append(f"\n## 危机计：{crisis['title']} {crisis['display']}（{crisis['band']}）")
             for term in crisis["terms"]:
                 lines.append(f"- 分项 {term['label']}：{term['display']}")
+            crisis_id = str((definition.get("crisis") or {}).get("resource") or "")
+            factor, bias = drift_factor(state, crisis_id), drift_bias(state, crisis_id)
+            if abs(factor - 1) > 1e-9 or abs(bias) > 1e-9:
+                label = (state.rules.get("difficulty") or {}).get("label") or "难度"
+                parts = [f"诸分项合计 ×{factor:g}"] if abs(factor - 1) > 1e-9 else []
+                if abs(bias) > 1e-9:
+                    parts.append(f"每季 {'+' if bias > 0 else ''}{format_number(bias)}")
+                lines.append(f"- 难度（{label}）：{'，再'.join(parts)}")
             lines.append("（分项按当前状态计算，即下次结算的预计漂移；上季实际变化见「上季危机变化」。）")
         change = (view["last_report"] or {}).get("crisis_change")
         if change:

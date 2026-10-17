@@ -281,7 +281,14 @@ def summarize_op(raw: dict[str, Any], state: WorldState, *, pending: bool = Fals
         if resource is not None and resource.hidden:
             # 隐藏数值不给确数，只给方向（与公开视图一致）
             return f"{resource.name} {'↑' if float(raw['delta']) > 0 else '↓' if float(raw['delta']) < 0 else '不变'}（风闻）"
-        return f"{name('resource', raw['resource'])} {signed(raw['delta'])}"
+        text = f"{name('resource', raw['resource'])} {signed(raw['delta'])}"
+        if resource is not None:
+            delta = float(raw["delta"])
+            if delta < 0 and resource.minimum is not None and resource.amount + delta < resource.minimum - 1e-9:
+                text += f"（今 {resource.amount:g}，至多降到下限 {resource.minimum:g}）"
+            elif delta > 0 and resource.maximum is not None and resource.amount + delta > resource.maximum + 1e-9:
+                text += f"（今 {resource.amount:g}，至多升到上限 {resource.maximum:g}）"
+        return text
     if op == "appoint":
         text = f"任 {name('character', raw['character'])} 为 {name('office', raw['office'])}"
         office_id = str(raw["office"])
